@@ -188,10 +188,12 @@ def test_is_mergeable_r2_needs_codex(tmp_path):
 
 
 def test_is_mergeable_blocks_when_landing_differs(tmp_path):
-    head = _repo(tmp_path)
-    ok, reasons = ls.is_mergeable(_state(head), "DIFFERENT", tmp_path,
+    head = _repo(tmp_path)  # gate attests to this commit
+    (tmp_path / "b").write_text("2"); _git(tmp_path, "add", "-A"); _git(tmp_path, "commit", "-m", "c1")
+    new_head = ls.rev_parse(tmp_path, "HEAD")  # a real, distinct landing commit
+    ok, reasons = ls.is_mergeable(_state(head), new_head, tmp_path,
                                   {"codex_required_risks": ["R2", "R3"], "roadmap_paths": [], "shipped_log_paths": []})
-    assert not ok and any("stale" in r or "dennis" in r for r in reasons)
+    assert not ok and any("stale" in r for r in reasons)
 
 
 def test_is_mergeable_requires_docs_when_configured(tmp_path):
@@ -500,7 +502,7 @@ if __name__ == "__main__":
 **Interfaces:**
 - Consumes: `loop_state` (`repo_root`, `rev_parse`, `load_state`, `load_config`, `is_mergeable`, `StateError`, `GitError`).
 - Produces:
-  - `classify(tokens: list[str], protected: list[str], current_branch: str) -> tuple[str, str | None]` returning `("allow", None)`, `("deny", reason)`, `("check", ref)`, `("check_bare_push", remote|None)`, or `("maybe_alias", sub)`. It takes shlex-tokenized argv and does pure argv parsing (no git calls).
+  - `classify(tokens: list[str], protected: list[str], current_branch: str | None) -> tuple[str, str | None]` returning `("allow", None)`, `("deny", reason)`, `("check", ref)`, `("check_bare_push", remote|None)`, or `("maybe_alias", sub)`. It takes shlex-tokenized argv and does pure argv parsing (no git calls). `current_branch` is `None` when the lookup failed (distinct from `"HEAD"` detached), and branch-dependent ops fail closed on it.
   - a hook `main()` that tokenizes with `shlex.split`, strips a leading `DEVLOOP_OVERRIDE=` assignment, rejects per-token shell metacharacters, resolves git-dependent actions (alias lookup, bare-push via `push.default`/`remote.push`, landing `ref^{commit}`), consults state, and exits `0`/`2`.
 
 **Classification contract (strict argv parser, allow only the canonical safe set, deny on any doubt):**
@@ -517,7 +519,7 @@ if __name__ == "__main__":
 - [ ] **Step 1: Write failing tests** — a full matrix (call `classify` on tokenized argv, and drive `main()` via stdin JSON):
   - allow: `git status`; `git push origin feat/x` (on `feat/x`); `git push origin HEAD` (on `feat/x` -> current branch feat/x); `git commit -m x`; `git push origin main:feat/x` (dst feat/x); `git -C repo status`; `git rebase main` (not an alias); bare `git push` on a feature branch (`push.default=simple`, no `remote.origin.push`).
   - check: `git push origin main` (on main); `git push origin HEAD` (on main -> current branch is main); `git push origin HEAD:main`; `git push origin HEAD:refs/heads/main`; `git push origin feat/x:main`; `git push --force origin main`; `git push --force-with-lease origin main`; `git push origin --force-with-lease main`; `git merge --ff-only <annotated-tag>` (on main -> tagged commit); bare `git push` on main (`push.default=simple`).
-  - deny: `git merge feat/x` (on main, no --ff-only); `git pull` (on main); `git merge feat/x && git push origin main`; `git push origin main;`; `git push origin main&&x`; `git push origin $BRANCH`; `git push origin main>out`; `git -C /other push origin main`; `cd /other && git push origin main`; `git push --all origin`; `git push --mirror`; `git push origin :main` (delete); `git push origin main:` (empty dst); `git push origin main:HEAD` (unresolvable remote HEAD); `git push origin main feat/x` (multiple refspecs); `GIT_SSH=x git push origin main` (env prefix); `git p` where `alias.p` is set; bare `git push` with `push.default=matching`; `gh pr merge 12`; `git push "origin" 'main` (unbalanced quote).
+  - deny: `git merge feat/x` (on main, no --ff-only); `git pull` (on main); `git merge feat/x && git push origin main`; `git push origin main;`; `git push origin main&&x`; `git push origin $BRANCH`; `git push origin main>out`; `git -C /other push origin main`; `cd /other && git push origin main`; `git push --all origin`; `git push --mirror`; `git push origin :main` (delete); `git push origin main:` (empty dst); `git push origin main:HEAD` (unresolvable remote HEAD); `git push origin main feat/x` (multiple refspecs); `GIT_SSH=x git push origin main` (env prefix); `git p` where `alias.p` is set; bare `git push` with `push.default=matching`; `git merge x` / `git pull` / bare `git push` when the current-branch lookup fails (`current_branch is None`, e.g. unborn HEAD) -> deny; `git push origin main:HEAD`; `gh pr merge 12`; `git push "origin" 'main` (unbalanced quote).
   - integration: `check` on an ungated repo -> exit 2; green-gated repo with landing == gate commit -> exit 0; a `deny` classification -> exit 2 regardless of state; malformed state on a `check` op -> exit 2 (fail closed); annotated-tag source resolves to its commit; `DEVLOOP_OVERRIDE=hotfix git push origin main` with `escape_hatch:true` -> exit 0 and a `.loop-audit.log` line naming reason `hotfix`; with `escape_hatch:false` the override is ignored (exit 2); an ambient `DEVLOOP_OVERRIDE` env var (no inline assignment) does NOT override (exit 2); a `git push origin main` outside any git repo -> exit 0 (nothing to protect).
 
 - [ ] **Step 2: Run to verify failure.**
@@ -576,7 +578,7 @@ def _skip_global(tokens: list[str]) -> tuple[bool, int]:
     return retarget, i
 
 
-def classify(tokens: list[str], protected: list[str], current_branch: str) -> tuple[str, str | None]:
+def classify(tokens: list[str], protected: list[str], current_branch: str | None) -> tuple[str, str | None]:
     if not tokens:
         return ("allow", None)
     head = tokens[0]
@@ -595,6 +597,9 @@ def classify(tokens: list[str], protected: list[str], current_branch: str) -> tu
     if retarget and (sub in _FAMILY or sub == "pr"):
         return ("deny", "git -C/--git-dir/--work-tree with a push/merge/pull retargets the repo; "
                         "run it inside that repo without indirection.")
+    if sub in ("pull", "merge") and current_branch is None:
+        return ("deny", "cannot determine the current branch; resolve the repo state before "
+                        "a merge/pull.")
     if sub == "pull":
         return ("deny", "git pull merges into the current branch; while on a protected branch use "
                         "an explicit gated 'git merge --ff-only'.") if current_branch in protected \
@@ -632,8 +637,8 @@ def classify(tokens: list[str], protected: list[str], current_branch: str) -> tu
             # 'x:HEAD' targets a remote ref named HEAD, which we cannot resolve safely.
             if colon:
                 return ("deny", "cannot resolve remote destination 'HEAD'/'@'")
-            if current_branch in ("", "HEAD"):
-                return ("deny", "detached HEAD push cannot be resolved; push an explicit branch")
+            if current_branch in (None, "", "HEAD"):
+                return ("deny", "detached/unknown HEAD push cannot be resolved; push an explicit branch")
             dst = current_branch
         if dst.startswith("refs/"):  # non-branch namespace (tags/remotes/...) after stripping heads
             return ("deny", f"unsupported push destination {dst}")
@@ -648,13 +653,18 @@ def _deny(reason: str) -> int:
     return 2
 
 
-def _current_branch(root: Path) -> str:
+def _current_branch(root: Path) -> str | None:
+    """Return the branch name, 'HEAD' when detached, or None when lookup fails.
+
+    None is distinct from detached: a failed lookup is doubt, and branch-dependent
+    operations must fail closed on it rather than be treated as 'on a feature branch'.
+    """
     try:
         out = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
                              capture_output=True, text=True, check=True)
         return out.stdout.strip()
     except Exception:
-        return ""
+        return None
 
 
 def _git_config(root: Path, key: str) -> str:
@@ -737,6 +747,9 @@ def main() -> int:
                     _deny(f"dev-loop: 'git {payload}' is a configured alias; run the explicit command it expands to")
             return 0  # normal builtin (status, rebase, reset, ...); does not push a protected remote branch
         if action == "check_bare_push":
+            if branch is None:
+                return 0 if _escape(root, config, override, command, "n/a") else \
+                    _deny("dev-loop: cannot determine the current branch; push an explicit refspec")
             act, ref = _bare_push_target(root, payload, branch, protected)
             if act == "allow":
                 return 0
