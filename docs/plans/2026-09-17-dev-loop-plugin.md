@@ -623,7 +623,7 @@ def classify(tokens: list[str], protected: list[str], current_branch: str) -> tu
         if not src or not dst:
             return ("deny", "delete/empty refspec is not supported here")
         dst = _strip_heads(dst)
-        if "/" in dst:
+        if dst.startswith("refs/"):  # non-branch namespace (tags/remotes/...) after stripping heads
             return ("deny", f"unsupported push destination {dst}")
         return ("check", src) if dst in protected else ("allow", None)
     # any other subcommand could be a user alias that expands to a push/merge
