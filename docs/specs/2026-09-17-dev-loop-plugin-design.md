@@ -283,7 +283,7 @@ shortcutting it.
 Contents:
 
 - Conductor identity. Primary load is the skill's own description trigger. A
-  SessionStart `command` hook (matching `startup|resume|clear|compact|fork`)
+  SessionStart `command` hook (matching `startup|resume|clear|compact`)
   reinforces it by emitting the conductor preamble through
   `hookSpecificOutput.additionalContext`, the mechanism that actually reaches the
   model. Task 0 verifies this empirically before the plan depends on it. Stated as

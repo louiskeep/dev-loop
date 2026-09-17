@@ -954,7 +954,7 @@ Make it executable.
       ] }
     ],
     "SessionStart": [
-      { "matcher": "startup|resume|clear|compact|fork", "hooks": [
+      { "matcher": "startup|resume|clear|compact", "hooks": [
         { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh\" session_start", "timeout": 10 }
       ] }
     ]
