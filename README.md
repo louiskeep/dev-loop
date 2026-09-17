@@ -69,9 +69,19 @@ machine-local.
 ## Install
 
 ```bash
-claude plugin marketplace add /home/cam/dev-loop-plugin
+claude plugin marketplace add <your-github-user>/dev-loop
 claude plugin install dev-loop@cam-dev-loop
 ```
+
+(Or `claude plugin marketplace add <path-to-a-local-clone>` to try it from a checkout.)
+
+## A note on compound commands
+
+The guard evaluates one plain git command. A push or merge combined with shell
+operators (`&&`, `;`, `|`, command substitution) or run through a wrapper is
+denied rather than parsed, so run the gated step on its own line. For example use
+`git commit -m ...` then `git push origin <branch>`, not `git commit ... && git push ...`,
+when the push targets a protected branch.
 
 ## Tests
 

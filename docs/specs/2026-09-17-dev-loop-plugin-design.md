@@ -71,13 +71,13 @@ dev-loop/
     loop_state.py            # state-file read/write + staleness logic + CLI
     done_claim_check.py      # Stop hook: flag done/merge claims without evidence
   rules/                     # dev-rules bundled as reference
-  config.json                # local stack bindings (models, paths, Slack, toggles)
+  config.json                # plugin defaults (protected branches, doc paths, gate policy, escape hatch)
 ```
 
-`config.json` isolates machine-specific bindings (model names, Codex
-availability, Slack webhook, dev-rules path, gated-branch names, escape-hatch
-toggle) so policy stays clean. Bundling `rules/` versions the rulebooks with the
-enforcement that cites them.
+`config.json` holds the plugin's default policy: `protected_branches`,
+`roadmap_paths`, `shipped_log_paths`, `codex_required_risks`, and `escape_hatch`.
+A per-repo `.loop-config.json` at the target repo root overrides these. Bundling
+`rules/` versions the rulebooks with the enforcement that cites them.
 
 ## Conductor and complexity-tiered delegation
 

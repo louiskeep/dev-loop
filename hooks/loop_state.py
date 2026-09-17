@@ -175,6 +175,7 @@ def docs_current(
             "-C",
             str(root),
             "diff",
+            "-z",
             "--name-only",
             f"{slice_base}..{landing_commit}",
         ],
@@ -182,7 +183,8 @@ def docs_current(
         text=True,
         check=True,
     )
-    changed = set(out.stdout.split())
+    # -z gives NUL-separated, unquoted paths, so paths with spaces match correctly.
+    changed = {p for p in out.stdout.split("\0") if p}
 
     def _any(paths: list[str]) -> bool:
         return any(p in changed for p in paths)
@@ -309,8 +311,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.cmd == "check-merge":
-        landing = rev_parse(root, args.landing)
-        ok, reasons = is_mergeable(state, landing, root, load_config(root))
+        try:
+            landing = rev_parse(root, args.landing)
+            ok, reasons = is_mergeable(state, landing, root, load_config(root))
+        except (GitError, subprocess.CalledProcessError) as exc:
+            print(f"cannot evaluate merge (unresolvable ref?): {exc}", file=sys.stderr)
+            return 1
         if ok:
             return 0
         print("; ".join(reasons), file=sys.stderr)

@@ -25,7 +25,42 @@ except ImportError:  # run standalone: python hooks/gate_guard.py
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import loop_state as ls
 
-_PUSH_OPTS = {"--force", "-f", "--force-with-lease"}
+# Push flags that take no separate argument and do not change the destination, so they
+# are safe on any push (a feature-branch push with -u/-v/--no-verify/--tags is the most
+# common op in the workflow). Options that take a separate argument would shift refspec
+# parsing, so anything not in this set is denied.
+_SAFE_PUSH_FLAGS = {
+    "--force",
+    "-f",
+    "--force-with-lease",
+    "--force-if-includes",
+    "-u",
+    "--set-upstream",
+    "-v",
+    "--verbose",
+    "-q",
+    "--quiet",
+    "-n",
+    "--dry-run",
+    "--no-verify",
+    "--verify",
+    "--tags",
+    "--follow-tags",
+    "--no-follow-tags",
+    "--progress",
+    "--no-progress",
+    "--porcelain",
+    "--atomic",
+    "--no-atomic",
+    "--thin",
+    "--no-thin",
+    "--signed",
+    "--no-signed",
+    "-4",
+    "--ipv4",
+    "-6",
+    "--ipv6",
+}
 _METACHAR = re.compile(r"[;&|<>$(){}`\n]")
 _RETARGET_OPTS = {"-C", "--git-dir", "--work-tree"}
 _OVERRIDE_RE = re.compile(r"^DEVLOOP_OVERRIDE=(.*)$")
@@ -163,8 +198,11 @@ def classify(
         opts = [a for a in args if a.startswith("-")]
         pos = [a for a in args if not a.startswith("-")]
         for o in opts:
-            if o.split("=", 1)[0] not in _PUSH_OPTS:
-                return ("deny", f"unsupported push option {o}")
+            if o.split("=", 1)[0] not in _SAFE_PUSH_FLAGS:
+                return (
+                    "deny",
+                    f"unsupported push option {o} (takes an argument or is unknown)",
+                )
         if len(pos) <= 1:
             return ("check_bare_push", pos[0] if pos else None)  # bare or remote-only
         if len(pos) > 2:
@@ -198,6 +236,9 @@ def classify(
 
 
 def _deny(reason: str) -> int:
+    # Exit 2 blocks the tool call. The reason is emitted both as the canonical
+    # hookSpecificOutput.permissionDecisionReason (stdout) and to stderr, so it
+    # reaches the model regardless of how the runtime surfaces an exit-2 deny.
     print(
         json.dumps(
             {
@@ -209,6 +250,7 @@ def _deny(reason: str) -> int:
             }
         )
     )
+    print(reason, file=sys.stderr)
     return 2
 
 

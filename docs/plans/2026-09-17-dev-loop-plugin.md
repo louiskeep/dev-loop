@@ -83,13 +83,13 @@ Start a fresh session. (a) Ask the model whether it sees `SPIKE_SENTINEL_9f3` (S
 }
 ```
 
-- [ ] **Step 3: Write `config.json` (plugin defaults, verbatim)**
+- [ ] **Step 3: Write `config.json` (neutral public defaults)** — doc-path lists are EMPTY so docs-current is opt-in; a repo enables it via `.loop-config.json`. Shipping a specific repo's doc paths as the default would block every other repo's merges out of the box.
 
 ```json
 {
   "protected_branches": ["main", "master"],
-  "roadmap_paths": ["docs/ROADMAP.md"],
-  "shipped_log_paths": ["docs/backlog/RECENTLY-SHIPPED.md"],
+  "roadmap_paths": [],
+  "shipped_log_paths": [],
   "codex_required_risks": ["R2", "R3"],
   "escape_hatch": false
 }

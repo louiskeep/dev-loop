@@ -52,6 +52,24 @@ def test_bare_push():
     assert c("git push origin", branch="main")[0] == "check_bare_push"
 
 
+def test_flagged_feature_pushes_allowed():
+    # common no-arg flags on a feature-branch push must NOT be denied (P1-1)
+    for cmd in (
+        "git push -u origin feat/x",
+        "git push --set-upstream origin feat/x",
+        "git push -v origin feat/x",
+        "git push --no-verify origin feat/x",
+        "git push -q origin feat/x",
+    ):
+        assert c(cmd, branch="feat/x")[0] == "allow", cmd
+
+
+def test_arg_taking_or_unknown_push_option_denied():
+    # options that take a separate argument would shift refspec parsing -> deny
+    assert c("git push -o ci.skip origin main", branch="main")[0] == "deny"
+    assert c("git push --repo=x origin main", branch="main")[0] == "deny"
+
+
 def test_deny_cases():
     assert c("git merge feat/x", branch="main")[0] == "deny"  # no --ff-only
     assert c("git pull", branch="main")[0] == "deny"
@@ -170,6 +188,36 @@ def test_metachar_denied(tmp_path):
 def test_feature_push_allowed(tmp_path):
     _repo(tmp_path, branch="feat/x")
     assert _invoke("git push origin feat/x", tmp_path).returncode == 0
+
+
+def test_flagged_first_push_allowed(tmp_path):
+    # the most common op: first push of a feature branch with -u
+    _repo(tmp_path, branch="feat/x")
+    assert _invoke("git push -u origin feat/x", tmp_path).returncode == 0
+
+
+def test_default_config_allows_merge_without_doc_paths(tmp_path):
+    # No .loop-config.json: the shipped config.json defaults (empty doc paths) must
+    # not block a green-gated merge (P1-2).
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "f").write_text("x")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "c0")
+    _cli(tmp_path, "init", "--slice", "s", "--risk", "R1", "--rationale", "x")
+    _cli(
+        tmp_path,
+        "record-gate",
+        "dennis",
+        "--status",
+        "green",
+        "--reviewer",
+        "dennis",
+        "--commit",
+        "HEAD",
+    )
+    assert _invoke("git push origin main", tmp_path).returncode == 0
 
 
 def test_env_prefix_push_gated(tmp_path):
