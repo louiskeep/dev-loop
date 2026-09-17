@@ -1,5 +1,6 @@
 {
   "name": "cam-dev-loop",
+  "description": "Cam's development-loop tooling: the conductor + hook-enforced dev-loop plugin.",
   "owner": { "name": "cam", "email": "goodneighbor@goodneighbor.design" },
   "plugins": [
     { "name": "dev-loop", "source": "./", "description": "Conductor + hook-enforced development loop." }
