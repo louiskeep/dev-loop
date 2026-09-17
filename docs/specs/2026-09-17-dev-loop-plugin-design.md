@@ -194,16 +194,23 @@ is caught.
 ### Hooks
 
 1. `gate_guard.py` (PreToolUse on Bash). It does not decide by substring match.
-   It resolves the target repo via `git rev-parse --show-toplevel` (handling
-   subdirectories, `git -C`, and worktrees), classifies the command into a small
-   set of *supported* protected-branch operations (push of a ref to a protected
-   branch, force-push to one, fast-forward merge into one), and for those checks
-   the landing commit against the state. It **fails closed on anything it cannot
-   confidently classify as safe**: compound commands touching a protected ref,
-   `--all` / `--mirror`, unparseable or obfuscated forms, and `gh pr merge` (which
-   validates the local checkout, not the PR head) are denied with a message
-   telling the user to run the gated steps explicitly or use the audited escape
-   hatch. Feature-branch pushes with no protected-branch target are allowed.
+   It shlex-tokenizes the command, resolves the target repo via `git rev-parse
+   --show-toplevel`, and runs a strict argv parser that allows only a small
+   canonical set and denies anything else in (or possibly in) the
+   push/merge/pull family. Supported checkable forms: `git push [remote]
+   <src>:<protected>` or `<protected>` (only `--force`/`--force-with-lease`
+   options), a bare/remote-only push resolved via `push.default` and
+   `remote.<remote>.push` (denied when `matching` or a configured push refspec
+   makes it ambiguous), and `git merge --ff-only <ref>` into a protected branch
+   (the source deref'd with `^{commit}` so annotated tags resolve). It **fails
+   closed on anything else that touches the family**: `git pull` on a protected
+   branch, non-`--ff-only` merges, delete/empty/wildcard/multiple refspecs, a
+   destination containing `/`, `git -C`/`--git-dir`/`--work-tree` repo
+   retargeting, any token carrying a shell metacharacter or expansion, unbalanced
+   quotes, wrappers/env-prefixes, configured git aliases, and `gh pr merge` (which
+   validates the local checkout, not the PR head). Feature-branch pushes with no
+   protected-branch target, and non-family git commands, are allowed. The audited
+   escape hatch (below) is the sole override.
 
 2. Re-gate invalidation (in `loop_state.py`, enforced by gate_guard): a landing
    commit that does not equal every required gate's `at_commit` is blocked.
