@@ -509,7 +509,7 @@ if __name__ == "__main__":
 - `git` global options (`-C`, `--git-dir`, `--work-tree`, `-c`, flags) are skipped to find the subcommand; a repo-retargeting option (`-C`/`--git-dir`/`--work-tree`) plus a push/merge/pull/pr subcommand DENIES; a retargeting option with a safe subcommand (`git -C repo status`) ALLOWS.
 - `git pull`: DENY on a protected branch (it merges into it), else ALLOW.
 - `git merge`: only on a protected branch; options exactly `["--ff-only"]` and exactly one positional, else DENY; returns `("check", ref)` (main resolves `ref^{commit}` to deref tags).
-- `git push`: only `--force`/`-f`/`--force-with-lease[=..]` options allowed, else DENY. Positionals after option removal: 0 or 1 -> `("check_bare_push", remote|None)` (main: `push.default=matching` or a configured `remote.<remote>.push` -> DENY; otherwise it pushes the current branch, so protected -> check HEAD, else ALLOW); exactly 2 -> single refspec, strip `refs/heads/`, DENY on delete/empty (`:x`, `x:`, empty src/dst), wildcard, or a `/` in the destination; protected dst -> `("check", src)`, else ALLOW; >2 -> DENY.
+- `git push`: only `--force`/`-f`/`--force-with-lease[=..]` options allowed, else DENY. Positionals after option removal: 0 or 1 -> `("check_bare_push", remote|None)` (main: `push.default=matching` or a configured `remote.<remote>.push` -> DENY; otherwise it pushes the current branch, so protected -> check HEAD, else ALLOW); exactly 2 -> single refspec, strip `refs/heads/`, DENY on delete/empty (`:x`, `x:`, empty src/dst), wildcard, multiple colons, or a destination still starting `refs/` after stripping `refs/heads/` (plain slash branches like `feat/x` are fine); protected dst -> `("check", src)`, else ALLOW; >2 -> DENY.
 - Any other `git` subcommand -> `("maybe_alias", sub)`; main DENIES if `git config alias.<sub>` exists, else ALLOWS (normal builtin).
 - Any token carrying a shell metacharacter/expansion (`; & | < > $ ( ) { } \``, newline): DENY if the argv touches push/merge/pull, else ALLOW. Unbalanced quotes (`shlex.split` raises): DENY.
 - Escape hatch: on a DENY, if `config.escape_hatch` is true AND a leading inline `DEVLOOP_OVERRIDE=<reason>` assignment is present in the command, ALLOW and append `{ts, command, reason, landing_commit}` to `.loop-audit.log`. Inline only, never the ambient env (a session-wide env var would silently allow everything).
@@ -702,7 +702,7 @@ def main() -> int:
             tokens = shlex.split(command)
         except ValueError:
             return _deny("dev-loop: unparseable command (unbalanced quotes)") \
-                if re.search(r"\b(push|merge)\b", command) else 0
+                if re.search(r"\b(push|merge|pull)\b", command) else 0
         override = None
         if tokens and (m := _OVERRIDE_RE.match(tokens[0])):
             override, tokens = m.group(1), tokens[1:]

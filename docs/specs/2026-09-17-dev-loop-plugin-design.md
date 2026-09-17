@@ -239,9 +239,9 @@ is caught.
 ### Docs-current
 
 Docs-current is computed live at the merge check, never stored as a settable
-boolean. `is_mergeable` runs `git diff --name-only <slice_base>..HEAD` and
-requires the configured roadmap and shipped-log paths to appear in the changed
-set. There is no `set-docs-current true true` bypass; the only way to satisfy it
+boolean. `is_mergeable` runs `git diff --name-only <slice_base>..<landing_commit>`
+(the same landing commit the gates are checked against) and requires the
+configured roadmap and shipped-log paths to appear in the changed set. There is no `set-docs-current true true` bypass; the only way to satisfy it
 is to actually touch those docs in the slice.
 
 ### Risk classification
