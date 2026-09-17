@@ -218,8 +218,10 @@ is caught.
    branch, non-`--ff-only` merges, delete/empty/wildcard/multiple refspecs, a
    destination in a non-branch ref namespace (still `refs/...` after stripping
    `refs/heads/`; plain slash branches like `feat/x` are allowed when not
-   protected), `git -C`/`--git-dir`/`--work-tree` repo
-   retargeting, any token carrying a shell metacharacter or expansion, unbalanced
+   protected), any `git -C`/`--git-dir`/`--work-tree` repo-retargeted command
+   other than a read-only safe builtin (`status`, `log`, `diff`, `fetch`, ...),
+   since the target repo's aliases/config cannot be resolved from cwd, any token
+   carrying a shell metacharacter or expansion, unbalanced
    quotes, real interpreter/binary wrappers (`bash`, `sudo`, `env`, ...),
    configured git aliases, and `gh pr merge` (which validates the local checkout,
    not the PR head). A leading `DEVLOOP_OVERRIDE=` and any leading `VAR=val`
