@@ -1,0 +1,9 @@
+{
+  "name": "dev-loop",
+  "displayName": "Dev Loop",
+  "version": "0.1.0",
+  "description": "Conductor + hook-enforced development loop: makes self-certified merges hard in-session, guides the judgment steps.",
+  "author": { "name": "cam", "email": "goodneighbor@goodneighbor.design" },
+  "license": "MIT",
+  "keywords": ["workflow", "gate", "review", "conductor"]
+}

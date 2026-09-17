@@ -1,3 +1,6 @@
 .loop-state.json
+.loop-audit.log
 __pycache__/
 *.pyc
+.venv/
+.pytest_cache/

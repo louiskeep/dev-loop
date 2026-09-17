@@ -1,0 +1,7 @@
+{
+  "protected_branches": ["main", "master"],
+  "roadmap_paths": ["docs/ROADMAP.md"],
+  "shipped_log_paths": ["docs/backlog/RECENTLY-SHIPPED.md"],
+  "codex_required_risks": ["R2", "R3"],
+  "escape_hatch": false
+}

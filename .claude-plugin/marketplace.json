@@ -1,0 +1,7 @@
+{
+  "name": "cam-dev-loop",
+  "owner": { "name": "cam", "email": "goodneighbor@goodneighbor.design" },
+  "plugins": [
+    { "name": "dev-loop", "source": "./", "description": "Conductor + hook-enforced development loop." }
+  ]
+}
