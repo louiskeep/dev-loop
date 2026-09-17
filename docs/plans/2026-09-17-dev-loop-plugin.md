@@ -303,7 +303,7 @@ def validate_state(state: dict) -> None:
     for key in ("slice", "risk_rationale", "slice_base"):
         if not _nonempty_str(state[key]):
             raise StateError(f"field {key} must be a non-empty string")
-    if state["risk"] not in _RISKS:
+    if not isinstance(state["risk"], str) or state["risk"] not in _RISKS:
         raise StateError(f"invalid risk: {state['risk']!r}")
     if not isinstance(state["gates"], dict):
         raise StateError("gates must be an object")
@@ -509,13 +509,13 @@ if __name__ == "__main__":
 - `git push`: only `--force`/`-f`/`--force-with-lease[=..]` options allowed, else DENY. Positionals after option removal: 0 or 1 -> `("check_bare_push", remote|None)` (main: `push.default=matching` or a configured `remote.<remote>.push` -> DENY; otherwise it pushes the current branch, so protected -> check HEAD, else ALLOW); exactly 2 -> single refspec, strip `refs/heads/`, DENY on delete/empty (`:x`, `x:`, empty src/dst), wildcard, or a `/` in the destination; protected dst -> `("check", src)`, else ALLOW; >2 -> DENY.
 - Any other `git` subcommand -> `("maybe_alias", sub)`; main DENIES if `git config alias.<sub>` exists, else ALLOWS (normal builtin).
 - Any token carrying a shell metacharacter/expansion (`; & | < > $ ( ) { } \``, newline): DENY if the argv touches push/merge/pull, else ALLOW. Unbalanced quotes (`shlex.split` raises): DENY.
-- Escape hatch: on a DENY, if `config.escape_hatch` is true AND a reason is available (leading inline `DEVLOOP_OVERRIDE=<reason>` in the command, or env `DEVLOOP_OVERRIDE`), ALLOW and append `{ts, command, reason, landing_commit}` to `.loop-audit.log`. The inline form is parsed from the command string because the hook process does not inherit a per-command env prefix.
+- Escape hatch: on a DENY, if `config.escape_hatch` is true AND a leading inline `DEVLOOP_OVERRIDE=<reason>` assignment is present in the command, ALLOW and append `{ts, command, reason, landing_commit}` to `.loop-audit.log`. Inline only, never the ambient env (a session-wide env var would silently allow everything).
 
 - [ ] **Step 1: Write failing tests** — a full matrix (call `classify` on tokenized argv, and drive `main()` via stdin JSON):
   - allow: `git status`; `git push origin feat/x` (on `feat/x`); `git commit -m x`; `git push origin main:feat/x` (dst feat/x); `git -C repo status`; `git rebase main` (not an alias); bare `git push` on a feature branch (`push.default=simple`, no `remote.origin.push`).
   - check: `git push origin main` (on main); `git push origin HEAD:main`; `git push origin HEAD:refs/heads/main`; `git push origin feat/x:main`; `git push --force origin main`; `git push --force-with-lease origin main`; `git push origin --force-with-lease main`; `git merge --ff-only <annotated-tag>` (on main -> tagged commit); bare `git push` on main (`push.default=simple`).
   - deny: `git merge feat/x` (on main, no --ff-only); `git pull` (on main); `git merge feat/x && git push origin main`; `git push origin main;`; `git push origin main&&x`; `git push origin $BRANCH`; `git push origin main>out`; `git -C /other push origin main`; `cd /other && git push origin main`; `git push --all origin`; `git push --mirror`; `git push origin :main` (delete); `git push origin main:` (empty dst); `git push origin main feat/x` (multiple refspecs); `GIT_SSH=x git push origin main` (env prefix); `git p` where `alias.p` is set; bare `git push` with `push.default=matching`; `gh pr merge 12`; `git push "origin" 'main` (unbalanced quote).
-  - integration: `check` on an ungated repo -> exit 2; green-gated repo with landing == gate commit -> exit 0; a `deny` classification -> exit 2 regardless of state; malformed state on a `check` op -> exit 2 (fail closed); annotated-tag source resolves to its commit; `DEVLOOP_OVERRIDE=hotfix git push origin main` with `escape_hatch:true` -> exit 0 and a `.loop-audit.log` line naming reason `hotfix`; with `escape_hatch:false` the override is ignored (exit 2).
+  - integration: `check` on an ungated repo -> exit 2; green-gated repo with landing == gate commit -> exit 0; a `deny` classification -> exit 2 regardless of state; malformed state on a `check` op -> exit 2 (fail closed); annotated-tag source resolves to its commit; `DEVLOOP_OVERRIDE=hotfix git push origin main` with `escape_hatch:true` -> exit 0 and a `.loop-audit.log` line naming reason `hotfix`; with `escape_hatch:false` the override is ignored (exit 2); an ambient `DEVLOOP_OVERRIDE` env var (no inline assignment) does NOT override (exit 2); a `git push origin main` outside any git repo -> exit 0 (nothing to protect).
 
 - [ ] **Step 2: Run to verify failure.**
 
@@ -532,7 +532,6 @@ from __future__ import annotations
 
 import datetime
 import json
-import os
 import re
 import shlex
 import subprocess
@@ -582,7 +581,7 @@ def classify(tokens: list[str], protected: list[str], current_branch: str) -> tu
         return ("deny", "unrecognized wrapper/prefix around a push/merge/pull; run plain git") \
             if _mentions_family(tokens) else ("allow", None)
     if head == "gh":
-        if tokens[1:3] == ["pr", "merge"]:
+        if "pr" in tokens and "merge" in tokens:  # catches global opts before 'pr merge'
             return ("deny", "gh pr merge is not gated in-session (validates the local checkout, "
                             "not the PR head); use a gated push or server-side protection.")
         return ("allow", None)
@@ -618,6 +617,8 @@ def classify(tokens: list[str], protected: list[str], current_branch: str) -> tu
         refspec = pos[1]
         if "*" in refspec:
             return ("deny", "wildcard refspec is not supported here")
+        if refspec.count(":") > 1:
+            return ("deny", "malformed refspec (multiple colons)")
         src, dst = refspec.split(":", 1) if ":" in refspec else (refspec, refspec)
         if not src or not dst:
             return ("deny", "delete/empty refspec is not supported here")
@@ -654,14 +655,21 @@ def _git_config(root: Path, key: str) -> str:
 
 
 def _bare_push_target(root: Path, remote: str | None, branch: str, protected: list[str]) -> tuple[str, str | None]:
-    """Decide a bare/remote-only push: allow (feature), deny (ambiguous), or check HEAD."""
-    remote = remote or _git_config(root, "remote.pushDefault") or "origin"
+    """Decide a bare/remote-only push: allow (feature), deny (ambiguous), or check HEAD.
+
+    Only push.default in {simple, current} is safe to reason about locally: both push
+    the current branch to a same-named remote branch, so a feature branch cannot reach
+    a protected one. upstream/tracking can push to a differently-named branch, so deny.
+    """
+    remote = remote or _git_config(root, f"branch.{branch}.pushRemote") \
+        or _git_config(root, "remote.pushDefault") or "origin"
     if _git_config(root, f"remote.{remote}.push"):
         return ("deny", "a configured remote.push refspec makes this push ambiguous; "
                         "push an explicit single refspec.")
-    if (_git_config(root, "push.default") or "simple") == "matching":
-        return ("deny", "push.default=matching can push protected branches; push an explicit refspec.")
-    # simple/current/upstream/tracking push only the current branch
+    push_default = _git_config(root, "push.default") or "simple"
+    if push_default not in ("simple", "current"):
+        return ("deny", f"push.default={push_default} may push a differently-named or protected "
+                        "branch; push an explicit single refspec.")
     return ("check", "HEAD") if branch in protected else ("allow", None)
 
 
@@ -685,19 +693,26 @@ def main() -> int:
     command = event.get("tool_input", {}).get("command", "")
     cwd = Path(event.get("cwd", "."))
     try:
-        root = ls.repo_root(cwd)
-        config = ls.load_config(root)
-        protected = config.get("protected_branches", ["main", "master"])
-        branch = _current_branch(root)
         try:
             tokens = shlex.split(command)
         except ValueError:
-            return _deny("dev-loop: unparseable command (unbalanced quotes)")
-        # inline escape-hatch prefix: DEVLOOP_OVERRIDE=<reason> <git ...>
+            tokens = None
+        # inline escape-hatch prefix: DEVLOOP_OVERRIDE=<reason> <git ...> (inline only,
+        # never the ambient env: the hook process would otherwise inherit a session-wide
+        # override and silently allow everything).
         override = None
         if tokens and (m := _OVERRIDE_RE.match(tokens[0])):
             override, tokens = m.group(1), tokens[1:]
-        override = override or os.environ.get("DEVLOOP_OVERRIDE")
+        try:
+            root = ls.repo_root(cwd)
+        except ls.GitError:
+            return 0  # not a git repo: nothing to protect
+        config = ls.load_config(root)
+        protected = config.get("protected_branches", ["main", "master"])
+        branch = _current_branch(root)
+        if tokens is None:
+            return 0 if _escape(root, config, override, command, "n/a") else \
+                _deny("dev-loop: unparseable command (unbalanced quotes)")
         # reject shell metacharacters/expansion carried on any token (only for the family)
         if _mentions_family(tokens) and any(_METACHAR.search(t) for t in tokens):
             return 0 if _escape(root, config, override, command, "n/a") else \

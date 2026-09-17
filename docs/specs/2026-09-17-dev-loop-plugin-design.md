@@ -120,6 +120,17 @@ Claude Code session, the plugin makes the four drift modes hard to do by
 accident or under pressure, which is the stated driver (consistency). It does
 not claim to make them impossible.
 
+Accepted scope (Cam, 2026-09-17): the in-session guard is best-effort. It stops
+the common and accidental protected-branch operations and the ones a conductor
+reaches for under pressure. It deliberately does not try to be airtight against a
+caller actively hiding a push from it (interpreter wrappers like `bash -c '...'`,
+transient config aliases like `git -c alias.x=push x`, exotic `push.default`
+settings). That is an unwinnable arms race and the wrong threat model for a
+single trusted operator. The guard denies the cheap obfuscations it can recognize
+and fails closed on ambiguity; the authoritative boundary for a determined or
+external actor is server-side branch protection. This is a scope decision, not a
+defect, and will surface in review as an accepted residual.
+
 ### Loop-state file
 
 One `.loop-state.json` at the target repo root, keyed off git commit SHAs so
