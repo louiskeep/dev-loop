@@ -216,7 +216,9 @@ is caught.
    (the source deref'd with `^{commit}` so annotated tags resolve). It **fails
    closed on anything else that touches the family**: `git pull` on a protected
    branch, non-`--ff-only` merges, delete/empty/wildcard/multiple refspecs, a
-   destination containing `/`, `git -C`/`--git-dir`/`--work-tree` repo
+   destination in a non-branch ref namespace (still `refs/...` after stripping
+   `refs/heads/`; plain slash branches like `feat/x` are allowed when not
+   protected), `git -C`/`--git-dir`/`--work-tree` repo
    retargeting, any token carrying a shell metacharacter or expansion, unbalanced
    quotes, wrappers/env-prefixes, configured git aliases, and `gh pr merge` (which
    validates the local checkout, not the PR head). Feature-branch pushes with no

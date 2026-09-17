@@ -345,6 +345,7 @@ def load_state(root: Path) -> dict | None:
 
 
 def save_state(root: Path, state: dict) -> None:
+    validate_state(state)  # never write schema-invalid state (e.g. negative open_findings)
     (root / STATE_FILENAME).write_text(json.dumps(state, indent=2) + "\n")
 
 
@@ -466,6 +467,8 @@ def main(argv: list[str] | None = None) -> int:
         state.setdefault("gates", {})[args.gate] = entry
         save_state(root, state); return 0
     if args.cmd == "set-findings":
+        if args.n < 0:
+            print("open_findings must be >= 0", file=sys.stderr); return 1
         state.setdefault("remediation", {})["open_findings"] = args.n
         save_state(root, state); return 0
     if args.cmd == "check-merge":
@@ -693,16 +696,19 @@ def main() -> int:
     command = event.get("tool_input", {}).get("command", "")
     cwd = Path(event.get("cwd", "."))
     try:
+        # Repo-independent obfuscation rejection first, so 'cd /x && git push origin main'
+        # is denied even when cwd is not (yet) a repo. Obfuscation is never escapable.
         try:
             tokens = shlex.split(command)
         except ValueError:
-            tokens = None
-        # inline escape-hatch prefix: DEVLOOP_OVERRIDE=<reason> <git ...> (inline only,
-        # never the ambient env: the hook process would otherwise inherit a session-wide
-        # override and silently allow everything).
+            return _deny("dev-loop: unparseable command (unbalanced quotes)") \
+                if re.search(r"\b(push|merge)\b", command) else 0
         override = None
         if tokens and (m := _OVERRIDE_RE.match(tokens[0])):
             override, tokens = m.group(1), tokens[1:]
+        if _mentions_family(tokens) and any(_METACHAR.search(t) for t in tokens):
+            return _deny("dev-loop: shell metacharacter/expansion in a push/merge command; "
+                         "run the gated step alone")
         try:
             root = ls.repo_root(cwd)
         except ls.GitError:
@@ -710,13 +716,6 @@ def main() -> int:
         config = ls.load_config(root)
         protected = config.get("protected_branches", ["main", "master"])
         branch = _current_branch(root)
-        if tokens is None:
-            return 0 if _escape(root, config, override, command, "n/a") else \
-                _deny("dev-loop: unparseable command (unbalanced quotes)")
-        # reject shell metacharacters/expansion carried on any token (only for the family)
-        if _mentions_family(tokens) and any(_METACHAR.search(t) for t in tokens):
-            return 0 if _escape(root, config, override, command, "n/a") else \
-                _deny("dev-loop: shell metacharacter/expansion in a push/merge command; run the gated step alone")
 
         action, payload = classify(tokens, protected, branch)
         if action == "allow":
