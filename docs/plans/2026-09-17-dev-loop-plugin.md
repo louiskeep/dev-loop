@@ -515,9 +515,9 @@ if __name__ == "__main__":
 - Escape hatch: on a DENY, if `config.escape_hatch` is true AND a leading inline `DEVLOOP_OVERRIDE=<reason>` assignment is present in the command, ALLOW and append `{ts, command, reason, landing_commit}` to `.loop-audit.log`. Inline only, never the ambient env (a session-wide env var would silently allow everything).
 
 - [ ] **Step 1: Write failing tests** — a full matrix (call `classify` on tokenized argv, and drive `main()` via stdin JSON):
-  - allow: `git status`; `git push origin feat/x` (on `feat/x`); `git commit -m x`; `git push origin main:feat/x` (dst feat/x); `git -C repo status`; `git rebase main` (not an alias); bare `git push` on a feature branch (`push.default=simple`, no `remote.origin.push`).
-  - check: `git push origin main` (on main); `git push origin HEAD:main`; `git push origin HEAD:refs/heads/main`; `git push origin feat/x:main`; `git push --force origin main`; `git push --force-with-lease origin main`; `git push origin --force-with-lease main`; `git merge --ff-only <annotated-tag>` (on main -> tagged commit); bare `git push` on main (`push.default=simple`).
-  - deny: `git merge feat/x` (on main, no --ff-only); `git pull` (on main); `git merge feat/x && git push origin main`; `git push origin main;`; `git push origin main&&x`; `git push origin $BRANCH`; `git push origin main>out`; `git -C /other push origin main`; `cd /other && git push origin main`; `git push --all origin`; `git push --mirror`; `git push origin :main` (delete); `git push origin main:` (empty dst); `git push origin main feat/x` (multiple refspecs); `GIT_SSH=x git push origin main` (env prefix); `git p` where `alias.p` is set; bare `git push` with `push.default=matching`; `gh pr merge 12`; `git push "origin" 'main` (unbalanced quote).
+  - allow: `git status`; `git push origin feat/x` (on `feat/x`); `git push origin HEAD` (on `feat/x` -> current branch feat/x); `git commit -m x`; `git push origin main:feat/x` (dst feat/x); `git -C repo status`; `git rebase main` (not an alias); bare `git push` on a feature branch (`push.default=simple`, no `remote.origin.push`).
+  - check: `git push origin main` (on main); `git push origin HEAD` (on main -> current branch is main); `git push origin HEAD:main`; `git push origin HEAD:refs/heads/main`; `git push origin feat/x:main`; `git push --force origin main`; `git push --force-with-lease origin main`; `git push origin --force-with-lease main`; `git merge --ff-only <annotated-tag>` (on main -> tagged commit); bare `git push` on main (`push.default=simple`).
+  - deny: `git merge feat/x` (on main, no --ff-only); `git pull` (on main); `git merge feat/x && git push origin main`; `git push origin main;`; `git push origin main&&x`; `git push origin $BRANCH`; `git push origin main>out`; `git -C /other push origin main`; `cd /other && git push origin main`; `git push --all origin`; `git push --mirror`; `git push origin :main` (delete); `git push origin main:` (empty dst); `git push origin main:HEAD` (unresolvable remote HEAD); `git push origin main feat/x` (multiple refspecs); `GIT_SSH=x git push origin main` (env prefix); `git p` where `alias.p` is set; bare `git push` with `push.default=matching`; `gh pr merge 12`; `git push "origin" 'main` (unbalanced quote).
   - integration: `check` on an ungated repo -> exit 2; green-gated repo with landing == gate commit -> exit 0; a `deny` classification -> exit 2 regardless of state; malformed state on a `check` op -> exit 2 (fail closed); annotated-tag source resolves to its commit; `DEVLOOP_OVERRIDE=hotfix git push origin main` with `escape_hatch:true` -> exit 0 and a `.loop-audit.log` line naming reason `hotfix`; with `escape_hatch:false` the override is ignored (exit 2); an ambient `DEVLOOP_OVERRIDE` env var (no inline assignment) does NOT override (exit 2); a `git push origin main` outside any git repo -> exit 0 (nothing to protect).
 
 - [ ] **Step 2: Run to verify failure.**
@@ -622,10 +622,19 @@ def classify(tokens: list[str], protected: list[str], current_branch: str) -> tu
             return ("deny", "wildcard refspec is not supported here")
         if refspec.count(":") > 1:
             return ("deny", "malformed refspec (multiple colons)")
-        src, dst = refspec.split(":", 1) if ":" in refspec else (refspec, refspec)
+        colon = ":" in refspec
+        src, dst = refspec.split(":", 1) if colon else (refspec, refspec)
         if not src or not dst:
             return ("deny", "delete/empty refspec is not supported here")
         dst = _strip_heads(dst)
+        if dst in ("HEAD", "@"):
+            # a colonless HEAD/@ pushes the CURRENT branch (its remote is same-named);
+            # 'x:HEAD' targets a remote ref named HEAD, which we cannot resolve safely.
+            if colon:
+                return ("deny", "cannot resolve remote destination 'HEAD'/'@'")
+            if current_branch in ("", "HEAD"):
+                return ("deny", "detached HEAD push cannot be resolved; push an explicit branch")
+            dst = current_branch
         if dst.startswith("refs/"):  # non-branch namespace (tags/remotes/...) after stripping heads
             return ("deny", f"unsupported push destination {dst}")
         return ("check", src) if dst in protected else ("allow", None)

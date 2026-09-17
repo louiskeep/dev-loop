@@ -316,7 +316,8 @@ Hooks (mechanical) get ordinary pytest coverage:
 - `done_claim_check`: detects done/merge language, silent on clean, emits an
   `additionalContext` warning on missing/stale/red, honors `stop_hook_active`.
 - docs-current computed live: roadmap plus shipped-log touched in
-  `slice_base..HEAD` is required; a slice that did not touch them cannot merge.
+  `slice_base..<landing_commit>` is required; a slice that did not touch them
+  cannot merge. Test with a landing commit distinct from `HEAD`.
 
 The discipline skill uses RED-GREEN-REFACTOR with subagents, per the
 writing-skills Iron Law (test before writing the skill):
