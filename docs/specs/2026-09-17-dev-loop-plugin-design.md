@@ -66,7 +66,7 @@ dev-loop/
     dennis.md  barry.md      # moved in from ~/.claude/agents (gate + docs)
   hooks/
     hooks.json               # hook registrations
-    run-hook.cmd             # wrapper, resolves ${CLAUDE_PLUGIN_ROOT}
+    run-hook.sh              # wrapper, resolves ${CLAUDE_PLUGIN_ROOT} (Linux/macOS; this is a Linux-target personal plugin)
     gate_guard.py            # PreToolUse: block merge/push without a green gate
     loop_state.py            # state-file read/write + staleness logic + CLI
     done_claim_check.py      # Stop hook: flag done/merge claims without evidence
@@ -106,68 +106,125 @@ or under-tiering.
 
 ## Enforcement
 
+### What the enforcement is (and is not)
+
+This is strong workflow enforcement, not a hard git security boundary. A local
+`PreToolUse` command hook only fires when Claude Code invokes the Bash tool; a
+hook that times out, fails to start, has a bad interpreter, or lives in an
+invalid manifest lets the tool proceed (Claude Code's documented behavior). It
+also does nothing about a merge run from another terminal, another tool, or CI.
+The real wall for a protected branch is **server-side branch protection** (or a
+pre-receive hook) on the remote. The plugin's `README` states this plainly and
+documents wiring server-side protection as the recommended complement. Inside a
+Claude Code session, the plugin makes the four drift modes hard to do by
+accident or under pressure, which is the stated driver (consistency). It does
+not claim to make them impossible.
+
 ### Loop-state file
 
-One `.loop-state.json` per slice at repo root, gitignored and machine-local so it
-survives context restarts (the autonomous-operation recoverability rule). All
-evidence keys off git commits so it is tied to an exact artifact.
+One `.loop-state.json` at the target repo root, keyed off git commit SHAs so
+evidence is tied to an exact artifact. It is machine-local; the `init` command
+adds it to the target repo's `.gitignore`. It is read and written only through
+`loop_state.py`, which validates a versioned schema and rejects malformed or
+incomplete state (a malformed file fails closed at the merge check).
 
 ```json
 {
+  "schema_version": 1,
   "slice": "slice-6-generation-throughput",
   "risk": "R2",
   "risk_rationale": "engine hot-path perf + native seam; blast radius across generation",
   "slice_base": "a1b2c3d",
   "gates": {
-    "plan_review": { "status": "green", "reviewer": "codex", "ts": "..." },
-    "dennis":      { "status": "green", "at_commit": "e4f5a6b", "ts": "..." },
-    "codex":       { "status": "green", "at_commit": "e4f5a6b", "ts": "..." }
+    "plan_review": { "status": "green", "reviewer": "codex",  "ts": "..." },
+    "dennis":      { "status": "green", "reviewer": "dennis", "at_commit": "e4f5a6b", "ts": "..." },
+    "codex":       { "status": "green", "reviewer": "codex",  "at_commit": "e4f5a6b", "ts": "..." }
   },
-  "remediation": { "open_findings": 0 },
-  "docs_current": { "roadmap": true, "shipped_log": true }
+  "remediation": { "open_findings": 0 }
 }
 ```
 
-`loop_state.py` is the shared library and CLI. The conductor and subagents record
-results through it (for example `loop_state.py record-gate dennis --status green
---commit HEAD`), never by hand-editing. It computes staleness: a gate is stale
-when its `at_commit` does not equal HEAD.
+Every recorded gate carries `reviewer`, `ts`, and (for the artifact gates) the
+`at_commit` it attests to. `risk` is required and validated against `R0`-`R3`; a
+missing or unknown risk fails the merge check closed rather than silently
+skipping the Codex requirement. Docs-current is not a stored boolean (see below).
+
+Independence is procedural, not cryptographic: a caller could in principle assert
+`dennis green` without dennis having run. The plugin records who and when and ties
+it to a commit, but it cannot prove the review happened. That limit is stated in
+the README; the mitigation is that the conductor delegates the gate to the dennis
+agent and the record reflects that, not a self-assertion.
+
+### What the gate attests to, and which commit is checked
+
+Each artifact gate records the `at_commit` it attests to (the tip dennis/Codex
+actually read). The merge check does not compare against the pre-command `HEAD`;
+it resolves the commit the operation would land on the protected branch and
+requires every required gate's `at_commit` to equal that landing commit:
+
+- Direct push of a ref to a protected branch: the pushed commit must equal every
+  required gate's `at_commit`.
+- Fast-forward merge into a protected branch: the merged tip must equal them.
+- A merge that creates a new merge commit is, by definition, a commit no gate has
+  seen, so it is blocked until re-gated on that merge commit.
+- Compound commands that both mutate history and push a protected ref (for
+  example `git merge x && git push origin main`) are blocked outright; the two
+  steps must be separate so each is gated against the right commit.
+
+Any new commit after the gated one changes the landing commit, so the gates no
+longer match and the merge is blocked. That is how "remediation not re-reviewed"
+is caught.
 
 ### Hooks
 
-1. `gate_guard.py` (PreToolUse on Bash). Matches merge-to-main, push-to-main,
-   `gh pr merge`, and force-push (not feature-branch pushes, which are
-   recoverable checkpoints). Denies unless: dennis gate green and on HEAD; for
-   R2/R3, Codex gate green and on HEAD; and both `docs_current` flags true. On
-   deny it returns the specific missing evidence. This is the hard stop on
-   self-certified done.
+1. `gate_guard.py` (PreToolUse on Bash). It does not decide by substring match.
+   It resolves the target repo via `git rev-parse --show-toplevel` (handling
+   subdirectories, `git -C`, and worktrees), classifies the command into a small
+   set of *supported* protected-branch operations (push of a ref to a protected
+   branch, force-push to one, fast-forward merge into one), and for those checks
+   the landing commit against the state. It **fails closed on anything it cannot
+   confidently classify as safe**: compound commands touching a protected ref,
+   `--all` / `--mirror`, unparseable or obfuscated forms, and `gh pr merge` (which
+   validates the local checkout, not the PR head) are denied with a message
+   telling the user to run the gated steps explicitly or use the audited escape
+   hatch. Feature-branch pushes with no protected-branch target are allowed.
 
-2. Re-gate invalidation (in `loop_state.py`, enforced by gate_guard). Any commit
-   after a gate's `at_commit` makes it stale, so a patched-then-claimed-done
-   slice reads stale and merge is blocked until re-gated. This enforces
-   "remediation not re-reviewed."
+2. Re-gate invalidation (in `loop_state.py`, enforced by gate_guard): a landing
+   commit that is not the green-gated `reviewed_commit` is blocked.
 
-3. `done_claim_check.py` (Stop hook). Scans the conductor's closing message for
-   done / merge-ready / complete language; if the state file is missing, stale, or
-   red, it blocks the stop and feeds back the gap. A text heuristic, the softest
-   of the three, a backstop rather than a wall.
+3. `done_claim_check.py` (Stop hook). It reads `last_assistant_message`; if it
+   claims done/merge-ready and the state is missing, stale, or red, it emits a
+   warning back to the model via `hookSpecificOutput.additionalContext` so the
+   model re-checks before the user acts. This is a deliberate product choice:
+   Stop hooks in this build *can* block (`decision: block`), but blocking on a
+   text heuristic risks false-positive turn-stalls, so this layer warns rather
+   than blocks. `gate_guard` is the wall; this is the visible backstop.
 
-### Docs-current and risk classification
+### Docs-current
 
-Docs-current is mechanical: a check runs `git diff --name-only <slice_base>..HEAD`
-and sets the flags true only if the roadmap and shipped-log paths (from
-`config.json`) appear.
+Docs-current is computed live at the merge check, never stored as a settable
+boolean. `is_mergeable` runs `git diff --name-only <slice_base>..HEAD` and
+requires the configured roadmap and shipped-log paths to appear in the changed
+set. There is no `set-docs-current true true` bypass; the only way to satisfy it
+is to actually touch those docs in the slice.
 
-Risk classification is the one mode that cannot be fully mechanized. The state
-file forces an explicit `risk` plus rationale (no silent default) and requires
-Codex for R2/R3, but catching an under-classification stays a dennis/Codex
-checklist item. This is the honest boundary of "hard enforcement."
+### Risk classification
 
-### Failure mode
+Risk classification is the one mode that cannot be mechanized. The state file
+forces an explicit, validated `risk` plus rationale (missing/unknown fails
+closed) and requires Codex for R2/R3, but catching an *under*-classification
+stays a dennis/Codex checklist item. This is the honest boundary of the
+in-session enforcement.
 
-Gated operations fail closed. A missing or corrupt state file, or a crashing
-hook, blocks merge and push-to-main rather than letting an unreviewed change
-through, with a clear message and a `config.json` toggle for the escape hatch.
+### Failure model
+
+For the outermost handler, gated operations fail closed: any internal error on a
+command the guard has classified as a protected-branch operation results in a
+DENY (exit 2), never an allow, and a `config.json` toggle provides the audited
+escape hatch. The honest caveat from "What the enforcement is" still holds: a
+hook that never runs (timeout, startup failure, invalid manifest, operation
+outside the Bash tool) cannot fail closed at all, which is why server-side
+protection is the real boundary.
 
 ## The conducting-the-loop discipline skill
 
@@ -178,11 +235,15 @@ shortcutting it.
 
 Contents:
 
-- Conductor identity, loaded via a SessionStart hook so it is live every session.
-  Stated as a positive recipe (the conductor's output is decisions, delegation
-  calls, and synthesized results with next-step options; direct edits are limited
-  to edge cleanup and git ops). "Never do heavy work" is a shaping rule, so a
-  recipe binds better than a prohibition.
+- Conductor identity. Primary load is the skill's own description trigger. A
+  SessionStart `command` hook (matching `startup|resume|clear|compact|fork`)
+  reinforces it by emitting the conductor preamble through
+  `hookSpecificOutput.additionalContext`, the mechanism that actually reaches the
+  model. Task 0 verifies this empirically before the plan depends on it. Stated as
+  a positive recipe (the conductor's output is decisions, delegation calls, and
+  synthesized results with next-step options; direct edits are limited to edge
+  cleanup and git ops). "Never do heavy work" is a shaping rule, so a recipe binds
+  better than a prohibition.
 - Phase sequence at risk level, referencing the bundled `rules/` rather than
   restating them.
 - Complexity-tiered delegation, referencing `role-matrix.md`, requiring the
@@ -202,14 +263,20 @@ Two surfaces, tested differently.
 
 Hooks (mechanical) get ordinary pytest coverage:
 
-- `gate_guard` across the matrix: green-on-HEAD allows; stale, red, or missing
-  denies; R1 needs dennis only; R2/R3 also needs Codex; docs flags false denies;
-  fail-closed on missing or corrupt state.
-- staleness: a commit after a gate makes it stale.
-- `done_claim_check`: detects done/merge language, passes on clean, blocks on
-  stale.
-- docs-current diff check: roadmap plus shipped-log present is true, absent is
-  false.
+- `gate_guard` command classification: a bypass/false-deny matrix covering push
+  of a ref to a protected branch, force-push, fast-forward merge, `git -C`, `cd &&`,
+  subdirectory invocation, worktrees, `--all`/`--mirror`, compound `merge && push`,
+  `gh pr merge`, `push origin main:feature`, comments/quoted text, and plain
+  feature-branch pushes. Ambiguous forms must DENY.
+- landing-commit check: allows when the landing commit equals the green-gated
+  `reviewed_commit`; denies when a new commit has been added since; R1 needs
+  dennis only, R2/R3 also needs Codex.
+- fail-closed: missing, malformed, or schema-invalid state denies a classified
+  protected-branch op; a guard exception on such an op denies.
+- `done_claim_check`: detects done/merge language, silent on clean, emits an
+  `additionalContext` warning on missing/stale/red, honors `stop_hook_active`.
+- docs-current computed live: roadmap plus shipped-log touched in
+  `slice_base..HEAD` is required; a slice that did not touch them cannot merge.
 
 The discipline skill uses RED-GREEN-REFACTOR with subagents, per the
 writing-skills Iron Law (test before writing the skill):
@@ -232,14 +299,22 @@ and cloud agents from the same source.
 
 ## Open questions and known limits
 
+- In-session enforcement is not a hard boundary: a hook that never runs, or an
+  operation outside the Bash tool or from CI, is not gated. Server-side branch
+  protection is the real wall and is documented as the recommended complement.
+- Gate independence is procedural, not proven: the record ties a gate to a
+  reviewer, commit, and time, but cannot prove the review ran. Mitigated by the
+  conductor delegating gates to the dennis/Codex agents.
 - Risk under-classification cannot be mechanically caught; it relies on the
   independent gate. Accepted.
-- `done_claim_check` is a text heuristic and will have false negatives; it is a
-  backstop, not the primary control (gate_guard is).
-- Exact gated-branch set and the escape-hatch toggle behavior need to be fixed in
-  `config.json` during implementation.
-- Whether `.loop-state.json` should ever be committed for shared visibility, or
-  stay machine-local, is deferred; default is machine-local and gitignored.
+- `done_claim_check` is a text heuristic with false negatives; it warns via
+  `additionalContext`, it is not the wall (gate_guard is).
+- `gate_guard` supports a defined set of direct git forms and fails closed on the
+  rest; `gh pr merge` is not gated in-session (blocked with guidance) because the
+  local checkout is not the PR head. PR-merge gating, if wanted, belongs in
+  server-side/CI enforcement.
+- Exact protected-branch set and the escape-hatch toggle live in `config.json`
+  (plugin defaults) and `.loop-config.json` (per-repo override).
 
 ## Next step
 

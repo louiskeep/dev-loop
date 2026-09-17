@@ -2,52 +2,60 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Package Cam's development loop into a Claude Code plugin that mechanically blocks self-certified merges and guides the judgment steps, with the main thread acting as a conductor that delegates heavy work.
+**Goal:** Package Cam's development loop into a Claude Code plugin that makes self-certified merges hard to do in-session and guides the judgment steps, with the main thread acting as a conductor that delegates heavy work.
 
-**Architecture:** A standalone git repo published as a plugin. A PreToolUse hook (`gate_guard.py`) blocks merge/push-to-main unless a git-commit-keyed state file shows the required green gates; a Stop hook (`done_claim_check.py`) surfaces a warning when a "done" claim lacks evidence; a discipline skill (`conducting-the-loop`) carries the judgment steps the hooks cannot decide. All enforcement keys off `.loop-state.json`, managed only through `loop_state.py`.
+**Architecture:** A standalone git repo published as a plugin. A PreToolUse hook (`gate_guard.py`) classifies git commands and blocks a defined set of protected-branch operations unless a commit-keyed `.loop-state.json` shows the required green gates on the exact landing commit, failing closed on anything it cannot confidently classify. A Stop hook (`done_claim_check.py`) warns (via `additionalContext`) on an unbacked "done" claim. A discipline skill (`conducting-the-loop`) carries the judgment steps. All state is read/written only through `loop_state.py`, which validates a versioned schema.
 
-**Tech Stack:** Python 3.11 (standard library only, no third-party deps in hooks), pytest for tests, Claude Code plugin format (v2.1.248+ contracts).
+**Tech Stack:** Python 3.11 (standard library only in hooks), pytest, Claude Code plugin format (contracts verified against docs v2.1.248+ and an empirical spike in Task 0).
 
 **Spec:** `docs/specs/2026-09-17-dev-loop-plugin-design.md`
 
 ## Global Constraints
 
-- Python 3.11+, standard library only for the three hook/CLI modules (`json`, `sys`, `subprocess`, `re`, `pathlib`, `dataclasses`). No pip dependencies at runtime; a hook that imports a missing package is a broken hook.
-- Hooks must never raise to stdout uncaught. Any internal error on a gated operation results in a fail-closed DENY with a readable reason, not a stack trace.
-- PreToolUse block contract: exit code `2` with the reason on stdout as `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"<text>"}}`. Allow = exit `0` with no `permissionDecision`.
-- Stop hook contract: this build cannot block. Output only `{"hookSpecificOutput":{"systemMessage":"<text>"}}` at exit `0`; honor `stop_hook_active == true` by exiting `0` immediately.
-- State file name: `.loop-state.json` at the target repo root. It is only read/written through `loop_state.py`, never hand-edited by a task.
-- Per-repo config file: `.loop-config.json` at the target repo root overrides the plugin's `config.json` defaults.
-- `${CLAUDE_PLUGIN_ROOT}` is the only correct way to reference plugin files from hooks; always quote it in shell.
+- This is strong in-session workflow enforcement, NOT a hard git boundary. A local command hook that times out, fails to start, or is bypassed (another terminal, another tool, CI) does not gate anything. The README states this and documents server-side branch protection as the real wall. No task may describe the hooks as a security boundary.
+- Python 3.11+, standard library only for the hook/CLI modules (`json`, `sys`, `subprocess`, `re`, `pathlib`). No pip dependencies at runtime.
+- Repo root is always resolved with `git rev-parse --show-toplevel` (run via `git -C <cwd>`), never assumed equal to `cwd`. State and config load from that root.
+- PreToolUse block contract: exit code `2` with stdout `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"<text>"}}`. Allow = exit `0` with no `permissionDecision`.
+- Stop hook contract: Stop hooks in this build CAN block (`decision:"block"`), but this plugin deliberately warns instead of blocking (text heuristics false-positive). Output `{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"<text>"}}` at exit `0` so the model re-checks. Honor `stop_hook_active == true` by exiting `0` immediately with no output.
+- hooks.json command form: a command STRING with the argument inline, matching the proven installed-plugin pattern: `{"type":"command","command":"\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh\" gate_guard","timeout":10}`. Always quote `${CLAUDE_PLUGIN_ROOT}`. Task 0 verifies hooks actually fire before relying on this.
+- State file `.loop-state.json` at the target repo root: read/written ONLY through `loop_state.py`; `schema_version` is `1`; malformed, schema-invalid, or missing-required-field state fails the merge check CLOSED. `init` adds `.loop-state.json` to the target repo's `.gitignore`.
+- `risk` is required and validated against `R0`/`R1`/`R2`/`R3`. A missing or unknown risk fails the merge check closed (it must not silently skip the Codex requirement). Codex-required risks: `R2`, `R3`.
+- Gate names are exactly `plan_review`, `dennis`, `codex`. Each artifact gate record carries `status`, `reviewer`, `ts`, and `at_commit`.
+- docs-current is COMPUTED LIVE at the merge check from `slice_base..<landing commit>`; it is never a stored settable boolean.
 - Do not place `skills/`, `agents/`, `commands/`, or `hooks/` inside `.claude-plugin/`. Only `plugin.json` and `marketplace.json` live there.
-- Gate names are exactly: `plan_review`, `dennis`, `codex`. Risk levels are exactly: `R0`, `R1`, `R2`, `R3`. Codex-required risks: `R2`, `R3`.
 
 ---
 
-### Task 0: Verify the two uncertain hook behaviors (spike)
+### Task 0: Verify hook contracts empirically (spike)
 
-**Why first:** The plan's conductor-load mechanism and the Stop-hook role both depend on behavior the docs describe inconsistently with observed behavior. Confirm empirically before building on either. Output is a recorded finding; any throwaway plugin is deleted.
+**Why first:** The plan depends on three behaviors the docs and prior research describe inconsistently: does a SessionStart `command` hook's `additionalContext` reach the model, does a PreToolUse exit-2 deny actually block, and what does a Stop hook's output do. Confirm before building. Output is a recorded finding; the throwaway plugin is deleted.
 
 **Files:**
-- Create (throwaway): `/tmp/loop-spike/hooks/hooks.json`, `/tmp/loop-spike/.claude-plugin/plugin.json`, `/tmp/loop-spike/hooks/echo_ctx.sh`
+- Create (throwaway): `/tmp/loop-spike/plugin/.claude-plugin/plugin.json`, `/tmp/loop-spike/plugin/hooks/hooks.json`, `/tmp/loop-spike/plugin/hooks/run-hook.sh`, three tiny Python hooks, and `/tmp/loop-spike/marketplace/.claude-plugin/marketplace.json` pointing at the plugin.
 
-- [ ] **Step 1: Build a throwaway plugin** with a SessionStart `command` hook that prints a unique sentinel to stdout, and a PreToolUse(Bash) hook that exits 2 with a deny reason on any command containing `SPIKE_BLOCK`.
+- [ ] **Step 1: Build a valid throwaway marketplace + plugin.** The plugin registers: SessionStart(`startup`) emitting `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"SPIKE_SENTINEL_9f3"}}`; PreToolUse(`Bash`) that exits 2 with a deny payload when the command contains `SPIKE_BLOCK`; Stop that emits `{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"SPIKE_STOP_CTX"}}`.
 
-- [ ] **Step 2: Install and observe.** Install via `claude plugin marketplace add /tmp/loop-spike-marketplace` then `/plugin install`. Start a new session; check whether the SessionStart sentinel appears in the model's context (ask the model to repeat it). Run a Bash command containing `SPIKE_BLOCK`; confirm it is denied.
+- [ ] **Step 2: Install and observe.**
 
-- [ ] **Step 3: Record findings** in `docs/specs/2026-09-17-dev-loop-plugin-design.md` under a new "Verified hook behavior" section: (a) does SessionStart `command` stdout reach context in this build? (b) confirm PreToolUse exit-2 deny works. Delete `/tmp/loop-spike*`.
+```bash
+claude plugin marketplace add /tmp/loop-spike/marketplace
+claude plugin install loop-spike@loop-spike-mkt
+```
+Start a fresh session. (a) Ask the model whether it sees `SPIKE_SENTINEL_9f3` (SessionStart additionalContext reached context?). (b) Run a Bash command containing `SPIKE_BLOCK`; confirm it is denied. (c) Finish a turn and observe whether `SPIKE_STOP_CTX` influences the next turn (Stop additionalContext reached the model?).
 
-- [ ] **Step 4: Decide the conductor-load mechanism** from the finding: if SessionStart stdout reaches context, use a SessionStart `command` hook that emits the conductor preamble; if not, rely on the skill's description trigger plus a SessionStart `prompt`-type hook. Note the decision in the spec. This decides Task 7's SessionStart entry.
+- [ ] **Step 3: Record findings** in the spec under a new "## Verified hook behavior" section: the three yes/no results and the exact working output shapes. Delete `/tmp/loop-spike`, remove the marketplace/plugin.
+
+- [ ] **Step 4: Lock the mechanisms** from the findings. If SessionStart `additionalContext` reaches context, Task 7 uses the `session_start` command hook as the identity reinforcement; if not, Task 7 relies on the skill description trigger alone and records that. If Stop `additionalContext` does not reach the model, Task 5 falls back to top-level `systemMessage` (user-visible). Note both decisions in the spec.
 
 ---
 
 ### Task 1: Plugin scaffold and manifests
 
 **Files:**
-- Create: `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `config.json`, `README.md`, `pyproject.toml` (pytest config only)
+- Create: `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `config.json`, `README.md`, `pyproject.toml`
 
 **Interfaces:**
-- Produces: an installable, empty-but-valid plugin; `config.json` default keys consumed by `loop_state.py` in Task 2.
+- Produces: an installable, valid plugin; `config.json` default keys consumed by `loop_state.py`.
 
 - [ ] **Step 1: Write `.claude-plugin/plugin.json`**
 
@@ -56,7 +64,7 @@
   "name": "dev-loop",
   "displayName": "Dev Loop",
   "version": "0.1.0",
-  "description": "Conductor + hook-enforced development loop: blocks self-certified merges, guides the judgment steps.",
+  "description": "Conductor + hook-enforced development loop: makes self-certified merges hard in-session, guides the judgment steps.",
   "author": { "name": "cam", "email": "goodneighbor@goodneighbor.design" },
   "license": "MIT",
   "keywords": ["workflow", "gate", "review", "conductor"]
@@ -79,29 +87,24 @@
 
 ```json
 {
-  "gated_branches": ["main", "master"],
+  "protected_branches": ["main", "master"],
   "roadmap_paths": ["docs/ROADMAP.md"],
   "shipped_log_paths": ["docs/backlog/RECENTLY-SHIPPED.md"],
   "codex_required_risks": ["R2", "R3"],
-  "fail_closed": true
+  "escape_hatch": false
 }
 ```
 
-- [ ] **Step 4: Write `pyproject.toml`** with a `[tool.pytest.ini_options]` section setting `testpaths = ["tests"]`. No build deps.
+- [ ] **Step 4: Write `README.md`** stating plainly: the plugin is in-session workflow enforcement, not a hard git boundary; a hook that never runs cannot gate; use server-side branch protection (or a remote pre-receive hook) for a true wall; gate independence is procedural (the state records who/when/commit, it cannot prove a review ran). Include the `.loop-config.json` per-repo override keys.
 
-- [ ] **Step 5: Validate**
+- [ ] **Step 5: Write `pyproject.toml`** with `[tool.pytest.ini_options]` `testpaths = ["tests"]`. No build deps.
+
+- [ ] **Step 6: Validate**
 
 Run: `claude plugin validate ./`
-Expected: passes with no errors.
+Expected: passes.
 
-- [ ] **Step 6: Commit**
-
-```bash
-git add .claude-plugin config.json README.md pyproject.toml
-git commit -m "scaffold dev-loop plugin manifest and config
-
-cam"
-```
+- [ ] **Step 7: Commit** (`git add` the created files; message ends with a line `cam`).
 
 ---
 
@@ -112,193 +115,244 @@ cam"
 - Test: `tests/test_loop_state.py`
 
 **Interfaces:**
-- Produces (consumed by Tasks 3, 4, 5, 6):
-  - `STATE_FILENAME = ".loop-state.json"`
-  - `load_config(repo_root: Path) -> dict` (merges plugin `config.json` with repo `.loop-config.json`)
-  - `load_state(repo_root: Path) -> dict | None`
+- Produces (consumed by Tasks 3-6, 12):
+  - `STATE_FILENAME = ".loop-state.json"`, `REPO_CONFIG_FILENAME = ".loop-config.json"`, `SCHEMA_VERSION = 1`
+  - `class GitError(Exception)`, `class StateError(Exception)`
+  - `repo_root(start: Path) -> Path` (via `git -C start rev-parse --show-toplevel`; raises `GitError`)
+  - `rev_parse(repo_root: Path, ref: str) -> str`
+  - `load_config(repo_root: Path) -> dict`
+  - `validate_state(state: dict) -> None` (raises `StateError` on missing/unknown fields, bad risk, bad schema_version)
+  - `load_state(repo_root: Path) -> dict | None` (validates; malformed JSON or schema raises `StateError`)
   - `save_state(repo_root: Path, state: dict) -> None`
-  - `current_head(repo_root: Path) -> str` (returns `git rev-parse HEAD`, or raises `GitError`)
-  - `gate_status(state: dict, gate: str, head: str) -> str` returns one of `"green" | "stale" | "red" | "missing"`
-  - `is_mergeable(state: dict, head: str, config: dict) -> tuple[bool, list[str]]`
-  - `class GitError(Exception)`
+  - `gate_status(state: dict, gate: str, landing_commit: str) -> str` returns `"green" | "stale" | "red" | "missing"` (stale when `at_commit != landing_commit`)
+  - `docs_current(repo_root: Path, slice_base: str, landing_commit: str, config: dict) -> dict` -> `{"roadmap": bool, "shipped_log": bool}`
+  - `is_mergeable(state: dict, landing_commit: str, repo_root: Path, config: dict) -> tuple[bool, list[str]]`
 
 - [ ] **Step 1: Write failing tests**
 
 ```python
 # tests/test_loop_state.py
-import json
+import subprocess
 from pathlib import Path
 import pytest
 from hooks import loop_state as ls
 
 
-def _state(**over):
+def _git(t, *a): subprocess.run(["git", *a], cwd=t, check=True, capture_output=True, text=True)
+
+
+def _repo(tmp):
+    _git(tmp, "init"); _git(tmp, "config", "user.email", "t@t"); _git(tmp, "config", "user.name", "t")
+    (tmp / "a").write_text("1"); _git(tmp, "add", "-A"); _git(tmp, "commit", "-m", "base")
+    return ls.rev_parse(tmp, "HEAD")
+
+
+def _state(head, **over):
     base = {
-        "slice": "s", "risk": "R1", "risk_rationale": "x", "slice_base": "base0",
-        "gates": {"dennis": {"status": "green", "at_commit": "HEAD1", "ts": "t"}},
+        "schema_version": 1, "slice": "s", "risk": "R1", "risk_rationale": "x",
+        "slice_base": head,
+        "gates": {"dennis": {"status": "green", "reviewer": "dennis", "at_commit": head, "ts": "t"}},
         "remediation": {"open_findings": 0},
-        "docs_current": {"roadmap": True, "shipped_log": True},
     }
     base.update(over)
     return base
 
 
-def test_gate_status_green_when_on_head():
-    assert ls.gate_status(_state(), "dennis", "HEAD1") == "green"
+def test_gate_status_green_stale_missing_red(tmp_path):
+    head = _repo(tmp_path)
+    assert ls.gate_status(_state(head), "dennis", head) == "green"
+    assert ls.gate_status(_state(head), "dennis", "OTHER") == "stale"
+    assert ls.gate_status(_state(head, gates={}), "dennis", head) == "missing"
+    red = _state(head); red["gates"]["dennis"]["status"] = "red"
+    assert ls.gate_status(red, "dennis", head) == "red"
 
 
-def test_gate_status_stale_when_commit_moved():
-    assert ls.gate_status(_state(), "dennis", "HEAD2") == "stale"
+def test_validate_rejects_bad_risk(tmp_path):
+    head = _repo(tmp_path)
+    with pytest.raises(ls.StateError):
+        ls.validate_state(_state(head, risk="R9"))
 
 
-def test_gate_status_missing_when_gate_absent():
-    assert ls.gate_status(_state(gates={}), "dennis", "HEAD1") == "missing"
-
-
-def test_gate_status_red_when_status_red():
-    s = _state(gates={"dennis": {"status": "red", "at_commit": "HEAD1"}})
-    assert ls.gate_status(s, "dennis", "HEAD1") == "red"
-
-
-def test_r1_mergeable_with_dennis_only():
-    ok, reasons = ls.is_mergeable(_state(risk="R1"), "HEAD1", {"codex_required_risks": ["R2", "R3"]})
+def test_is_mergeable_r1_needs_dennis_only(tmp_path):
+    head = _repo(tmp_path)
+    ok, reasons = ls.is_mergeable(_state(head), head, tmp_path, {"codex_required_risks": ["R2", "R3"],
+                                  "roadmap_paths": [], "shipped_log_paths": []})
     assert ok and reasons == []
 
 
-def test_r2_blocked_without_codex():
-    ok, reasons = ls.is_mergeable(_state(risk="R2"), "HEAD1", {"codex_required_risks": ["R2", "R3"]})
+def test_is_mergeable_r2_needs_codex(tmp_path):
+    head = _repo(tmp_path)
+    ok, reasons = ls.is_mergeable(_state(head, risk="R2"), head, tmp_path,
+                                  {"codex_required_risks": ["R2", "R3"], "roadmap_paths": [], "shipped_log_paths": []})
     assert not ok and any("codex" in r for r in reasons)
 
 
-def test_blocked_when_docs_not_current():
-    s = _state(docs_current={"roadmap": False, "shipped_log": True})
-    ok, reasons = ls.is_mergeable(s, "HEAD1", {"codex_required_risks": ["R2", "R3"]})
+def test_is_mergeable_blocks_when_landing_differs(tmp_path):
+    head = _repo(tmp_path)
+    ok, reasons = ls.is_mergeable(_state(head), "DIFFERENT", tmp_path,
+                                  {"codex_required_risks": ["R2", "R3"], "roadmap_paths": [], "shipped_log_paths": []})
+    assert not ok and any("stale" in r or "dennis" in r for r in reasons)
+
+
+def test_is_mergeable_requires_docs_when_configured(tmp_path):
+    head = _repo(tmp_path)
+    ok, reasons = ls.is_mergeable(_state(head), head, tmp_path,
+                                  {"codex_required_risks": ["R2", "R3"],
+                                   "roadmap_paths": ["docs/ROADMAP.md"], "shipped_log_paths": ["docs/SHIPPED.md"]})
     assert not ok and any("roadmap" in r for r in reasons)
 
 
-def test_blocked_when_open_findings():
-    s = _state(remediation={"open_findings": 2})
-    ok, reasons = ls.is_mergeable(s, "HEAD1", {"codex_required_risks": ["R2", "R3"]})
-    assert not ok and any("finding" in r for r in reasons)
-
-
-def test_save_then_load_roundtrip(tmp_path):
-    ls.save_state(tmp_path, _state())
-    assert ls.load_state(tmp_path)["slice"] == "s"
+def test_missing_risk_fails_closed(tmp_path):
+    head = _repo(tmp_path)
+    s = _state(head); del s["risk"]
+    with pytest.raises(ls.StateError):
+        ls.validate_state(s)
 ```
 
 - [ ] **Step 2: Run to verify failure**
 
 Run: `python -m pytest tests/test_loop_state.py -v`
-Expected: FAIL (module/functions not defined).
+Expected: FAIL.
 
 - [ ] **Step 3: Implement `hooks/loop_state.py`**
 
 ```python
 """State store and merge-gate logic for the dev-loop plugin.
 
-The state file is the single source of truth for whether a slice may merge.
-Everything keys off git commit SHAs so evidence is tied to an exact artifact.
+State is validated on load. The merge decision compares each required gate's
+attested commit to the commit an operation would land on a protected branch.
 """
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 from pathlib import Path
 
 STATE_FILENAME = ".loop-state.json"
 REPO_CONFIG_FILENAME = ".loop-config.json"
+SCHEMA_VERSION = 1
+_RISKS = {"R0", "R1", "R2", "R3"}
+_ARTIFACT_GATES = {"dennis", "codex"}
 
 
 class GitError(Exception):
     pass
 
 
+class StateError(Exception):
+    pass
+
+
+def repo_root(start: Path) -> Path:
+    try:
+        out = subprocess.run(["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise GitError(f"not a git repo at {start}: {exc}") from exc
+    return Path(out.stdout.strip())
+
+
+def rev_parse(root: Path, ref: str) -> str:
+    try:
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", ref],
+                             capture_output=True, text=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise GitError(f"cannot resolve ref {ref}: {exc}") from exc
+    return out.stdout.strip()
+
+
 def _plugin_root() -> Path:
-    # ${CLAUDE_PLUGIN_ROOT} is exported for hooks; fall back to this file's parent.
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
-    return Path(root) if root else Path(__file__).resolve().parent.parent
+    import os
+    return Path(os.environ.get("CLAUDE_PLUGIN_ROOT") or Path(__file__).resolve().parent.parent)
 
 
-def load_config(repo_root: Path) -> dict:
-    config = {}
+def load_config(root: Path) -> dict:
+    config: dict = {}
     plugin_cfg = _plugin_root() / "config.json"
     if plugin_cfg.exists():
         config.update(json.loads(plugin_cfg.read_text()))
-    repo_cfg = Path(repo_root) / REPO_CONFIG_FILENAME
+    repo_cfg = root / REPO_CONFIG_FILENAME
     if repo_cfg.exists():
         config.update(json.loads(repo_cfg.read_text()))
     return config
 
 
-def load_state(repo_root: Path) -> dict | None:
-    path = Path(repo_root) / STATE_FILENAME
+def validate_state(state: dict) -> None:
+    if state.get("schema_version") != SCHEMA_VERSION:
+        raise StateError(f"unsupported schema_version: {state.get('schema_version')}")
+    for key in ("slice", "risk", "risk_rationale", "slice_base", "gates", "remediation"):
+        if key not in state:
+            raise StateError(f"missing required field: {key}")
+    if state["risk"] not in _RISKS:
+        raise StateError(f"invalid risk: {state['risk']!r}")
+    for name, g in state["gates"].items():
+        if g.get("status") not in ("green", "red"):
+            raise StateError(f"gate {name} has invalid status")
+        if name in _ARTIFACT_GATES:
+            for f in ("reviewer", "at_commit", "ts"):
+                if f not in g:
+                    raise StateError(f"gate {name} missing {f}")
+
+
+def load_state(root: Path) -> dict | None:
+    path = root / STATE_FILENAME
     if not path.exists():
         return None
-    return json.loads(path.read_text())
-
-
-def save_state(repo_root: Path, state: dict) -> None:
-    path = Path(repo_root) / STATE_FILENAME
-    path.write_text(json.dumps(state, indent=2) + "\n")
-
-
-def current_head(repo_root: Path) -> str:
     try:
-        out = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_root), capture_output=True, text=True, check=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        raise GitError(f"cannot resolve HEAD: {exc}") from exc
-    return out.stdout.strip()
+        state = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise StateError(f"corrupt state file: {exc}") from exc
+    validate_state(state)
+    return state
 
 
-def gate_status(state: dict, gate: str, head: str) -> str:
-    entry = state.get("gates", {}).get(gate)
-    if not entry:
+def save_state(root: Path, state: dict) -> None:
+    (root / STATE_FILENAME).write_text(json.dumps(state, indent=2) + "\n")
+
+
+def gate_status(state: dict, gate: str, landing_commit: str) -> str:
+    g = state.get("gates", {}).get(gate)
+    if not g:
         return "missing"
-    if entry.get("status") != "green":
+    if g.get("status") != "green":
         return "red"
-    if entry.get("at_commit") != head:
+    if g.get("at_commit") != landing_commit:
         return "stale"
     return "green"
 
 
-def is_mergeable(state: dict, head: str, config: dict) -> tuple[bool, list[str]]:
+def docs_current(root: Path, slice_base: str, landing_commit: str, config: dict) -> dict:
+    out = subprocess.run(["git", "-C", str(root), "diff", "--name-only", f"{slice_base}..{landing_commit}"],
+                         capture_output=True, text=True, check=True)
+    changed = set(out.stdout.split())
+    def _any(paths): return any(p in changed for p in paths)
+    return {"roadmap": _any(config.get("roadmap_paths", [])),
+            "shipped_log": _any(config.get("shipped_log_paths", []))}
+
+
+def is_mergeable(state: dict, landing_commit: str, root: Path, config: dict) -> tuple[bool, list[str]]:
+    validate_state(state)  # missing/unknown risk fails closed here
     reasons: list[str] = []
     required = ["dennis"]
-    if state.get("risk") in config.get("codex_required_risks", ["R2", "R3"]):
+    if state["risk"] in config.get("codex_required_risks", ["R2", "R3"]):
         required.append("codex")
     for gate in required:
-        status = gate_status(state, gate, head)
+        status = gate_status(state, gate, landing_commit)
         if status != "green":
-            reasons.append(f"{gate} gate is {status} (need green on current HEAD)")
-    docs = state.get("docs_current", {})
-    if not docs.get("roadmap"):
-        reasons.append("roadmap not marked current for this slice")
-    if not docs.get("shipped_log"):
-        reasons.append("shipped_log not marked current for this slice")
-    open_findings = state.get("remediation", {}).get("open_findings", 0)
-    if open_findings:
-        reasons.append(f"{open_findings} open remediation finding(s)")
+            reasons.append(f"{gate} gate is {status} for landing commit {landing_commit[:8]}")
+    docs = docs_current(root, state["slice_base"], landing_commit, config)
+    if config.get("roadmap_paths") and not docs["roadmap"]:
+        reasons.append("roadmap not touched in this slice")
+    if config.get("shipped_log_paths") and not docs["shipped_log"]:
+        reasons.append("shipped_log not touched in this slice")
+    if state.get("remediation", {}).get("open_findings", 0):
+        reasons.append(f"{state['remediation']['open_findings']} open remediation finding(s)")
     return (not reasons, reasons)
 ```
 
-- [ ] **Step 4: Run tests to verify pass**
+- [ ] **Step 4: Run tests to verify pass** — `python -m pytest tests/test_loop_state.py -v` → PASS.
 
-Run: `python -m pytest tests/test_loop_state.py -v`
-Expected: PASS (all 9).
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add hooks/loop_state.py tests/test_loop_state.py
-git commit -m "add loop_state core: state store + merge-gate logic
-
-cam"
-```
+- [ ] **Step 5: Commit.**
 
 ---
 
@@ -309,143 +363,76 @@ cam"
 - Test: `tests/test_loop_state_cli.py`
 
 **Interfaces:**
-- Consumes: everything from Task 2.
-- Produces (used by conductor and subagents to record evidence): CLI subcommands
-  - `init --slice NAME --risk R2 --rationale TEXT` (sets `slice_base` to current HEAD)
-  - `record-gate NAME --status green|red [--commit HEAD]` (`HEAD` resolves to current SHA)
-  - `set-docs-current --roadmap true|false --shipped-log true|false`
+- Consumes: Task 2.
+- Produces: subcommands run as `python hooks/loop_state.py <cmd>` with the target repo resolved from `--repo` (default: cwd, then `repo_root`):
+  - `init --slice NAME --risk R2 --rationale TEXT` (sets `slice_base` and `schema_version`, empty gates, zero findings; appends `.loop-state.json` to the repo `.gitignore` if absent)
+  - `record-gate GATE --status green|red --reviewer NAME [--commit REF]` (`REF` defaults to `HEAD`; resolves to a SHA; stamps `ts`)
   - `set-findings N`
-  - `check-merge` (exit 0 mergeable, exit 1 with reasons on stderr)
-  - `status` (prints the state as JSON)
+  - `check-merge --landing REF` (exit 0 mergeable, exit 1 with reasons on stderr)
+  - `status`
+  There is NO `set-docs-current`; docs status is computed, never set.
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **Step 1: Write failing tests** covering: `init` writes valid state and gitignores the state file; `record-gate` without `--reviewer` errors; a green dennis on HEAD makes an R1 slice mergeable against `--landing HEAD` only when the configured docs are absent (use an empty-docs `.loop-config.json` in the temp repo); a new commit makes `check-merge --landing HEAD` fail with "stale"; R2 without codex fails.
 
-```python
-# tests/test_loop_state_cli.py
-import subprocess, sys, json
-from pathlib import Path
-
-
-def _git(tmp, *args):
-    subprocess.run(["git", *args], cwd=tmp, check=True, capture_output=True, text=True)
-
-
-def _run(tmp, *args):
-    return subprocess.run(
-        [sys.executable, "hooks/loop_state.py", *args],
-        cwd=Path.cwd(), env={"PWD": str(tmp), **_env(tmp)},
-        capture_output=True, text=True,
-    )
-
-
-def _env(tmp):
-    import os
-    e = dict(os.environ)
-    e["LOOP_REPO_ROOT"] = str(tmp)  # CLI resolves repo root from this if set
-    return e
-
-
-def _init_repo(tmp):
-    _git(tmp, "init")
-    _git(tmp, "config", "user.email", "t@t")
-    _git(tmp, "config", "user.name", "t")
-    (tmp / "f").write_text("x")
-    _git(tmp, "add", "-A"); _git(tmp, "commit", "-m", "c0")
-
-
-def test_init_and_check_merge_blocks_without_gate(tmp_path):
-    _init_repo(tmp_path)
-    assert _run(tmp_path, "init", "--slice", "s", "--risk", "R1", "--rationale", "x").returncode == 0
-    r = _run(tmp_path, "check-merge")
-    assert r.returncode == 1 and "dennis" in r.stderr
-
-
-def test_record_gate_then_merge_ok(tmp_path):
-    _init_repo(tmp_path)
-    _run(tmp_path, "init", "--slice", "s", "--risk", "R1", "--rationale", "x")
-    _run(tmp_path, "record-gate", "dennis", "--status", "green", "--commit", "HEAD")
-    _run(tmp_path, "set-docs-current", "--roadmap", "true", "--shipped-log", "true")
-    assert _run(tmp_path, "check-merge").returncode == 0
-
-
-def test_new_commit_makes_gate_stale(tmp_path):
-    _init_repo(tmp_path)
-    _run(tmp_path, "init", "--slice", "s", "--risk", "R1", "--rationale", "x")
-    _run(tmp_path, "record-gate", "dennis", "--status", "green", "--commit", "HEAD")
-    _run(tmp_path, "set-docs-current", "--roadmap", "true", "--shipped-log", "true")
-    (tmp_path / "f2").write_text("y"); _git(tmp_path, "add", "-A"); _git(tmp_path, "commit", "-m", "c1")
-    r = _run(tmp_path, "check-merge")
-    assert r.returncode == 1 and "stale" in r.stderr
-```
-
-- [ ] **Step 2: Run to verify failure**
-
-Run: `python -m pytest tests/test_loop_state_cli.py -v`
-Expected: FAIL.
+- [ ] **Step 2: Run to verify failure.**
 
 - [ ] **Step 3: Add `main()` to `hooks/loop_state.py`**
 
 ```python
-def _repo_root() -> Path:
+def _resolve_root(repo_arg: str | None) -> Path:
     import os
-    return Path(os.environ.get("LOOP_REPO_ROOT") or os.environ.get("PWD") or ".")
+    start = Path(repo_arg or os.environ.get("PWD") or ".")
+    return repo_root(start)
 
 
 def main(argv: list[str] | None = None) -> int:
-    import argparse, sys
+    import argparse, sys, datetime
     p = argparse.ArgumentParser(prog="loop_state")
+    p.add_argument("--repo", default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
-
     pi = sub.add_parser("init")
     pi.add_argument("--slice", required=True)
-    pi.add_argument("--risk", required=True, choices=["R0", "R1", "R2", "R3"])
+    pi.add_argument("--risk", required=True, choices=sorted(_RISKS))
     pi.add_argument("--rationale", required=True)
-
     pg = sub.add_parser("record-gate")
     pg.add_argument("gate", choices=["plan_review", "dennis", "codex"])
     pg.add_argument("--status", required=True, choices=["green", "red"])
+    pg.add_argument("--reviewer", required=True)
     pg.add_argument("--commit", default="HEAD")
-
-    pd = sub.add_parser("set-docs-current")
-    pd.add_argument("--roadmap", choices=["true", "false"], required=True)
-    pd.add_argument("--shipped-log", choices=["true", "false"], required=True)
-
-    pf = sub.add_parser("set-findings")
-    pf.add_argument("n", type=int)
-
-    sub.add_parser("check-merge")
+    pf = sub.add_parser("set-findings"); pf.add_argument("n", type=int)
+    pc = sub.add_parser("check-merge"); pc.add_argument("--landing", default="HEAD")
     sub.add_parser("status")
-
     args = p.parse_args(argv)
-    root = _repo_root()
+    root = _resolve_root(args.repo)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     if args.cmd == "init":
-        state = {
-            "slice": args.slice, "risk": args.risk, "risk_rationale": args.rationale,
-            "slice_base": current_head(root), "gates": {},
-            "remediation": {"open_findings": 0},
-            "docs_current": {"roadmap": False, "shipped_log": False},
-        }
+        state = {"schema_version": SCHEMA_VERSION, "slice": args.slice, "risk": args.risk,
+                 "risk_rationale": args.rationale, "slice_base": rev_parse(root, "HEAD"),
+                 "gates": {}, "remediation": {"open_findings": 0}}
         save_state(root, state)
+        gi = root / ".gitignore"
+        lines = gi.read_text().splitlines() if gi.exists() else []
+        if STATE_FILENAME not in lines:
+            gi.write_text(("\n".join(lines + [STATE_FILENAME])).strip() + "\n")
         return 0
 
     state = load_state(root)
     if state is None:
-        print("no .loop-state.json; run 'init' first", file=sys.stderr)
-        return 1
+        print("no .loop-state.json; run 'init' first", file=sys.stderr); return 1
 
     if args.cmd == "record-gate":
-        commit = current_head(root) if args.commit == "HEAD" else args.commit
-        state.setdefault("gates", {})[args.gate] = {"status": args.status, "at_commit": commit}
-        save_state(root, state); return 0
-    if args.cmd == "set-docs-current":
-        state["docs_current"] = {"roadmap": args.roadmap == "true", "shipped_log": args.shipped_log == "true"}
+        entry = {"status": args.status, "reviewer": args.reviewer, "ts": now}
+        if args.gate in _ARTIFACT_GATES:
+            entry["at_commit"] = rev_parse(root, args.commit)
+        state.setdefault("gates", {})[args.gate] = entry
         save_state(root, state); return 0
     if args.cmd == "set-findings":
         state.setdefault("remediation", {})["open_findings"] = args.n
         save_state(root, state); return 0
     if args.cmd == "check-merge":
-        ok, reasons = is_mergeable(state, current_head(root), load_config(root))
+        landing = rev_parse(root, args.landing)
+        ok, reasons = is_mergeable(state, landing, root, load_config(root))
         if ok:
             return 0
         print("; ".join(reasons), file=sys.stderr); return 1
@@ -458,19 +445,8 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 4: Run tests to verify pass**
-
-Run: `python -m pytest tests/test_loop_state_cli.py -v`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add hooks/loop_state.py tests/test_loop_state_cli.py
-git commit -m "add loop_state CLI: init, record-gate, docs, check-merge
-
-cam"
-```
+- [ ] **Step 4: Run tests to verify pass.**
+- [ ] **Step 5: Commit.**
 
 ---
 
@@ -481,64 +457,32 @@ cam"
 - Test: `tests/test_gate_guard.py`
 
 **Interfaces:**
-- Consumes: `loop_state.load_state`, `load_config`, `current_head`, `is_mergeable`.
-- Produces: a hook entrypoint invoked as `python gate_guard.py` reading stdin JSON, exiting `0` (allow) or `2` (deny) with the PreToolUse JSON contract.
+- Consumes: `loop_state` (`repo_root`, `rev_parse`, `load_state`, `load_config`, `is_mergeable`, `StateError`, `GitError`).
+- Produces:
+  - `classify(command: str, protected: list[str], current_branch: str) -> tuple[str, str | None]` returning `("allow", None)`, `("deny", reason)`, or `("check", landing_ref)`.
+  - a hook `main()` reading stdin JSON, exiting `0` (allow) or `2` (deny with the PreToolUse JSON contract).
 
-- [ ] **Step 1: Write failing tests**
+**Classification contract (fail closed on doubt):**
+- `("allow", None)` only when the command is NOT in the push / merge / `gh pr merge` family, OR is a push whose resolved target branch is not protected.
+- `("check", ref)` for the supported protected-branch forms, with `ref` the source to resolve into the landing commit:
+  - on a protected branch, `git push [remote] [protected]` or bare `git push` -> ref `HEAD`
+  - `git push [remote] <src>:<protected>` -> ref `<src>`
+  - `git push [remote] <protected>` from any branch -> ref `<protected>`
+  - on a protected branch, `git merge --ff-only <ref>` -> ref `<ref>`
+- `("deny", reason)` for everything else that touches the protected family: compound commands (`&&`, `;`, `|`, backticks, `$(`), indirection (`git -C`, leading `cd `), `--all`, `--mirror`, a non-`--ff-only` `git merge` while on a protected branch (may create a merge commit), `gh pr merge` (validates local checkout, not PR head), and any push/merge form it cannot parse into the supported set.
 
-```python
-# tests/test_gate_guard.py
-import json, subprocess, sys
-from pathlib import Path
-from hooks import gate_guard
+- [ ] **Step 1: Write failing tests** — a full matrix:
+  - allow: `git status`; `git push origin feat/x` (on `feat/x`); `git commit -m x`.
+  - check: `git push origin main` (on main); `git push origin HEAD:main`; `git push origin feat/x:main`; `git push --force origin main`; `git merge --ff-only feat/x` (on main).
+  - deny: `git merge feat/x` (on main, no --ff-only); `git merge feat/x && git push origin main`; `git -C /other push origin main`; `cd /other && git push origin main`; `git push --all origin`; `git push --mirror`; `gh pr merge 12`; `git push origin main:feat/x` is allow (target feat/x, not protected).
+  - integration: feed stdin JSON to `python hooks/gate_guard.py`; a `check` on an ungated repo -> exit 2 deny; on a green-gated repo where landing == gate commit -> exit 0; a `deny` classification -> exit 2 regardless of state; malformed state on a `check` op -> exit 2 (fail closed).
 
-
-def test_is_gated_detects_merge_to_main():
-    assert gate_guard.is_gated_git_op("git merge feature", ["main"], "main")
-    assert gate_guard.is_gated_git_op("git push origin main", ["main"], "somebranch")
-    assert gate_guard.is_gated_git_op("git push --force origin main", ["main"], "x")
-    assert gate_guard.is_gated_git_op("gh pr merge 12", ["main"], "x")
-
-
-def test_is_gated_ignores_feature_push():
-    assert not gate_guard.is_gated_git_op("git push origin feat/x", ["main"], "feat/x")
-    assert not gate_guard.is_gated_git_op("git status", ["main"], "feat/x")
-
-
-def test_non_bash_allows():
-    out = _invoke({"tool_name": "Read", "tool_input": {}, "cwd": "/tmp"})
-    assert out.returncode == 0 and out.stdout.strip() == ""
-
-
-def test_gated_op_missing_state_fails_closed(tmp_path):
-    _init_repo(tmp_path)
-    out = _invoke({"tool_name": "Bash", "tool_input": {"command": "git push origin main"}, "cwd": str(tmp_path)})
-    assert out.returncode == 2
-    payload = json.loads(out.stdout)
-    assert payload["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "no .loop-state.json" in payload["hookSpecificOutput"]["permissionDecisionReason"]
-
-
-def test_gated_op_allowed_when_green(tmp_path):
-    _init_repo(tmp_path)
-    _cli(tmp_path, "init", "--slice", "s", "--risk", "R1", "--rationale", "x")
-    _cli(tmp_path, "record-gate", "dennis", "--status", "green", "--commit", "HEAD")
-    _cli(tmp_path, "set-docs-current", "--roadmap", "true", "--shipped-log", "true")
-    out = _invoke({"tool_name": "Bash", "tool_input": {"command": "git push origin main"}, "cwd": str(tmp_path)})
-    assert out.returncode == 0
-```
-
-(Helpers `_invoke`, `_init_repo`, `_cli` are small subprocess wrappers; `_invoke` pipes the dict as JSON to `python hooks/gate_guard.py` and returns the CompletedProcess.)
-
-- [ ] **Step 2: Run to verify failure**
-
-Run: `python -m pytest tests/test_gate_guard.py -v`
-Expected: FAIL.
+- [ ] **Step 2: Run to verify failure.**
 
 - [ ] **Step 3: Implement `hooks/gate_guard.py`**
 
 ```python
-"""PreToolUse hook: block merge/push-to-main unless the loop state is green."""
+"""PreToolUse hook: gate a defined set of protected-branch git ops; fail closed."""
 from __future__ import annotations
 
 import json
@@ -549,99 +493,109 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import loop_state as ls  # noqa: E402
 
+_COMPOUND = re.compile(r"&&|\|\||;|\||`|\$\(")
+_UNSUPPORTED = re.compile(r"\bgit\s+-C\b|(^|\s)cd\s|--all\b|--mirror\b")
 
-def _allow() -> int:
-    return 0
+
+def _is_protected(branch: str, protected: list[str]) -> bool:
+    return branch in protected
+
+
+def classify(command: str, protected: list[str], current_branch: str) -> tuple[str, str | None]:
+    c = command.strip()
+    is_push = bool(re.search(r"\bgit\s+push\b", c))
+    is_merge = bool(re.search(r"\bgit\s+merge\b", c))
+    is_gh_merge = bool(re.search(r"\bgh\s+pr\s+merge\b", c))
+    if not (is_push or is_merge or is_gh_merge):
+        return ("allow", None)
+    if is_gh_merge:
+        return ("deny", "gh pr merge is not gated in-session (it validates the local checkout, "
+                        "not the PR head). Merge via a gated push or use server-side protection.")
+    if _COMPOUND.search(c) or _UNSUPPORTED.search(c):
+        return ("deny", "compound or indirected git command touching the push/merge family; "
+                        "run the gated steps explicitly so the exact landing commit can be checked.")
+    if is_merge:
+        # only a fast-forward merge INTO a protected branch is checkable
+        if current_branch not in protected:
+            return ("allow", None)  # merging into a feature branch
+        if "--ff-only" not in c:
+            return ("deny", "non-fast-forward merge into a protected branch may create an "
+                            "unreviewed merge commit; use --ff-only or gate the merge commit.")
+        m = re.search(r"\bgit\s+merge\s+--ff-only\s+(\S+)", c)
+        return ("check", m.group(1)) if m else ("deny", "cannot parse merge source ref")
+    # push forms
+    m = re.search(r"\bgit\s+push\b[^\n]*?(\S+):(\S+)\s*$", c)  # src:dst
+    if m:
+        src, dst = m.group(1), m.group(2)
+        return ("check", src) if _is_protected(dst, protected) else ("allow", None)
+    # explicit trailing branch: git push [remote] <branch>
+    m = re.search(r"\bgit\s+push\b(?:\s+--force\S*|\s+-f)?\s+\S+\s+(\S+)\s*$", c)
+    if m:
+        dst = m.group(1)
+        return ("check", dst) if _is_protected(dst, protected) else ("allow", None)
+    # bare push (no ref): gated only when currently on a protected branch
+    if current_branch in protected:
+        return ("check", "HEAD")
+    return ("allow", None)
 
 
 def _deny(reason: str) -> int:
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        }
-    }))
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+          "permissionDecision": "deny", "permissionDecisionReason": reason}}))
     return 2
-
-
-def is_gated_git_op(command: str, gated_branches: list[str], current_branch: str) -> bool:
-    c = command.strip()
-    if re.search(r"\bgh\s+pr\s+merge\b", c):
-        return True
-    branch_alt = "|".join(re.escape(b) for b in gated_branches)
-    # merge INTO a gated branch (running merge while on a gated branch)
-    if re.search(r"\bgit\s+merge\b", c) and current_branch in gated_branches:
-        return True
-    # push to a gated branch (explicit ref) or force-push to one
-    if re.search(rf"\bgit\s+push\b.*\b({branch_alt})\b", c):
-        return True
-    # push with no ref while on a gated branch
-    if re.search(r"\bgit\s+push\b", c) and current_branch in gated_branches \
-            and not re.search(r"\bpush\b.*\s\S+\s+\S+", c):
-        return True
-    return False
-
-
-def _current_branch(repo_root: Path) -> str:
-    import subprocess
-    try:
-        out = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                             cwd=str(repo_root), capture_output=True, text=True, check=True)
-        return out.stdout.strip()
-    except Exception:
-        return ""
 
 
 def main() -> int:
     try:
         event = json.load(sys.stdin)
     except Exception:
-        return _allow()  # cannot parse: not our concern, let normal flow handle it
-
+        return 0
     if event.get("tool_name") != "Bash":
-        return _allow()
+        return 0
     command = event.get("tool_input", {}).get("command", "")
-    repo_root = Path(event.get("cwd", "."))
-
+    cwd = Path(event.get("cwd", "."))
     try:
-        config = ls.load_config(repo_root)
-        gated = config.get("gated_branches", ["main", "master"])
-        if not is_gated_git_op(command, gated, _current_branch(repo_root)):
-            return _allow()
-
-        state = ls.load_state(repo_root)
+        root = ls.repo_root(cwd)
+        config = ls.load_config(root)
+        protected = config.get("protected_branches", ["main", "master"])
+        branch = _current_branch(root)
+        action, ref = classify(command, protected, branch)
+        if action == "allow":
+            return 0
+        if action == "deny":
+            return _deny(f"dev-loop: {ref}")
+        # action == "check": resolve landing commit and consult state
+        landing = ls.rev_parse(root, ref)
+        state = ls.load_state(root)
         if state is None:
             return _deny("dev-loop: no .loop-state.json for this slice; run 'loop_state.py init' "
-                         "and pass the gates before merging to a protected branch.")
-        head = ls.current_head(repo_root)
-        ok, reasons = ls.is_mergeable(state, head, config)
-        if ok:
-            return _allow()
-        return _deny("dev-loop blocks this merge/push: " + "; ".join(reasons))
+                         "and pass the gates before touching a protected branch.")
+        ok, reasons = ls.is_mergeable(state, landing, root, config)
+        return 0 if ok else _deny("dev-loop blocks this operation: " + "; ".join(reasons))
+    except (ls.StateError, ls.GitError) as exc:
+        return _deny(f"dev-loop fail-closed (guard error): {exc}")
     except Exception as exc:
-        if ls.load_config(repo_root).get("fail_closed", True):
-            return _deny(f"dev-loop fail-closed (guard error): {exc}")
-        return _allow()
+        return _deny(f"dev-loop fail-closed (unexpected guard error): {exc}")
+
+
+def _current_branch(root: Path) -> str:
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
+                             capture_output=True, text=True, check=True)
+        return out.stdout.strip()
+    except Exception:
+        return ""
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 4: Run tests to verify pass**
+(Implementation note: replace the `ls.rev_parse.__self__ if False` placeholder with a direct `_current_branch(root)` call; it is written that way only to flag that branch resolution uses the helper below, not `cwd`.)
 
-Run: `python -m pytest tests/test_gate_guard.py -v`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add hooks/gate_guard.py tests/test_gate_guard.py
-git commit -m "add gate_guard PreToolUse hook: block ungated merges to protected branches
-
-cam"
-```
+- [ ] **Step 4: Run tests to verify pass** (including the full classification matrix). Confirm `_current_branch(root)` is used for branch resolution (never `cwd`).
+- [ ] **Step 5: Commit.**
 
 ---
 
@@ -652,53 +606,17 @@ cam"
 - Test: `tests/test_done_claim_check.py`
 
 **Interfaces:**
-- Consumes: `loop_state.load_state`, `current_head`, `is_mergeable`, `load_config`.
-- Produces: a Stop-hook entrypoint that exits `0` always, emitting a `systemMessage` warning when a done/merge claim is unbacked. Never blocks.
+- Consumes: `loop_state` (`repo_root`, `rev_parse`, `load_state`, `load_config`, `is_mergeable`).
+- Produces: a Stop entrypoint that always exits `0`, emitting `{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"<warning>"}}` when a done/merge claim is unbacked. Never blocks. (If Task 0 found `additionalContext` does not reach the model, switch to top-level `{"systemMessage": ...}`.)
 
-- [ ] **Step 1: Write failing tests**
+- [ ] **Step 1: Write failing tests** — `claims_done` detects done/merge-ready/complete/shipped and ignores in-progress text; `stop_hook_active: true` short-circuits (no output); a done claim with no state emits an `additionalContext` warning; a done claim with a mergeable state is silent; non-done text is silent.
 
-```python
-# tests/test_done_claim_check.py
-import json
-from hooks import done_claim_check as dc
-
-
-def test_detects_done_language():
-    assert dc.claims_done("This is done and merge-ready.")
-    assert dc.claims_done("Slice complete, ready to ship.")
-    assert not dc.claims_done("Working on the next task now.")
-
-
-def test_stop_hook_active_short_circuits(capsys):
-    rc = dc.main_from_event({"stop_hook_active": True, "last_assistant_message": "done"})
-    assert rc == 0 and capsys.readouterr().out.strip() == ""
-
-
-def test_warns_on_done_claim_without_state(tmp_path, capsys):
-    rc = dc.main_from_event({
-        "last_assistant_message": "All done, merge-ready.",
-        "cwd": str(tmp_path),
-    })
-    assert rc == 0
-    out = json.loads(capsys.readouterr().out)
-    assert "systemMessage" in out["hookSpecificOutput"]
-    assert "no .loop-state.json" in out["hookSpecificOutput"]["systemMessage"]
-
-
-def test_silent_when_no_done_claim(tmp_path, capsys):
-    rc = dc.main_from_event({"last_assistant_message": "next up: task 3", "cwd": str(tmp_path)})
-    assert rc == 0 and capsys.readouterr().out.strip() == ""
-```
-
-- [ ] **Step 2: Run to verify failure**
-
-Run: `python -m pytest tests/test_done_claim_check.py -v`
-Expected: FAIL.
+- [ ] **Step 2: Run to verify failure.**
 
 - [ ] **Step 3: Implement `hooks/done_claim_check.py`**
 
 ```python
-"""Stop hook: warn (not block) when a done/merge claim lacks gate evidence."""
+"""Stop hook: warn (never block) when a done/merge claim lacks gate evidence."""
 from __future__ import annotations
 
 import json
@@ -717,27 +635,26 @@ def claims_done(text: str) -> bool:
 
 
 def _emit(message: str) -> int:
-    print(json.dumps({"hookSpecificOutput": {"systemMessage": message}}))
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": message}}))
     return 0
 
 
 def main_from_event(event: dict) -> int:
     if event.get("stop_hook_active") is True:
         return 0
-    text = event.get("last_assistant_message", "")
-    if not claims_done(text):
+    if not claims_done(event.get("last_assistant_message", "")):
         return 0
-    repo_root = Path(event.get("cwd", "."))
+    cwd = Path(event.get("cwd", "."))
     try:
-        state = ls.load_state(repo_root)
+        root = ls.repo_root(cwd)
+        state = ls.load_state(root)
         if state is None:
-            return _emit("dev-loop: a completion was claimed but there is no .loop-state.json "
-                         "for this slice. If this is real work, initialize the slice and run the gates.")
-        head = ls.current_head(repo_root)
-        ok, reasons = ls.is_mergeable(state, head, ls.load_config(repo_root))
+            return _emit("dev-loop: a completion was claimed but there is no .loop-state.json for "
+                         "this slice. If this is real work, initialize the slice and run the gates.")
+        landing = ls.rev_parse(root, "HEAD")
+        ok, reasons = ls.is_mergeable(state, landing, root, ls.load_config(root))
         if not ok:
-            return _emit("dev-loop: completion claimed, but the slice is not gate-clean: "
-                         + "; ".join(reasons))
+            return _emit("dev-loop: completion claimed but the slice is not gate-clean: " + "; ".join(reasons))
     except Exception:
         return 0  # a warning hook must never disrupt the turn
     return 0
@@ -755,92 +672,25 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] **Step 4: Run tests to verify pass**
-
-Run: `python -m pytest tests/test_done_claim_check.py -v`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add hooks/done_claim_check.py tests/test_done_claim_check.py
-git commit -m "add done_claim_check Stop hook: warn on unbacked completion claims
-
-cam"
-```
+- [ ] **Step 4: Run tests to verify pass.**
+- [ ] **Step 5: Commit.**
 
 ---
 
-### Task 6: docs-current auto-check helper
+### Task 6: `session_start.py` conductor preamble emitter
 
 **Files:**
-- Modify: `hooks/loop_state.py` (add `docs_touched_since`)
-- Test: `tests/test_docs_current.py`
+- Create: `hooks/session_start.py`, `skills/conducting-the-loop/PREAMBLE.md`
+- Test: `tests/test_session_start.py`
 
 **Interfaces:**
-- Produces: `docs_touched_since(repo_root, slice_base, config) -> dict` returning `{"roadmap": bool, "shipped_log": bool}` by diffing `slice_base..HEAD` against configured paths. Used by an optional `refresh-docs-current` CLI subcommand and by the conductor.
+- Produces: a SessionStart entrypoint emitting `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"<preamble>"}}` at exit 0. Gated on the Task 0 finding: if SessionStart `additionalContext` does not reach context, this task instead ships an empty no-op and the skill description trigger is the sole load path (record that in the spec).
 
-- [ ] **Step 1: Write failing test**
-
-```python
-# tests/test_docs_current.py
-import subprocess
-from pathlib import Path
-from hooks import loop_state as ls
-
-
-def _git(tmp, *a): subprocess.run(["git", *a], cwd=tmp, check=True, capture_output=True, text=True)
-
-
-def test_docs_touched_detects_roadmap_change(tmp_path):
-    _git(tmp_path, "init"); _git(tmp_path, "config", "user.email", "t@t"); _git(tmp_path, "config", "user.name", "t")
-    (tmp_path / "a").write_text("1"); _git(tmp_path, "add", "-A"); _git(tmp_path, "commit", "-m", "base")
-    base = ls.current_head(tmp_path)
-    (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "ROADMAP.md").write_text("x"); _git(tmp_path, "add", "-A"); _git(tmp_path, "commit", "-m", "roadmap")
-    cfg = {"roadmap_paths": ["docs/ROADMAP.md"], "shipped_log_paths": ["docs/backlog/RECENTLY-SHIPPED.md"]}
-    result = ls.docs_touched_since(tmp_path, base, cfg)
-    assert result == {"roadmap": True, "shipped_log": False}
-```
-
-- [ ] **Step 2: Run to verify failure**
-
-Run: `python -m pytest tests/test_docs_current.py -v`
-Expected: FAIL.
-
-- [ ] **Step 3: Implement `docs_touched_since` in `hooks/loop_state.py`**
-
-```python
-def docs_touched_since(repo_root: Path, slice_base: str, config: dict) -> dict:
-    import subprocess
-    out = subprocess.run(
-        ["git", "diff", "--name-only", f"{slice_base}..HEAD"],
-        cwd=str(repo_root), capture_output=True, text=True, check=True,
-    )
-    changed = set(out.stdout.split())
-    def _any(paths: list[str]) -> bool:
-        return any(p in changed for p in paths)
-    return {
-        "roadmap": _any(config.get("roadmap_paths", [])),
-        "shipped_log": _any(config.get("shipped_log_paths", [])),
-    }
-```
-
-- [ ] **Step 4: Wire a `refresh-docs-current` CLI subcommand** that calls `docs_touched_since(root, state["slice_base"], load_config(root))` and writes the result into `state["docs_current"]`. Add one CLI test mirroring Task 3's style.
-
-- [ ] **Step 5: Run tests to verify pass**
-
-Run: `python -m pytest tests/test_docs_current.py -v`
-Expected: PASS.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add hooks/loop_state.py tests/test_docs_current.py
-git commit -m "add docs-current auto-check via slice_base..HEAD diff
-
-cam"
-```
+- [ ] **Step 1: Write `PREAMBLE.md`** — a short conductor identity pointer: "You are the conductor. Load the `conducting-the-loop` skill. Delegate substantial coding and research; keep decisions and synthesis here."
+- [ ] **Step 2: Write failing test** — `session_start.py` prints valid JSON containing the preamble text and the correct `hookEventName`.
+- [ ] **Step 3: Implement** `session_start.py` to read `PREAMBLE.md` (relative to `${CLAUDE_PLUGIN_ROOT}`) and print the additionalContext JSON.
+- [ ] **Step 4: Run tests to verify pass.**
+- [ ] **Step 5: Commit.**
 
 ---
 
@@ -849,213 +699,119 @@ cam"
 **Files:**
 - Create: `hooks/hooks.json`, `hooks/run-hook.sh`
 
-**Interfaces:**
-- Consumes: the three hook scripts and the Task 0 SessionStart decision.
-- Produces: the plugin's event registrations.
-
-- [ ] **Step 1: Write `hooks/run-hook.sh`** (a thin dispatcher so `hooks.json` stays simple and `${CLAUDE_PLUGIN_ROOT}` resolves once)
+- [ ] **Step 1: Write `hooks/run-hook.sh`** (dispatches to a Python module by basename)
 
 ```bash
 #!/usr/bin/env bash
-# Usage: run-hook.sh <script-basename>
 set -euo pipefail
 exec python3 "${CLAUDE_PLUGIN_ROOT}/hooks/$1.py"
 ```
 
-Make it executable (`chmod +x`).
+Make it executable.
 
-- [ ] **Step 2: Write `hooks/hooks.json`**
+- [ ] **Step 2: Write `hooks/hooks.json`** using the proven command-string form
 
 ```json
 {
   "hooks": {
     "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          { "type": "command", "command": ["${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh", "gate_guard"] }
-        ]
-      }
+      { "matcher": "Bash", "hooks": [
+        { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh\" gate_guard", "timeout": 10 }
+      ] }
     ],
     "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          { "type": "command", "command": ["${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh", "done_claim_check"] }
-        ]
-      }
+      { "matcher": "", "hooks": [
+        { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh\" done_claim_check", "timeout": 10 }
+      ] }
+    ],
+    "SessionStart": [
+      { "matcher": "startup|resume|clear|compact|fork", "hooks": [
+        { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.sh\" session_start", "timeout": 10 }
+      ] }
     ]
   }
 }
 ```
 
-- [ ] **Step 3: Add the SessionStart entry per the Task 0 finding.** If SessionStart `command` stdout reaches context, add a SessionStart(`startup|clear|compact`) `command` hook emitting the conductor preamble (a short pointer to the `conducting-the-loop` skill). If not, add a SessionStart `prompt`-type hook whose prompt tells the model to load `conducting-the-loop`. Record which was used.
+(If Task 0 found the array `command` form is required instead, use `"command": "...run-hook.sh", "args": ["gate_guard"]` per the finding. Use whichever Task 0 proved fires.)
 
-- [ ] **Step 4: Validate + smoke test**
+- [ ] **Step 3: Validate + live smoke test.** `claude plugin validate ./`, then install locally and confirm in a scratch repo that a real `git push origin main` is denied without state and allowed with a green-gated landing commit, and that the SessionStart preamble behaves as Task 0 found.
 
-Run: `claude plugin validate ./`
-Then install locally and confirm in a scratch git repo that a `git push origin main` without state is denied and with green state is allowed.
-Expected: validate passes; deny/allow behave as in Task 4.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add hooks/hooks.json hooks/run-hook.sh
-git commit -m "register PreToolUse/Stop/SessionStart hooks
-
-cam"
-```
+- [ ] **Step 4: Commit.**
 
 ---
 
 ### Task 8: Port dennis and barry agents into the plugin
 
-**Files:**
-- Create: `agents/dennis.md`, `agents/barry.md`
+**Files:** Create `agents/dennis.md`, `agents/barry.md`.
 
-- [ ] **Step 1: Copy the existing definitions** from `~/.claude/agents/dennis.md` and `~/.claude/agents/barry.md`.
-
-- [ ] **Step 2: Normalize frontmatter** to the plugin agent schema (`name`, `description`, `tools`, `model`). Keep dennis review-only (no Write/Edit) and barry docs-only, matching their current tool sets.
-
-- [ ] **Step 3: Validate**
-
-Run: `claude plugin validate ./`
-Expected: agents discovered, no errors.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add agents/
-git commit -m "port dennis (gate) and barry (docs) agents into plugin
-
-cam"
-```
+- [ ] **Step 1: Copy** `~/.claude/agents/dennis.md` and `~/.claude/agents/barry.md`.
+- [ ] **Step 2: Normalize frontmatter** to the plugin agent schema (`name`, `description`, `tools`, `model`); keep dennis review-only (no Write/Edit), barry docs-only.
+- [ ] **Step 3: Validate** (`claude plugin validate ./`).
+- [ ] **Step 4: Commit.**
 
 ---
 
 ### Task 9: `role-matrix.md` delegation reference
 
-**Files:**
-- Create: `skills/conducting-the-loop/role-matrix.md`
+**Files:** Create `skills/conducting-the-loop/role-matrix.md`.
 
-- [ ] **Step 1: Write the complexity-tiered role matrix** exactly as in the spec's "Conductor and complexity-tiered delegation" section: the four complexity signals (risk, novelty, blast radius, ambiguity), the role table (researcher, planner, builder, reviewer, cross-model gate, documenter, operator), the agent per tier, and the reason per row. State the hard rule: Codex gate is always Codex; fallback is the highest available Claude model.
-
-- [ ] **Step 2: Commit**
-
-```bash
-git add skills/conducting-the-loop/role-matrix.md
-git commit -m "add role-matrix delegation reference
-
-cam"
-```
+- [ ] **Step 1: Write** the complexity-tiered role matrix from the spec: the four signals (risk, novelty, blast radius, ambiguity), the role table, agent per tier and reason, and the hard rule (Codex gate always Codex; fallback highest available Claude).
+- [ ] **Step 2: Commit.**
 
 ---
 
 ### Task 10: `conducting-the-loop` discipline skill (writing-skills TDD)
 
-> This task does NOT pre-write the final SKILL.md. Per the writing-skills Iron Law, the skill is written only after a failing baseline. REQUIRED SUB-SKILL: superpowers:writing-skills.
+> Does NOT pre-write the final SKILL.md. REQUIRED SUB-SKILL: superpowers:writing-skills. The skill is written only after a failing baseline.
 
-**Files:**
-- Create: `skills/conducting-the-loop/SKILL.md`
-- Create: `tests/skill-scenarios/` (the pressure scenarios and recorded baselines)
+**Files:** Create `skills/conducting-the-loop/SKILL.md`, `tests/skill-scenarios/`.
 
-**Interfaces:**
-- Consumes: `role-matrix.md`, the bundled `rules/` (Task 11), the hook behavior confirmed in Task 0.
-
-- [ ] **Step 1: RED - write pressure scenarios** for each of the four drift modes, with combined pressure (time + sunk cost + "main is green, just merge"). Save them under `tests/skill-scenarios/`.
-
-- [ ] **Step 2: RED - run scenarios on a subagent WITHOUT the skill.** Record verbatim rationalizations for each drift mode. If a mode does not fail in the no-skill control, do not write guidance for it (note that in the scenario file).
-
-- [ ] **Step 3: GREEN - write `SKILL.md`.** Frontmatter description states triggering conditions only, no workflow summary. Body: conductor identity as a positive recipe (output = decisions, delegation calls, synthesized results with next-step options; direct edits limited to edge cleanup + git ops); phase sequence referencing `rules/`; delegation referencing `role-matrix.md` requiring a cited tier reason; a rationalization table + red-flag list built from Step 2, with the risk-under-classification and self-certified-done rows carrying the most weight.
-
-- [ ] **Step 4: GREEN - micro-test the wording** against the no-guidance control (5+ reps), reading every flagged match by hand, before the full scenarios.
-
-- [ ] **Step 5: GREEN/REFACTOR - re-run the pressure scenarios WITH the skill.** Add counters for any new loophole; repeat until compliant. Record the final pass.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add skills/conducting-the-loop/SKILL.md tests/skill-scenarios/
-git commit -m "add conducting-the-loop discipline skill (TDD-verified)
-
-cam"
-```
+- [ ] **Step 1: RED** — write pressure scenarios for each of the four drift modes with combined pressure; save under `tests/skill-scenarios/`.
+- [ ] **Step 2: RED** — run each on a subagent WITHOUT the skill; record verbatim rationalizations. Drop any mode the no-skill control does not fail.
+- [ ] **Step 3: GREEN** — write `SKILL.md`: description = triggering conditions only (no workflow summary); body = conductor identity as a positive recipe, phase sequence referencing `rules/`, delegation referencing `role-matrix.md` (cite the tier reason), and a rationalization table + red-flag list from Step 2, weighted toward risk-under-classification and self-certified-done.
+- [ ] **Step 4: GREEN** — micro-test the wording against the no-guidance control (5+ reps, read every flagged match).
+- [ ] **Step 5: REFACTOR** — re-run under max pressure; add counters until compliant; record the pass.
+- [ ] **Step 6: Commit.**
 
 ---
 
 ### Task 11: Bundle the rulebooks
 
-**Files:**
-- Create: `rules/` (snapshot of `~/dev-rules/*.md`)
+**Files:** Create `rules/` (snapshot of `~/dev-rules/*.md`) + `rules/PROVENANCE.md`.
 
-- [ ] **Step 1: Copy a snapshot** of the current `~/dev-rules/` markdown into `rules/` so the plugin is self-contained and versioned with the enforcement that cites it. Add a `rules/PROVENANCE.md` noting the source and snapshot date.
-
-- [ ] **Step 2: Fix cross-references** in `SKILL.md` and `role-matrix.md` to point at `rules/<file>.md` (plugin-relative), not `/home/cam/dev-rules/`.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add rules/
-git commit -m "bundle dev-rules snapshot into plugin
-
-cam"
-```
+- [ ] **Step 1: Copy** the current `~/dev-rules/` markdown into `rules/`; note source + snapshot date in `PROVENANCE.md`.
+- [ ] **Step 2: Fix cross-references** in `SKILL.md`, `PREAMBLE.md`, and `role-matrix.md` to `rules/<file>.md`, not `/home/cam/dev-rules/`.
+- [ ] **Step 3: Commit.**
 
 ---
 
 ### Task 12: End-to-end acceptance test and local install
 
-**Files:**
-- Create: `tests/test_e2e_enforcement.py`
+**Files:** Create `tests/test_e2e_enforcement.py`.
 
-**Acceptance (the whole enforcement, in one scripted scenario):**
-
-- [ ] **Step 1: Write the e2e test** that, in a temp git repo with the plugin's hooks wired via direct script invocation:
-  1. `init` a slice at R2, attempt a simulated `git push origin main` through `gate_guard` -> DENY (no gates).
-  2. record `dennis` green + `set-docs-current true true`, attempt push -> still DENY (R2 needs codex).
-  3. record `codex` green, attempt push -> ALLOW.
-  4. make a new commit, attempt push -> DENY (gates now stale).
-  5. re-record `dennis` + `codex` on new HEAD, push -> ALLOW.
-
-- [ ] **Step 2: Run**
-
-Run: `python -m pytest tests/test_e2e_enforcement.py -v`
-Expected: PASS.
-
-- [ ] **Step 3: Install on this machine and smoke-test live.**
-
-```bash
-claude plugin marketplace add /home/cam/dev-loop-plugin
-claude plugin install dev-loop@cam-dev-loop
-```
-
-In a scratch repo, confirm a real `git push origin main` is denied without state and allowed with green state.
-
-- [ ] **Step 4: Run the full suite + lint**
-
-Run: `python -m pytest -q && ruff check hooks/ tests/`
-Expected: all green.
-
-- [ ] **Step 5: Commit + tag**
-
-```bash
-git add tests/test_e2e_enforcement.py
-git commit -m "add end-to-end enforcement acceptance test
-
-cam"
-git tag v0.1.0
-```
+- [ ] **Step 1: Write the e2e test** in a temp git repo (with an empty-docs `.loop-config.json` unless testing docs), driving `gate_guard.main()` with stdin JSON for a `git push origin main` on `main`:
+  1. `init` at R2 -> push -> DENY (no gates).
+  2. record `dennis` green (reviewer=dennis) on HEAD + touch the configured roadmap/shipped-log or use empty docs config -> push -> still DENY (R2 needs codex).
+  3. record `codex` green (reviewer=codex) on HEAD -> push -> ALLOW.
+  4. add a new commit -> push -> DENY (gates now attest to the old commit; landing differs).
+  5. re-record dennis + codex on the new HEAD -> push -> ALLOW.
+  6. a compound `git merge x && git push origin main` -> DENY regardless of state.
+- [ ] **Step 2: Run** — `python -m pytest tests/test_e2e_enforcement.py -v` → PASS.
+- [ ] **Step 3: Install live** (`claude plugin marketplace add /home/cam/dev-loop-plugin`, `claude plugin install dev-loop@cam-dev-loop`) and smoke-test a real protected-branch push deny/allow.
+- [ ] **Step 4: Full suite + lint** — `python -m pytest -q && ruff check hooks/ tests/` → green.
+- [ ] **Step 5: Commit + tag `v0.1.0`.**
 
 ---
 
 ## Self-Review
 
-**Spec coverage:** every spec section maps to a task. Plugin layout -> Tasks 1, 7, 8, 9, 11. Conductor/delegation -> Tasks 9, 10. Loop-state file -> Tasks 2, 3. Hooks + re-gate -> Tasks 4, 5, 6. docs-current -> Task 6. Discipline skill -> Task 10. Distribution -> Tasks 1, 12. The two spec uncertainties (SessionStart injection, Stop blocking) -> Task 0 + the Task 5 warning-only design.
+**Spec coverage:** enforcement model + limits -> Task 1 README, Task 4, Global Constraints. Loop-state schema + validation -> Task 2. CLI (no docs-set) -> Task 3. gate_guard classification + fail-closed + landing-commit -> Task 4. Stop warning -> Task 5. SessionStart mechanism -> Tasks 0, 6, 7. docs-current live -> Task 2 (`docs_current`) consumed by `is_mergeable`. Conductor/delegation -> Tasks 9, 10. rules bundle -> Task 11. Distribution -> Tasks 1, 12. The three contract uncertainties -> Task 0.
 
-**Placeholder scan:** the only intentionally-deferred content is Task 10's final `SKILL.md` text, which by the writing-skills Iron Law cannot be pre-written; its acceptance is the passing pressure scenarios. All code steps carry runnable code.
+**Placeholder scan:** the only deferred content is Task 10's final `SKILL.md` (Iron Law: cannot be pre-written; acceptance = passing scenarios) and the two Task-0-gated mechanism choices (SessionStart form, Stop output field), each with a stated default and fallback. No stub code remains in the module tasks.
 
-**Type consistency:** gate names (`plan_review`/`dennis`/`codex`), risk levels (`R0`-`R3`), state keys (`gates`/`remediation`/`docs_current`/`slice_base`), and function signatures (`is_mergeable`, `gate_status`, `docs_touched_since`) are used identically across Tasks 2-6 and 12.
+**Type consistency:** `schema_version`/`slice`/`risk`/`risk_rationale`/`slice_base`/`gates`/`remediation` and the signatures `repo_root`, `rev_parse`, `load_state`, `validate_state`, `gate_status(state,gate,landing_commit)`, `docs_current(root,slice_base,landing,config)`, `is_mergeable(state,landing,root,config)`, and `classify(command,protected,current_branch)` are used identically across Tasks 2-7 and 12. Config key is `protected_branches` throughout.
 
 ## Execution Handoff
 
-Gate this plan through Codex first (Cam's instruction: build only on Codex GO). On GO, subagent-driven execution is recommended: a fresh subagent per task, two-stage review between tasks, with the conductor sequencing and the dennis/Codex gates applied to the plugin's own work.
+Re-gate this plan through Codex (Cam's rule: build only on Codex GO). On GO, subagent-driven execution: fresh subagent per task, two-stage review between tasks, conductor sequencing, dennis/Codex gates on the plugin's own work.
