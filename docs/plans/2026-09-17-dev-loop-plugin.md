@@ -522,7 +522,7 @@ if __name__ == "__main__":
   - a hook `main()` that tokenizes with `shlex.split`, strips a leading `DEVLOOP_OVERRIDE=` assignment, rejects per-token shell metacharacters, resolves git-dependent actions (alias lookup, bare-push via `push.default`/`remote.push`, landing `ref^{commit}`), consults state, and exits `0`/`2`.
 
 **Classification contract (strict argv parser, allow only the canonical safe set, deny on any doubt):**
-- Not `git`/`gh` as argv[0] (env prefix, wrapper): DENY if the argv mentions push/merge/pull, else ALLOW.
+- `main()` first strips a leading `DEVLOOP_OVERRIDE=` and then any leading env-assignment prefixes (`VAR=val`), so `GIT_SSH=x git ...` is classified as the underlying `git ...`. After stripping, a non-`git`/`gh` argv[0] (a real wrapper such as `bash`/`sudo`/`env`): DENY if the argv mentions push/merge/pull, else ALLOW.
 - `gh pr merge`: DENY; other `gh`: ALLOW.
 - `git` global options (`-C`, `--git-dir`, `--work-tree`, `-c`, flags) are skipped to find the subcommand; a repo-retargeting option (`-C`/`--git-dir`/`--work-tree`) plus a push/merge/pull/pr subcommand DENIES; a retargeting option with a safe subcommand (`git -C repo status`) ALLOWS.
 - `git pull`: DENY on a protected branch (it merges into it), else ALLOW.
@@ -534,9 +534,9 @@ if __name__ == "__main__":
 
 - [ ] **Step 1: Write failing tests** — a full matrix (call `classify` on tokenized argv, and drive `main()` via stdin JSON):
   - allow: `git status`; `git push origin feat/x` (on `feat/x`); `git push origin HEAD` (on `feat/x` -> current branch feat/x); `git commit -m x`; `git push origin main:feat/x` (dst feat/x); `git -C repo status`; `git rebase main` (not an alias); bare `git push` on a feature branch (`push.default=simple`, no `remote.origin.push`).
-  - check: `git push origin main` (on main); `git push origin HEAD` (on main -> current branch is main); `git push origin HEAD:main`; `git push origin HEAD:refs/heads/main`; `git push origin feat/x:main`; `git push --force origin main`; `git push --force-with-lease origin main`; `git push origin --force-with-lease main`; `git merge --ff-only <annotated-tag>` (on main -> tagged commit); bare `git push` on main (`push.default=simple`).
-  - deny: `git merge feat/x` (on main, no --ff-only); `git pull` (on main); `git merge feat/x && git push origin main`; `git push origin main;`; `git push origin main&&x`; `git push origin $BRANCH`; `git push origin main>out`; `git -C /other push origin main`; `cd /other && git push origin main`; `git push --all origin`; `git push --mirror`; `git push origin :main` (delete); `git push origin main:` (empty dst); `git push origin main:HEAD` (unresolvable remote HEAD); `git push origin main feat/x` (multiple refspecs); `GIT_SSH=x git push origin main` (env prefix); `git p` where `alias.p` is set; bare `git push` with `push.default=matching`; `git merge x` / `git pull` / bare `git push` when the current-branch lookup fails (`current_branch is None`, e.g. unborn HEAD) -> deny; `git push origin main:HEAD`; `gh pr merge 12`; `git push "origin" 'main` (unbalanced quote).
-  - integration: `check` on an ungated repo -> exit 2; green-gated repo with landing == gate commit -> exit 0; a `deny` classification -> exit 2 regardless of state; malformed state on a `check` op -> exit 2 (fail closed); annotated-tag source resolves to its commit; `DEVLOOP_OVERRIDE=hotfix git push origin main` with `escape_hatch:true` -> exit 0 and a `.loop-audit.log` line naming reason `hotfix`; with `escape_hatch:false` the override is ignored (exit 2); an ambient `DEVLOOP_OVERRIDE` env var (no inline assignment) does NOT override (exit 2); a `git push origin main` outside any git repo -> exit 0 (nothing to protect); but `git -C /target push origin main` launched from OUTSIDE any repo -> exit 2 (retarget denied before repo resolution).
+  - check: `git push origin main` (on main); `GIT_SSH=x git push origin main` (on main -> env-assignment prefix stripped, then checked); `git push origin HEAD` (on main -> current branch is main); `git push origin HEAD:main`; `git push origin HEAD:refs/heads/main`; `git push origin feat/x:main`; `git push --force origin main`; `git push --force-with-lease origin main`; `git push origin --force-with-lease main`; `git merge --ff-only <annotated-tag>` (on main -> tagged commit); bare `git push` on main (`push.default=simple`).
+  - deny: `git merge feat/x` (on main, no --ff-only); `git pull` (on main); `git merge feat/x && git push origin main`; `git push origin main;`; `git push origin main&&x`; `git push origin $BRANCH`; `git push origin main>out`; `git -C /other push origin main`; `cd /other && git push origin main`; `git push --all origin`; `git push --mirror`; `git push origin :main` (delete); `git push origin main:` (empty dst); `git push origin main:HEAD` (unresolvable remote HEAD); `git push origin main feat/x` (multiple refspecs); `git p` where `alias.p` is set; bare `git push` with `push.default=matching`; `git merge x` / `git pull` / bare `git push` when the current-branch lookup fails (`current_branch is None`, e.g. unborn HEAD) -> deny; `git push origin main:HEAD`; `gh pr merge 12`; `git push "origin" 'main` (unbalanced quote).
+  - integration: `check` on an ungated repo -> exit 2; green-gated repo with landing == gate commit -> exit 0; a `deny` classification -> exit 2 regardless of state; malformed state on a `check` op -> exit 2 (fail closed); annotated-tag source resolves to its commit; `DEVLOOP_OVERRIDE=hotfix git push origin main` with `escape_hatch:true` -> exit 0 and a `.loop-audit.log` line naming reason `hotfix`; with `escape_hatch:false` the override is ignored (exit 2); an ambient `DEVLOOP_OVERRIDE` env var (no inline assignment) does NOT override (exit 2); a `git push origin main` outside any git repo -> exit 0 (nothing to protect); but `git -C /target push origin main` and `GIT_SSH=x git -C /target push origin main` launched from OUTSIDE any repo -> exit 2 (env prefix stripped, retarget denied before repo resolution).
 
 - [ ] **Step 2: Run to verify failure.**
 
@@ -566,6 +566,7 @@ _PUSH_OPTS = {"--force", "-f", "--force-with-lease"}
 _METACHAR = re.compile(r"[;&|<>$(){}`\n]")
 _RETARGET_OPTS = {"-C", "--git-dir", "--work-tree"}
 _OVERRIDE_RE = re.compile(r"^DEVLOOP_OVERRIDE=(.*)$")
+_ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 _FAMILY = {"push", "merge", "pull"}
 
 
@@ -741,6 +742,10 @@ def main() -> int:
         override = None
         if tokens and (m := _OVERRIDE_RE.match(tokens[0])):
             override, tokens = m.group(1), tokens[1:]
+        # strip leading env-assignment prefixes (e.g. GIT_SSH=x git ...) so the real
+        # git head and its global options are seen by the checks below.
+        while tokens and _ENV_ASSIGN.match(tokens[0]):
+            tokens = tokens[1:]
         if _mentions_family(tokens) and any(_METACHAR.search(t) for t in tokens):
             return _deny("dev-loop: shell metacharacter/expansion in a push/merge command; "
                          "run the gated step alone")
