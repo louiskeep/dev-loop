@@ -536,7 +536,7 @@ if __name__ == "__main__":
   - allow: `git status`; `git push origin feat/x` (on `feat/x`); `git push origin HEAD` (on `feat/x` -> current branch feat/x); `git commit -m x`; `git push origin main:feat/x` (dst feat/x); `git -C repo status`; `git rebase main` (not an alias); bare `git push` on a feature branch (`push.default=simple`, no `remote.origin.push`).
   - check: `git push origin main` (on main); `git push origin HEAD` (on main -> current branch is main); `git push origin HEAD:main`; `git push origin HEAD:refs/heads/main`; `git push origin feat/x:main`; `git push --force origin main`; `git push --force-with-lease origin main`; `git push origin --force-with-lease main`; `git merge --ff-only <annotated-tag>` (on main -> tagged commit); bare `git push` on main (`push.default=simple`).
   - deny: `git merge feat/x` (on main, no --ff-only); `git pull` (on main); `git merge feat/x && git push origin main`; `git push origin main;`; `git push origin main&&x`; `git push origin $BRANCH`; `git push origin main>out`; `git -C /other push origin main`; `cd /other && git push origin main`; `git push --all origin`; `git push --mirror`; `git push origin :main` (delete); `git push origin main:` (empty dst); `git push origin main:HEAD` (unresolvable remote HEAD); `git push origin main feat/x` (multiple refspecs); `GIT_SSH=x git push origin main` (env prefix); `git p` where `alias.p` is set; bare `git push` with `push.default=matching`; `git merge x` / `git pull` / bare `git push` when the current-branch lookup fails (`current_branch is None`, e.g. unborn HEAD) -> deny; `git push origin main:HEAD`; `gh pr merge 12`; `git push "origin" 'main` (unbalanced quote).
-  - integration: `check` on an ungated repo -> exit 2; green-gated repo with landing == gate commit -> exit 0; a `deny` classification -> exit 2 regardless of state; malformed state on a `check` op -> exit 2 (fail closed); annotated-tag source resolves to its commit; `DEVLOOP_OVERRIDE=hotfix git push origin main` with `escape_hatch:true` -> exit 0 and a `.loop-audit.log` line naming reason `hotfix`; with `escape_hatch:false` the override is ignored (exit 2); an ambient `DEVLOOP_OVERRIDE` env var (no inline assignment) does NOT override (exit 2); a `git push origin main` outside any git repo -> exit 0 (nothing to protect).
+  - integration: `check` on an ungated repo -> exit 2; green-gated repo with landing == gate commit -> exit 0; a `deny` classification -> exit 2 regardless of state; malformed state on a `check` op -> exit 2 (fail closed); annotated-tag source resolves to its commit; `DEVLOOP_OVERRIDE=hotfix git push origin main` with `escape_hatch:true` -> exit 0 and a `.loop-audit.log` line naming reason `hotfix`; with `escape_hatch:false` the override is ignored (exit 2); an ambient `DEVLOOP_OVERRIDE` env var (no inline assignment) does NOT override (exit 2); a `git push origin main` outside any git repo -> exit 0 (nothing to protect); but `git -C /target push origin main` launched from OUTSIDE any repo -> exit 2 (retarget denied before repo resolution).
 
 - [ ] **Step 2: Run to verify failure.**
 
@@ -744,6 +744,13 @@ def main() -> int:
         if _mentions_family(tokens) and any(_METACHAR.search(t) for t in tokens):
             return _deny("dev-loop: shell metacharacter/expansion in a push/merge command; "
                          "run the gated step alone")
+        # repo-retargeting a push/merge/pull is denied regardless of cwd (it may target
+        # another repo, so cwd's repo_root would not describe the operation).
+        if tokens and tokens[0] == "git":
+            retarget, idx = _skip_global(tokens)
+            if retarget and idx < len(tokens) and (tokens[idx] in _FAMILY or tokens[idx] == "pr"):
+                return _deny("dev-loop: git -C/--git-dir/--work-tree with a push/merge/pull "
+                             "retargets the repo; run it inside that repo without indirection.")
         try:
             root = ls.repo_root(cwd)
         except ls.GitError:
