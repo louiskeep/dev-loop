@@ -220,9 +220,14 @@ is caught.
    `refs/heads/`; plain slash branches like `feat/x` are allowed when not
    protected), `git -C`/`--git-dir`/`--work-tree` repo
    retargeting, any token carrying a shell metacharacter or expansion, unbalanced
-   quotes, wrappers/env-prefixes, configured git aliases, and `gh pr merge` (which
-   validates the local checkout, not the PR head). Feature-branch pushes with no
-   protected-branch target, and non-family git commands, are allowed. The audited
+   quotes, real interpreter/binary wrappers (`bash`, `sudo`, `env`, ...),
+   configured git aliases, and `gh pr merge` (which validates the local checkout,
+   not the PR head). A leading `DEVLOOP_OVERRIDE=` and any leading `VAR=val`
+   env-assignment prefixes (for example `GIT_SSH=x git ...`) are first stripped and
+   the underlying `git` command is then assessed normally (so an env-prefixed push
+   is gated, not blanket-denied); this normalization is distinct from a real
+   wrapper, which is denied. Feature-branch pushes with no protected-branch target,
+   and non-family git commands, are allowed. The audited
    escape hatch (below) is the sole override.
 
 2. Re-gate invalidation (in `loop_state.py`, enforced by gate_guard): a landing
