@@ -1010,7 +1010,7 @@ Make it executable.
 **Files:** Create `rules/` (snapshot of `~/dev-rules/*.md`) + `rules/PROVENANCE.md`.
 
 - [ ] **Step 1: Copy** the current `~/dev-rules/` markdown into `rules/`; note source + snapshot date in `PROVENANCE.md`.
-- [ ] **Step 2: Fix cross-references** in `SKILL.md`, `PREAMBLE.md`, and `role-matrix.md` to `rules/<file>.md`, not `/home/cam/dev-rules/`.
+- [ ] **Step 2: Fix cross-references** in `SKILL.md`, `PREAMBLE.md`, and `role-matrix.md` to `rules/<file>.md`, not the original source dev-rules path.
 - [ ] **Step 3: Commit.**
 
 ---
@@ -1027,7 +1027,7 @@ Make it executable.
   5. re-record dennis + codex on the new HEAD -> push -> ALLOW.
   6. a compound `git merge x && git push origin main` -> DENY regardless of state.
 - [ ] **Step 2: Run** — `python -m pytest tests/test_e2e_enforcement.py -v` → PASS.
-- [ ] **Step 3: Install live** (`claude plugin marketplace add /home/cam/dev-loop-plugin`, `claude plugin install dev-loop@cam-dev-loop`) and smoke-test a real protected-branch push deny/allow.
+- [ ] **Step 3: Install live** (`claude plugin marketplace add <path-to-a-local-clone>`, `claude plugin install dev-loop@cam-dev-loop`) and smoke-test a real protected-branch push deny/allow.
 - [ ] **Step 4: Full suite + lint** — `python -m pytest -q && ruff check hooks/ tests/` → green.
 - [ ] **Step 5: Commit + tag `v0.1.0`.**
 

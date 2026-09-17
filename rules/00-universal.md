@@ -1,7 +1,7 @@
 # Universal Rules
 
 > General guidance for all development work. Read this with the task-specific
-> rulebooks selected by the [routing table](README.md).
+> rulebooks in this directory.
 
 ## Precedence and immutable invariants
 
