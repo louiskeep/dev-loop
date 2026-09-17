@@ -209,6 +209,22 @@ def test_missing_risk_fails_closed(tmp_path):
     s = _state(head); del s["risk"]
     with pytest.raises(ls.StateError):
         ls.validate_state(s)
+
+
+def test_docs_current_evaluated_against_landing_not_head(tmp_path):
+    # gate + slice_base at c0; the docs change lands in a LATER commit that the
+    # gate does not attest to, so merging the gated (earlier) landing must fail docs-current.
+    base = _repo(tmp_path)  # c0
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "src").write_text("x"); _git(tmp_path, "add", "-A"); _git(tmp_path, "commit", "-m", "c1")
+    gated = ls.rev_parse(tmp_path, "HEAD")  # c1: the commit the gate attests to
+    (tmp_path / "docs" / "ROADMAP.md").write_text("y"); _git(tmp_path, "add", "-A"); _git(tmp_path, "commit", "-m", "c2")
+    # HEAD is now c2 (docs touched), but the gate is on c1; check the gated landing c1.
+    s = _state(base); s["slice_base"] = base
+    s["gates"]["dennis"]["at_commit"] = gated
+    cfg = {"codex_required_risks": ["R2", "R3"], "roadmap_paths": ["docs/ROADMAP.md"], "shipped_log_paths": []}
+    ok, reasons = ls.is_mergeable(s, gated, tmp_path, cfg)  # landing c1 != HEAD c2
+    assert not ok and any("roadmap" in r for r in reasons)
 ```
 
 - [ ] **Step 2: Run to verify failure**
