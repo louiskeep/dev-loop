@@ -277,21 +277,46 @@ def load_config(root: Path) -> dict:
     return config
 
 
+_TOP_FIELDS = {"schema_version", "slice", "risk", "risk_rationale", "slice_base", "gates", "remediation"}
+_GATE_NAMES = {"plan_review", "dennis", "codex"}
+
+
 def validate_state(state: dict) -> None:
+    if not isinstance(state, dict):
+        raise StateError("state is not an object")
     if state.get("schema_version") != SCHEMA_VERSION:
         raise StateError(f"unsupported schema_version: {state.get('schema_version')}")
-    for key in ("slice", "risk", "risk_rationale", "slice_base", "gates", "remediation"):
+    unknown = set(state) - _TOP_FIELDS
+    if unknown:
+        raise StateError(f"unknown top-level field(s): {sorted(unknown)}")
+    for key in _TOP_FIELDS:
         if key not in state:
             raise StateError(f"missing required field: {key}")
+    for key in ("slice", "risk_rationale", "slice_base"):
+        if not isinstance(state[key], str) or not state[key].strip():
+            raise StateError(f"field {key} must be a non-empty string")
     if state["risk"] not in _RISKS:
         raise StateError(f"invalid risk: {state['risk']!r}")
+    if not isinstance(state["gates"], dict):
+        raise StateError("gates must be an object")
     for name, g in state["gates"].items():
-        if g.get("status") not in ("green", "red"):
+        if name not in _GATE_NAMES:
+            raise StateError(f"unknown gate: {name}")
+        if not isinstance(g, dict) or g.get("status") not in ("green", "red"):
             raise StateError(f"gate {name} has invalid status")
+        if not isinstance(g.get("reviewer"), str) or not g["reviewer"].strip():
+            raise StateError(f"gate {name} missing reviewer")
+        if not isinstance(g.get("ts"), str) or not g["ts"].strip():
+            raise StateError(f"gate {name} missing ts")
         if name in _ARTIFACT_GATES:
-            for f in ("reviewer", "at_commit", "ts"):
-                if f not in g:
-                    raise StateError(f"gate {name} missing {f}")
+            if not isinstance(g.get("at_commit"), str) or not g["at_commit"].strip():
+                raise StateError(f"gate {name} missing at_commit")
+    rem = state["remediation"]
+    if not isinstance(rem, dict):
+        raise StateError("remediation must be an object")
+    of = rem.get("open_findings")
+    if not isinstance(of, int) or isinstance(of, bool) or of < 0:
+        raise StateError("remediation.open_findings must be a non-negative integer")
 
 
 def load_state(root: Path) -> dict | None:
@@ -459,90 +484,145 @@ if __name__ == "__main__":
 **Interfaces:**
 - Consumes: `loop_state` (`repo_root`, `rev_parse`, `load_state`, `load_config`, `is_mergeable`, `StateError`, `GitError`).
 - Produces:
-  - `classify(command: str, protected: list[str], current_branch: str) -> tuple[str, str | None]` returning `("allow", None)`, `("deny", reason)`, or `("check", landing_ref)`.
-  - a hook `main()` reading stdin JSON, exiting `0` (allow) or `2` (deny with the PreToolUse JSON contract).
+  - `classify(tokens: list[str], protected: list[str], current_branch: str) -> tuple[str, str | None]` returning `("allow", None)`, `("deny", reason)`, `("check", ref)`, or `("check_push_default", None)`. It takes shlex-tokenized argv, not a raw string, and does pure argv parsing (no git calls).
+  - a hook `main()` that tokenizes with `shlex.split`, detects shell operators/expansion as literal tokens, resolves landing commits (`ref^{commit}` to deref tags; `@{push}` for a bare push), consults state, and exits `0`/`2`.
 
-**Classification contract (fail closed on doubt):**
-- `("allow", None)` only when the command is NOT in the push / merge / `gh pr merge` family, OR is a push whose resolved target branch is not protected.
-- `("check", ref)` for the supported protected-branch forms, with `ref` the source to resolve into the landing commit:
-  - on a protected branch, `git push [remote] [protected]` or bare `git push` -> ref `HEAD`
-  - `git push [remote] <src>:<protected>` -> ref `<src>`
-  - `git push [remote] <protected>` from any branch -> ref `<protected>`
-  - on a protected branch, `git merge --ff-only <ref>` -> ref `<ref>`
-- `("deny", reason)` for everything else that touches the protected family: compound commands (`&&`, `;`, `|`, backticks, `$(`), indirection (`git -C`, leading `cd `), `--all`, `--mirror`, a non-`--ff-only` `git merge` while on a protected branch (may create a merge commit), `gh pr merge` (validates local checkout, not PR head), and any push/merge form it cannot parse into the supported set.
+**Classification contract (strict argv parser, allow only the canonical safe set, deny on any doubt):**
+- Not `git`/`gh` as argv[0] (env prefix, wrapper, alias): DENY if the argv mentions push/merge, else ALLOW.
+- `gh pr merge`: DENY (validates local checkout, not PR head).
+- `git` with a global option before the subcommand (`git -C`, `git -c`): DENY.
+- `git <sub>` where sub is not `push`/`merge`: ALLOW.
+- `git push`: only `--force`/`-f`/`--force-with-lease[=..]` options are allowed; any other option DENIES. Positionals after option removal: 0 or 1 (bare / remote-only) -> `check_push_default` (main resolves `@{push}`; protected -> check landing=HEAD, else allow, unresolvable -> deny); exactly 2 -> parse the single refspec, strip `refs/heads/`, DENY on delete (`:x`, empty src), wildcard (`*`), or a destination containing `/`; if the destination branch is protected -> `("check", src)`, else ALLOW; >2 positionals (multiple refspecs) -> DENY.
+- `git merge`: only relevant when currently on a protected branch (else ALLOW). Options must be exactly `["--ff-only"]` and exactly one positional; anything else DENIES. Returns `("check", ref)`; main resolves `ref^{commit}` to deref annotated tags.
+- Shell operators (`&&`, `||`, `;`, `|`, `&`, redirections) or expansion (`$(`, backticks) present as tokens: DENY if the argv touches push/merge, else ALLOW.
+- Unbalanced quotes (`shlex.split` raises): DENY.
+- Escape hatch: on a DENY, if `config.escape_hatch` is true AND env `DEVLOOP_OVERRIDE=<reason>` is set, ALLOW and append `{ts, command, reason, landing_commit}` to `.loop-audit.log`.
 
-- [ ] **Step 1: Write failing tests** — a full matrix:
-  - allow: `git status`; `git push origin feat/x` (on `feat/x`); `git commit -m x`.
-  - check: `git push origin main` (on main); `git push origin HEAD:main`; `git push origin feat/x:main`; `git push --force origin main`; `git merge --ff-only feat/x` (on main).
-  - deny: `git merge feat/x` (on main, no --ff-only); `git merge feat/x && git push origin main`; `git -C /other push origin main`; `cd /other && git push origin main`; `git push --all origin`; `git push --mirror`; `gh pr merge 12`; `git push origin main:feat/x` is allow (target feat/x, not protected).
-  - integration: feed stdin JSON to `python hooks/gate_guard.py`; a `check` on an ungated repo -> exit 2 deny; on a green-gated repo where landing == gate commit -> exit 0; a `deny` classification -> exit 2 regardless of state; malformed state on a `check` op -> exit 2 (fail closed).
+- [ ] **Step 1: Write failing tests** — a full matrix (call `classify` on tokenized argv, and drive `main()` via stdin JSON):
+  - allow: `git status`; `git push origin feat/x` (on `feat/x`); `git commit -m x`; `git push origin main:feat/x` (destination feat/x).
+  - check: `git push origin main` (on main); `git push origin HEAD:main`; `git push origin HEAD:refs/heads/main`; `git push origin feat/x:main`; `git push --force origin main`; `git push --force-with-lease origin main`; `git merge --ff-only feat/x` (on main); bare `git push` on main with upstream `origin/main`.
+  - deny: `git merge feat/x` (on main, no --ff-only); `git merge feat/x && git push origin main`; `git -C /other push origin main`; `cd /other && git push origin main`; `git push --all origin`; `git push --mirror`; `git push origin :main` (delete); `git push origin main feat/x` (multiple refspecs); `git push origin --force-with-lease main` is allow only if parsed as option+refspec (it is: option `--force-with-lease`, positional `main`) -> check; `GIT_SSH=x git push origin main` (env prefix); `gh pr merge 12`; `git push "origin" 'main` (unbalanced quote).
+  - integration: `check` on an ungated repo -> exit 2; green-gated repo with landing == gate commit -> exit 0; a `deny` classification -> exit 2 regardless of state; malformed state on a `check` op -> exit 2 (fail closed); annotated-tag source resolves to its commit; escape hatch with `escape_hatch:true` + `DEVLOOP_OVERRIDE` -> exit 0 and a `.loop-audit.log` line; with `escape_hatch:false` the env var is ignored.
 
 - [ ] **Step 2: Run to verify failure.**
 
 - [ ] **Step 3: Implement `hooks/gate_guard.py`**
 
 ```python
-"""PreToolUse hook: gate a defined set of protected-branch git ops; fail closed."""
+"""PreToolUse hook: gate a defined set of protected-branch git ops; fail closed.
+
+classify() is a strict argv parser over shlex-tokenized input. It allows only a
+small canonical set of push/merge forms and denies anything else that touches the
+push/merge family, so unrecognized or obfuscated forms cannot slip through.
+"""
 from __future__ import annotations
 
+import datetime
 import json
-import re
+import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import loop_state as ls  # noqa: E402
 
-_COMPOUND = re.compile(r"&&|\|\||;|\||`|\$\(")
-_UNSUPPORTED = re.compile(r"\bgit\s+-C\b|(^|\s)cd\s|--all\b|--mirror\b")
+_PUSH_OPTS = {"--force", "-f", "--force-with-lease"}
+_SHELL_OPS = {"&&", "||", ";", "|", "&", ">", ">>", "<", "2>", "2>>"}
 
 
-def _is_protected(branch: str, protected: list[str]) -> bool:
-    return branch in protected
+def _strip_heads(ref: str) -> str:
+    return ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
 
 
-def classify(command: str, protected: list[str], current_branch: str) -> tuple[str, str | None]:
-    c = command.strip()
-    is_push = bool(re.search(r"\bgit\s+push\b", c))
-    is_merge = bool(re.search(r"\bgit\s+merge\b", c))
-    is_gh_merge = bool(re.search(r"\bgh\s+pr\s+merge\b", c))
-    if not (is_push or is_merge or is_gh_merge):
+def _mentions_family(tokens: list[str]) -> bool:
+    return "push" in tokens or "merge" in tokens or ("pr" in tokens and "merge" in tokens)
+
+
+def classify(tokens: list[str], protected: list[str], current_branch: str) -> tuple[str, str | None]:
+    if not tokens:
         return ("allow", None)
-    if is_gh_merge:
-        return ("deny", "gh pr merge is not gated in-session (it validates the local checkout, "
-                        "not the PR head). Merge via a gated push or use server-side protection.")
-    if _COMPOUND.search(c) or _UNSUPPORTED.search(c):
-        return ("deny", "compound or indirected git command touching the push/merge family; "
-                        "run the gated steps explicitly so the exact landing commit can be checked.")
-    if is_merge:
-        # only a fast-forward merge INTO a protected branch is checkable
-        if current_branch not in protected:
-            return ("allow", None)  # merging into a feature branch
-        if "--ff-only" not in c:
-            return ("deny", "non-fast-forward merge into a protected branch may create an "
-                            "unreviewed merge commit; use --ff-only or gate the merge commit.")
-        m = re.search(r"\bgit\s+merge\s+--ff-only\s+(\S+)", c)
-        return ("check", m.group(1)) if m else ("deny", "cannot parse merge source ref")
-    # push forms
-    m = re.search(r"\bgit\s+push\b[^\n]*?(\S+):(\S+)\s*$", c)  # src:dst
-    if m:
-        src, dst = m.group(1), m.group(2)
-        return ("check", src) if _is_protected(dst, protected) else ("allow", None)
-    # explicit trailing branch: git push [remote] <branch>
-    m = re.search(r"\bgit\s+push\b(?:\s+--force\S*|\s+-f)?\s+\S+\s+(\S+)\s*$", c)
-    if m:
-        dst = m.group(1)
-        return ("check", dst) if _is_protected(dst, protected) else ("allow", None)
-    # bare push (no ref): gated only when currently on a protected branch
-    if current_branch in protected:
-        return ("check", "HEAD")
-    return ("allow", None)
+    head = tokens[0]
+    if head not in ("git", "gh"):
+        return ("deny", "unrecognized wrapper/prefix around a push or merge; run plain git") \
+            if _mentions_family(tokens) else ("allow", None)
+    if head == "gh":
+        if tokens[1:3] == ["pr", "merge"]:
+            return ("deny", "gh pr merge is not gated in-session (validates the local checkout, "
+                            "not the PR head); use a gated push or server-side protection.")
+        return ("allow", None)
+    if len(tokens) < 2:
+        return ("allow", None)
+    sub = tokens[1]
+    if sub.startswith("-"):
+        return ("deny", "global git options before the subcommand are not supported here")
+    if sub not in ("push", "merge"):
+        return ("allow", None)
+    args = tokens[2:]
+    opts = [a for a in args if a.startswith("-")]
+    pos = [a for a in args if not a.startswith("-")]
+    if sub == "push":
+        for o in opts:
+            if o.split("=", 1)[0] not in _PUSH_OPTS:
+                return ("deny", f"unsupported push option {o}")
+        if len(pos) <= 1:
+            return ("check_push_default", None)  # bare push or remote-only; resolve @{push}
+        if len(pos) > 2:
+            return ("deny", "multiple refspecs are not supported here")
+        refspec = pos[1]
+        if "*" in refspec or refspec.startswith(":") or refspec == "":
+            return ("deny", "delete or wildcard refspec is not supported here")
+        src, dst = refspec.split(":", 1) if ":" in refspec else (refspec, refspec)
+        if not src:
+            return ("deny", "delete refspec is not supported here")
+        dst = _strip_heads(dst)
+        if "/" in dst:
+            return ("deny", f"unsupported push destination {dst}")
+        return ("check", src) if dst in protected else ("allow", None)
+    # sub == "merge"
+    if current_branch not in protected:
+        return ("allow", None)
+    if opts != ["--ff-only"] or len(pos) != 1:
+        return ("deny", "only 'git merge --ff-only <one-ref>' into a protected branch is supported")
+    return ("check", pos[0])
 
 
 def _deny(reason: str) -> int:
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
           "permissionDecision": "deny", "permissionDecisionReason": reason}}))
     return 2
+
+
+def _current_branch(root: Path) -> str:
+    try:
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
+                             capture_output=True, text=True, check=True)
+        return out.stdout.strip()
+    except Exception:
+        return ""
+
+
+def _push_default_branch(root: Path) -> str | None:
+    try:
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref",
+                              "--symbolic-full-name", "@{push}"],
+                             capture_output=True, text=True, check=True)
+    except Exception:
+        return None
+    ref = out.stdout.strip()
+    return ref.split("/", 1)[1] if "/" in ref else ref
+
+
+def _escape(root: Path, config: dict, command: str, landing: str) -> bool:
+    reason = os.environ.get("DEVLOOP_OVERRIDE")
+    if not (config.get("escape_hatch") and reason):
+        return False
+    line = json.dumps({"ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                       "command": command, "reason": reason, "landing_commit": landing})
+    with (root / ".loop-audit.log").open("a") as fh:
+        fh.write(line + "\n")
+    return True
 
 
 def main() -> int:
@@ -559,40 +639,52 @@ def main() -> int:
         config = ls.load_config(root)
         protected = config.get("protected_branches", ["main", "master"])
         branch = _current_branch(root)
-        action, ref = classify(command, protected, branch)
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            return _deny("dev-loop: unparseable command (unbalanced quotes)")
+        if any(t in _SHELL_OPS for t in tokens) or any("$(" in t or "`" in t for t in tokens):
+            if _mentions_family(tokens):
+                return 0 if _escape(root, config, command, "n/a") else \
+                    _deny("dev-loop: compound/expanded command touching push/merge; run the gated step alone")
+            return 0
+
+        action, payload = classify(tokens, protected, branch)
         if action == "allow":
             return 0
         if action == "deny":
-            return _deny(f"dev-loop: {ref}")
-        # action == "check": resolve landing commit and consult state
-        landing = ls.rev_parse(root, ref)
+            return 0 if _escape(root, config, command, "n/a") else _deny(f"dev-loop: {payload}")
+
+        if action == "check_push_default":
+            dst = _push_default_branch(root)
+            if dst is None:
+                return 0 if _escape(root, config, command, "n/a") else \
+                    _deny("dev-loop: cannot resolve the push destination; push an explicit refspec")
+            if dst not in protected:
+                return 0
+            landing = ls.rev_parse(root, "HEAD")
+        else:  # "check"
+            landing = ls.rev_parse(root, payload + "^{commit}")
+
         state = ls.load_state(root)
         if state is None:
-            return _deny("dev-loop: no .loop-state.json for this slice; run 'loop_state.py init' "
-                         "and pass the gates before touching a protected branch.")
-        ok, reasons = ls.is_mergeable(state, landing, root, config)
-        return 0 if ok else _deny("dev-loop blocks this operation: " + "; ".join(reasons))
+            reason = ("dev-loop: no .loop-state.json for this slice; run 'loop_state.py init' "
+                      "and pass the gates before touching a protected branch.")
+        else:
+            ok, reasons = ls.is_mergeable(state, landing, root, config)
+            if ok:
+                return 0
+            reason = "dev-loop blocks this operation: " + "; ".join(reasons)
+        return 0 if _escape(root, config, command, landing) else _deny(reason)
     except (ls.StateError, ls.GitError) as exc:
         return _deny(f"dev-loop fail-closed (guard error): {exc}")
     except Exception as exc:
         return _deny(f"dev-loop fail-closed (unexpected guard error): {exc}")
 
 
-def _current_branch(root: Path) -> str:
-    import subprocess
-    try:
-        out = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
-                             capture_output=True, text=True, check=True)
-        return out.stdout.strip()
-    except Exception:
-        return ""
-
-
 if __name__ == "__main__":
     raise SystemExit(main())
 ```
-
-(Implementation note: replace the `ls.rev_parse.__self__ if False` placeholder with a direct `_current_branch(root)` call; it is written that way only to flag that branch resolution uses the helper below, not `cwd`.)
 
 - [ ] **Step 4: Run tests to verify pass** (including the full classification matrix). Confirm `_current_branch(root)` is used for branch resolution (never `cwd`).
 - [ ] **Step 5: Commit.**
@@ -810,7 +902,7 @@ Make it executable.
 
 **Placeholder scan:** the only deferred content is Task 10's final `SKILL.md` (Iron Law: cannot be pre-written; acceptance = passing scenarios) and the two Task-0-gated mechanism choices (SessionStart form, Stop output field), each with a stated default and fallback. No stub code remains in the module tasks.
 
-**Type consistency:** `schema_version`/`slice`/`risk`/`risk_rationale`/`slice_base`/`gates`/`remediation` and the signatures `repo_root`, `rev_parse`, `load_state`, `validate_state`, `gate_status(state,gate,landing_commit)`, `docs_current(root,slice_base,landing,config)`, `is_mergeable(state,landing,root,config)`, and `classify(command,protected,current_branch)` are used identically across Tasks 2-7 and 12. Config key is `protected_branches` throughout.
+**Type consistency:** `schema_version`/`slice`/`risk`/`risk_rationale`/`slice_base`/`gates`/`remediation` and the signatures `repo_root`, `rev_parse`, `load_state`, `validate_state`, `gate_status(state,gate,landing_commit)`, `docs_current(root,slice_base,landing,config)`, `is_mergeable(state,landing,root,config)`, and `classify(tokens,protected,current_branch)` (argv, not a raw string) are used identically across Tasks 2-7 and 12. Config keys are `protected_branches`, `codex_required_risks`, `roadmap_paths`, `shipped_log_paths`, `escape_hatch` throughout; `escape_hatch` is consulted in `gate_guard` (env `DEVLOOP_OVERRIDE` + `.loop-audit.log`).
 
 ## Execution Handoff
 

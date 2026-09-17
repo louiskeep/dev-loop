@@ -149,11 +149,27 @@ Every recorded gate carries `reviewer`, `ts`, and (for the artifact gates) the
 missing or unknown risk fails the merge check closed rather than silently
 skipping the Codex requirement. Docs-current is not a stored boolean (see below).
 
-Independence is procedural, not cryptographic: a caller could in principle assert
-`dennis green` without dennis having run. The plugin records who and when and ties
-it to a commit, but it cannot prove the review happened. That limit is stated in
-the README; the mitigation is that the conductor delegates the gate to the dennis
-agent and the record reflects that, not a self-assertion.
+### Accepted decision: gate independence is procedural, not cryptographic
+
+A caller could in principle write `dennis green` without dennis having run. The
+plugin records who, when, and which commit, but it does not cryptographically
+prove the review happened. This is an accepted design decision, not an unsolved
+gap, and it is right-sized to the threat model:
+
+- The operator is a single trusted person (Cam) plus the agents he directs. The
+  threat this plugin exists to counter is the *conductor skipping the gate under
+  pressure*, not an adversary forging review records. Making a skip require an
+  explicit, visible, commit-bound state write (which the merge hook then checks)
+  already defeats the accidental/pressure skip.
+- The standing product constraint is self-hosted single-org, do not overbuild,
+  defer adversarial/internet-scale hardening. A signed-attestation or
+  mandatory-CI integrity layer would be exactly that over-build.
+
+If the threat model ever changes (untrusted contributors, shared CI), the correct
+answer is server-side branch protection with required status checks and required
+reviewers, or an externally minted commit-bound signed attestation. That is
+documented in the README as the upgrade path. The in-session plugin does not
+attempt it.
 
 ### What the gate attests to, and which commit is checked
 
@@ -190,7 +206,7 @@ is caught.
    hatch. Feature-branch pushes with no protected-branch target are allowed.
 
 2. Re-gate invalidation (in `loop_state.py`, enforced by gate_guard): a landing
-   commit that is not the green-gated `reviewed_commit` is blocked.
+   commit that does not equal every required gate's `at_commit` is blocked.
 
 3. `done_claim_check.py` (Stop hook). It reads `last_assistant_message`; if it
    claims done/merge-ready and the state is missing, stale, or red, it emits a
@@ -220,8 +236,12 @@ in-session enforcement.
 
 For the outermost handler, gated operations fail closed: any internal error on a
 command the guard has classified as a protected-branch operation results in a
-DENY (exit 2), never an allow, and a `config.json` toggle provides the audited
-escape hatch. The honest caveat from "What the enforcement is" still holds: a
+DENY (exit 2), never an allow. The audited escape hatch is explicit and logged:
+it activates only when `config.escape_hatch` is true AND the environment variable
+`DEVLOOP_OVERRIDE=<reason>` is set on the operation; the guard then allows the op
+and appends `{ts, command, reason, landing_commit}` to `.loop-audit.log` in the
+repo. With `escape_hatch` false (the default) the variable is ignored. There is
+no silent bypass. The honest caveat from "What the enforcement is" still holds: a
 hook that never runs (timeout, startup failure, invalid manifest, operation
 outside the Bash tool) cannot fail closed at all, which is why server-side
 protection is the real boundary.
@@ -268,8 +288,8 @@ Hooks (mechanical) get ordinary pytest coverage:
   subdirectory invocation, worktrees, `--all`/`--mirror`, compound `merge && push`,
   `gh pr merge`, `push origin main:feature`, comments/quoted text, and plain
   feature-branch pushes. Ambiguous forms must DENY.
-- landing-commit check: allows when the landing commit equals the green-gated
-  `reviewed_commit`; denies when a new commit has been added since; R1 needs
+- landing-commit check: allows when the landing commit equals every required
+  gate's `at_commit`; denies when a new commit has been added since; R1 needs
   dennis only, R2/R3 also needs Codex.
 - fail-closed: missing, malformed, or schema-invalid state denies a classified
   protected-branch op; a guard exception on such an op denies.
