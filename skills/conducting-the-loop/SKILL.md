@@ -44,6 +44,13 @@ Findings return through REMEDIATE -> SELF-CHECK -> VERIFY -> REVIEW. The canonic
 policy live in `rules/development-loop.md` and `rules/risk-and-exceptions.md`; read them rather than
 improvising. Risk only rises; classify from the highest-risk characteristic.
 
+Load the phase's technique skill on demand rather than carrying all of it in context:
+
+- DEVELOP with independent or parallelizable work: `orchestrating-parallel-agents`.
+- VERIFY: `verifying-changed-units`.
+- REVIEW / GATE / REMEDIATE: `running-the-gate`.
+- DOCUMENT: `documenting-the-slice`.
+
 ## Rationalization table
 
 Every excuse below is a signal to STOP, not a reason to proceed.
