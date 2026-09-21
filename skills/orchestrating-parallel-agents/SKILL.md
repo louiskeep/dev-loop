@@ -84,6 +84,9 @@ outside it.** Overlapping write scope is the main way parallel builders corrupt 
 Self-contained beats inherited: construct exactly what the agent needs rather than assuming session
 context (a fork is the only exception). A vague prompt returns vague work you cannot integrate.
 
+For concurrent writers sharing one repo, `parallel-builds-with-worktrees.md` has the concrete
+git-worktree setup, dispatch, and integration steps.
+
 ## Load management (thinking ahead)
 
 Fill idle wall-clock instead of stacking cost:

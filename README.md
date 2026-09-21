@@ -40,6 +40,19 @@ that up on the remote if you need a boundary a determined or external actor
 cannot cross. The plugin makes the drift modes hard to do by accident or under
 pressure; it does not make them impossible.
 
+## Skills
+
+The conductor loads a skill on demand at each phase, so orchestration stays lean:
+
+- `conducting-the-loop` — the judgment steps and the phase spine (loaded at session start).
+- `orchestrating-parallel-agents` — DEVELOP: fire independent research and parallelizable work
+  concurrently, hand off safely, and balance load. Its `parallel-builds-with-worktrees.md` covers the
+  concrete concurrent-writer setup.
+- `verifying-changed-units` — VERIFY: measure coverage and mutation on the changed units.
+- `running-the-gate` — REVIEW / GATE / REMEDIATE: dennis then Codex on the exact commit, per-finding
+  root-cause remediation, re-gate on the fixed commit.
+- `documenting-the-slice` — DOCUMENT: roadmap and shipped-log close-out.
+
 ## Config
 
 Plugin defaults live in `config.json`; a per-repo `.loop-config.json` at the
