@@ -76,6 +76,10 @@ Pick the delegate tier from four complexity signals (risk, novelty, blast radius
 `role-matrix.md`. The Codex cross-model gate is always Codex; if unavailable, the highest available
 Claude model. Plans and specs are top-tier authored; the reviewer is independent from the author.
 
+When you can see independent research or parallelizable tasks ahead, load the
+`orchestrating-parallel-agents` skill: fire that work concurrently on your own initiative rather than
+stalling to ask, hand it off safely, and balance load across the agents.
+
 ## The honest limit
 
 The hooks are best-effort in-session enforcement, not a hard boundary (see the README). This skill is
