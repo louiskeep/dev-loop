@@ -13,13 +13,16 @@ never trips it. What it actually detects (see `detect_weakening`):
   - a `check_metadata=True` removed or flipped to `False`,
   - a `.equals(...)` parity assertion removed,
   - a strong (`==` / `!=` / `.equals` / ` is `) assertion removed,
-  - a `skip` / `xfail` suppressor added.
+  - a `skip` / `skipif` / `xfail` suppressor added.
 What it does NOT detect (heuristic limits, acceptable for a warn-default v1, must
 not be relied on in block mode): a comparison narrowed in place (`x == y` ->
-`x.shape == y.shape` keeps the count), a `pytest.approx` tolerance widened, a
-`parametrize` case list shortened without touching asserts, and tokens inside
-comments or strings. Edit/MultiEdit see only the changed hunk, so an assertion
-merely moved elsewhere in the file reads as removed (a warn-mode false positive).
+`x.shape == y.shape` keeps the count), a `pytest.approx` tolerance widened, and a
+`parametrize` case list shortened without touching asserts. Counting is over raw
+text, so tokens in comments/strings count too -- which makes the count GAMEABLE: a
+real assertion removal can be masked by padding the new text with a commented-out
+`check_metadata=True` or `.equals(` token. Edit/MultiEdit also see only the changed
+hunk, so an assertion merely moved elsewhere in the file reads as removed (a
+warn-mode false positive). These are why block mode is opt-in per repo.
 
 It is a heuristic, so the default mode is WARN, not block: every hit is appended
 to a `.loop-test-guard.log` audit line (the channel to watch) and the edit
@@ -56,8 +59,12 @@ _DEFAULT_TEST_DIRS = ["tests"]
 _STRONG_ASSERT = re.compile(r"^\s*assert\b.*(==|!=|\.equals\(|check_metadata| is )")
 _CHECK_METADATA = re.compile(r"check_metadata\s*=\s*True")
 _EQUALS_PARITY = re.compile(r"\.equals\(")
-# Suppressors whose APPEARANCE weakens a test.
-_SUPPRESSOR_ADD = re.compile(r"@?\s*pytest\.mark\.(skip|xfail)\b|@\s*(skip|xfail)\b|pytest\.skip\(")
+# Suppressors whose APPEARANCE weakens a test. `skipif` is listed before `skip`
+# so the longer mark matches (a bare `skip\b` never matches `skipif` anyway, since
+# the "i" is a word character -- that was a real miss).
+_SUPPRESSOR_ADD = re.compile(
+    r"@?\s*pytest\.mark\.(skipif|skip|xfail)\b|@\s*(skipif|skip|xfail)\b|pytest\.skip\("
+)
 
 
 def _count(pattern: re.Pattern[str], text: str) -> int:
@@ -137,18 +144,29 @@ def _load_config(root: Path) -> dict:
     model (documented in the README)."""
     cfg: dict = {}
     plugin_cfg = Path(__file__).resolve().parent.parent / "config.json"
-    if plugin_cfg.exists():
-        try:
-            cfg.update(json.loads(plugin_cfg.read_text()))
-        except (OSError, json.JSONDecodeError):
-            pass
     repo_cfg = root / ".loop-config.json"
-    if repo_cfg.exists():
+    for path in (plugin_cfg, repo_cfg):
+        if not path.exists():
+            continue
         try:
-            cfg.update(json.loads(repo_cfg.read_text()))
-        except (OSError, json.JSONDecodeError):
-            pass
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # ValueError covers JSONDecodeError AND a non-UTF8 UnicodeDecodeError.
+            # A malformed config must not silently disable enforcement: skip it and
+            # keep the safe defaults rather than crashing into main()'s catch-all.
+            continue
+        if isinstance(loaded, dict):
+            cfg.update(loaded)
     return cfg
+
+
+def _as_list(value: object, default: list[str]) -> list[str]:
+    """Coerce a config value that must be a list of strings back to the default
+    when it is null or the wrong shape, so a bad config cannot make the protected
+    predicate iterate a non-list and crash (which would disable block mode)."""
+    if isinstance(value, list) and all(isinstance(v, str) for v in value):
+        return value
+    return default
 
 
 def _audit(event: dict, root: Path, file_path: str, signals: list[str], mode: str) -> bool:
@@ -201,8 +219,8 @@ def main_from_event(event: dict) -> int:
         return 0
     tool_input = event.get("tool_input", {}) or {}
     file_path = tool_input.get("file_path") or ""
-    file_globs = cfg.get("test_guard_file_globs", _DEFAULT_FILE_GLOBS)
-    test_dirs = cfg.get("test_guard_dirs", _DEFAULT_TEST_DIRS)
+    file_globs = _as_list(cfg.get("test_guard_file_globs"), _DEFAULT_FILE_GLOBS)
+    test_dirs = _as_list(cfg.get("test_guard_dirs"), _DEFAULT_TEST_DIRS)
     if not _is_protected_test(file_path, file_globs, test_dirs):
         return 0
     is_subagent = bool(event.get("agent_id"))

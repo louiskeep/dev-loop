@@ -51,6 +51,13 @@ def test_adding_xfail_marker_fires():
     assert "added a skip/xfail suppressor" in tg.detect_weakening(old, new)
 
 
+def test_adding_skipif_marker_fires():
+    # `skipif` was previously missed because `skip\b` does not match `skipif`.
+    old = "def test_parity():\n    assert a == b\n"
+    new = "@pytest.mark.skipif(True, reason='x')\ndef test_parity():\n    assert a == b\n"
+    assert "added a skip/xfail suppressor" in tg.detect_weakening(old, new)
+
+
 def test_additive_edit_does_not_fire():
     # Adding a NEW check_metadata assertion (today's real pattern) must be silent.
     old = "assert a.to_pylist() == b.to_pylist()\n"
@@ -245,6 +252,32 @@ def test_config_resolved_at_repo_root_from_subdir(tmp_path, capsys):
         "cwd": str(sub),  # invoked from a subdir; policy lives at the repo root
     }
     assert tg.main_from_event(ev) == 2  # block policy found via repo root
+
+
+def test_block_mode_survives_null_glob_config(tmp_path, capsys):
+    # A null glob value must coerce to the default, not crash into the catch-all
+    # and silently disable block enforcement.
+    (tmp_path / ".loop-config.json").write_text(
+        '{"test_guard_mode": "block", "test_guard_file_globs": null}'
+    )
+    ev = _edit_event(
+        tmp_path,
+        "assert ot.schema.equals(nt.schema, check_metadata=True)",
+        "assert ot.to_pylist() == nt.to_pylist()",
+    )
+    assert tg.main_from_event(ev) == 2  # still enforces
+
+
+def test_malformed_non_utf8_config_falls_back_to_defaults(tmp_path, capsys):
+    (tmp_path / ".loop-config.json").write_bytes(b"\xff\xfe{not json")
+    ev = _edit_event(
+        tmp_path,
+        "assert a.schema.equals(b.schema, check_metadata=True)",
+        "assert a.schema.equals(b.schema)",
+    )
+    # No crash; malformed config skipped -> plugin default (warn) -> rc 0, no stdout.
+    assert tg.main_from_event(ev) == 0
+    assert capsys.readouterr().out.strip() == ""
 
 
 def test_main_fails_open_on_internal_error(monkeypatch, capsys):

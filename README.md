@@ -25,11 +25,13 @@ loosens the acceptance test to green the suite and calls the divergence benign.
 The hook is a DIRECTIONAL, count-based heuristic over a protected test file's
 edit. It detects: a `check_metadata=True` removed or flipped to `False`, a
 `.equals(...)` parity assertion removed, a strong (`==`/`!=`/`.equals`/` is `)
-assertion removed, and a `skip`/`xfail` suppressor added. It does NOT detect a
-comparison narrowed in place (`x == y` -> `x.shape == y.shape`), a widened
-`pytest.approx` tolerance, a shortened `parametrize` case list, or tokens inside
-comments/strings; Edit only sees the changed hunk, so a moved assertion reads as
-removed (a warn-mode false positive). Additive test authoring never trips it.
+assertion removed, and a `skip`/`skipif`/`xfail` suppressor added. It does NOT
+detect a comparison narrowed in place (`x == y` -> `x.shape == y.shape`), a widened
+`pytest.approx` tolerance, or a shortened `parametrize` case list. Counting is over
+raw text, so tokens in comments/strings count too, which makes the count gameable
+(padding the new text with a commented-out `check_metadata=True` masks a real
+removal); Edit also sees only the changed hunk, so a moved assertion reads as
+removed (a warn-mode false positive). These are why block mode is opt-in per repo. Additive test authoring never trips it.
 
 Every hit is recorded to `.loop-test-guard.log` (at the repo root) with the acting
 agent's id/type, so a subagent's shortcut is visible. Default mode is `warn`: it
