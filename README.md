@@ -19,6 +19,20 @@ commit. A Stop hook (`done_claim_check`) warns when a "done" claim is not
 gate-clean. A `conducting-the-loop` skill carries the judgment steps the hooks
 cannot decide, and the dev-rules are bundled under `rules/`.
 
+A fifth drift mode, test-weakening, has its own PreToolUse hook (`test_guard` on
+Edit/Write/MultiEdit): a builder whose fast path diverges from the reference
+loosens the acceptance test to green the suite (drops `check_metadata`, narrows an
+equality assert to values-only, adds `skip`/`xfail`, deletes a case) and calls the
+divergence benign. The hook detects a DIRECTIONAL weakening (a guard present in the
+old text, gone in the new) of a protected test file and records it to
+`.loop-test-guard.log` with the acting agent's id/type, so a subagent's shortcut is
+visible. Additive test authoring never trips it. Default mode is `warn` (log and
+proceed); set `test_guard_mode: "block"` in `config.json` or a repo
+`.loop-config.json` once the log shows it is precise. `test_guard_subagent_only`
+limits it to subagent edits. This is the workflow backstop; the real catch for a
+laundered divergence is still an independent adversarial gate on the exact
+artifact.
+
 ## This is not a hard boundary
 
 Read this before relying on it. The in-session hooks are **best-effort workflow
