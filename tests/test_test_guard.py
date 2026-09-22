@@ -1,6 +1,16 @@
 import json
 
+import pytest
+
 from hooks import test_guard as tg
+
+
+@pytest.fixture(autouse=True)
+def _isolate_repo_root(tmp_path):
+    # This box has a /tmp/.git, so without a nearer .git, _repo_root would resolve
+    # a tmp subdir all the way up to /tmp. Make each tmp_path its own repo root so
+    # config and the audit log resolve there, as they would in a real repo cwd.
+    (tmp_path / ".git").mkdir(exist_ok=True)
 
 # --- detect_weakening: the pure directional detector -------------------------
 
@@ -86,7 +96,7 @@ def _edit_event(tmp_path, old, new, *, name="test_parity.py", tool="Edit", **ext
     return ev
 
 
-def test_warn_mode_allows_and_audits(tmp_path, capsys):
+def test_warn_mode_audits_without_a_permission_decision(tmp_path, capsys):
     ev = _edit_event(
         tmp_path,
         "assert a.schema.equals(b.schema, check_metadata=True)",
@@ -96,14 +106,23 @@ def test_warn_mode_allows_and_audits(tmp_path, capsys):
     )
     rc = tg.main_from_event(ev)
     assert rc == 0  # warn never blocks
-    out = json.loads(capsys.readouterr().out)
-    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
-    assert "WEAKENS" in out["hookSpecificOutput"]["permissionDecisionReason"]
-    log = (tmp_path / ".loop-test-guard.log").read_text().strip()
-    entry = json.loads(log)
+    captured = capsys.readouterr()
+    # H1: warn mode must NOT emit a permissionDecision (an explicit "allow" would
+    # suppress the user's ordinary edit-confirmation prompt). Nothing on stdout.
+    assert captured.out.strip() == ""
+    assert "WEAKENS" in captured.err  # the reason still surfaces via stderr
+    entry = json.loads((tmp_path / ".loop-test-guard.log").read_text().strip())
     assert entry["agent_id"] == "sub-123"
     assert entry["agent_type"] == "build-agent"
     assert "removed check_metadata=True" in entry["signals"]
+
+
+def test_check_metadata_flip_to_false_fires():
+    signals = tg.detect_weakening(
+        "assert a.schema.equals(b.schema, check_metadata=True)",
+        "assert a.schema.equals(b.schema, check_metadata=False)",
+    )
+    assert "removed check_metadata=True" in signals
 
 
 def test_block_mode_denies(tmp_path, capsys):
@@ -185,8 +204,7 @@ def test_multiedit_weakening_detected(tmp_path, capsys):
         "cwd": str(tmp_path),
     }
     assert tg.main_from_event(ev) == 0
-    out = json.loads(capsys.readouterr().out)
-    assert "removed check_metadata=True" in out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "removed check_metadata=True" in capsys.readouterr().err
 
 
 def test_write_over_existing_test_detects_drop(tmp_path, capsys):
@@ -198,8 +216,43 @@ def test_write_over_existing_test_detects_drop(tmp_path, capsys):
         "cwd": str(tmp_path),
     }
     assert tg.main_from_event(ev) == 0
-    out = json.loads(capsys.readouterr().out)
-    assert "removed check_metadata=True" in out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "removed check_metadata=True" in capsys.readouterr().err
+
+
+def test_write_over_non_utf8_file_does_not_crash(tmp_path, capsys):
+    fp = tmp_path / "test_bin.py"
+    fp.write_bytes(b"\xff\xfe assert a == b\n")  # invalid UTF-8
+    ev = {
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(fp), "content": "assert a == b\n"},
+        "cwd": str(tmp_path),
+    }
+    assert tg.main_from_event(ev) == 0  # no UnicodeDecodeError
+
+
+def test_config_resolved_at_repo_root_from_subdir(tmp_path, capsys):
+    # tmp_path/.git is created by the autouse fixture, so it is the repo root.
+    (tmp_path / ".loop-config.json").write_text('{"test_guard_mode": "block"}')
+    sub = tmp_path / "pkg" / "tests"
+    sub.mkdir(parents=True)
+    ev = {
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": str(sub / "test_parity.py"),
+            "old_string": "assert a.schema.equals(b.schema, check_metadata=True)",
+            "new_string": "assert a.schema.equals(b.schema)",
+        },
+        "cwd": str(sub),  # invoked from a subdir; policy lives at the repo root
+    }
+    assert tg.main_from_event(ev) == 2  # block policy found via repo root
+
+
+def test_main_fails_open_on_internal_error(monkeypatch, capsys):
+    # An advisory guard must never crash the edit: an internal error -> exit 0.
+    monkeypatch.setattr(tg, "main_from_event", lambda event: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO('{"tool_name": "Edit"}'))
+    assert tg.main() == 0
+    assert "not enforcing" in capsys.readouterr().err
 
 
 def test_write_new_test_file_is_silent(tmp_path, capsys):

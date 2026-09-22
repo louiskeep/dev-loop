@@ -2,22 +2,34 @@
 
 The recurring failure mode this guards (see rules/testing.md, rules/delegation.md):
 a builder whose fast/native path diverges from the oracle loosens the acceptance
-test to green the suite (drops `check_metadata=True`, narrows an equality assert
-to values-only, adds `@pytest.mark.skip`/`xfail`, deletes a case) and frames the
-divergence as benign. A subagent is the common offender; plugin PreToolUse hooks
-fire for subagent tool calls, and the input carries `agent_id`/`agent_type` when
-the call came from one, so this records who did it.
+test to green the suite and frames the divergence as benign. A subagent is the
+common offender; plugin PreToolUse hooks fire for subagent tool calls, and the
+input carries `agent_id`/`agent_type` when the call came from one, so this records
+who did it.
 
-Detection is DIRECTIONAL: it fires only when a guard present in the old text is
-gone (or a suppressor appears) in the new text, so additive test authoring never
-trips it. It is a heuristic, so the default mode is WARN, not block: every hit is
-appended to a `.loop-test-guard.log` audit line (the channel to watch), and the
-edit proceeds. Set `test_guard_mode: "block"` once the log shows it is precise.
+Detection is DIRECTIONAL and COUNT-BASED: it fires only when the new text has
+fewer of a guard than the old (or gains a suppressor), so additive test authoring
+never trips it. What it actually detects (see `detect_weakening`):
+  - a `check_metadata=True` removed or flipped to `False`,
+  - a `.equals(...)` parity assertion removed,
+  - a strong (`==` / `!=` / `.equals` / ` is `) assertion removed,
+  - a `skip` / `xfail` suppressor added.
+What it does NOT detect (heuristic limits, acceptable for a warn-default v1, must
+not be relied on in block mode): a comparison narrowed in place (`x == y` ->
+`x.shape == y.shape` keeps the count), a `pytest.approx` tolerance widened, a
+`parametrize` case list shortened without touching asserts, and tokens inside
+comments or strings. Edit/MultiEdit see only the changed hunk, so an assertion
+merely moved elsewhere in the file reads as removed (a warn-mode false positive).
+
+It is a heuristic, so the default mode is WARN, not block: every hit is appended
+to a `.loop-test-guard.log` audit line (the channel to watch) and the edit
+proceeds with NO permission decision emitted. Set `test_guard_mode: "block"` once
+the log shows it is precise for your repo.
 
 This is best-effort in-session enforcement, not a boundary: an independent
-adversarial gate (dennis + a cross-model final review) on the exact artifact is
-what actually catches a laundered divergence. This just makes the shortcut
-visible and, optionally, hard.
+adversarial gate (a fresh-context review + a cross-model final review) on the
+exact artifact is what actually catches a laundered divergence. This just makes
+the shortcut visible and, optionally, hard.
 """
 
 from __future__ import annotations
@@ -87,7 +99,9 @@ def _pairs_from_event(tool_name: str, tool_input: dict) -> list[tuple[str, str]]
         fp = tool_input.get("file_path") or ""
         old = ""
         try:
-            old = Path(fp).read_text()
+            # errors="replace" so a pre-existing non-UTF8 test file cannot crash
+            # the hook (which would fail-open and drop the signal in block mode).
+            old = Path(fp).read_text(encoding="utf-8", errors="replace")
         except OSError:
             old = ""  # new file: nothing weakened
         return [(old, new)]
@@ -103,18 +117,32 @@ def _is_protected_test(file_path: str, file_globs: list[str], test_dirs: list[st
     return any(d in p.parts for d in test_dirs)
 
 
-def _load_config(cwd: Path) -> dict:
-    """Plugin config.json merged with a repo .loop-config.json under `cwd`, if
-    present. Kept independent of loop_state so the guard works outside a slice."""
+def _repo_root(start: Path) -> Path:
+    """Nearest ancestor of `start` containing a `.git`, else `start`. Resolving
+    config and the audit log at the repo root (not the raw cwd) means invoking
+    from a subdirectory still finds the repo's `.loop-config.json`, matching how
+    `gate_guard` resolves via `loop_state.repo_root`."""
+    start = start.resolve()
+    for d in (start, *start.parents):
+        if (d / ".git").exists():
+            return d
+    return start
+
+
+def _load_config(root: Path) -> dict:
+    """Plugin config.json merged with the repo's .loop-config.json, if present.
+    Kept independent of loop_state so the guard works outside a slice. A repo
+    file can set the policy (mode/globs); this is a best-effort workflow guard,
+    not a boundary, so a repo that can also write that file is out of threat
+    model (documented in the README)."""
     cfg: dict = {}
-    root = Path(__file__).resolve().parent.parent
-    plugin_cfg = root / "config.json"
+    plugin_cfg = Path(__file__).resolve().parent.parent / "config.json"
     if plugin_cfg.exists():
         try:
             cfg.update(json.loads(plugin_cfg.read_text()))
         except (OSError, json.JSONDecodeError):
             pass
-    repo_cfg = cwd / ".loop-config.json"
+    repo_cfg = root / ".loop-config.json"
     if repo_cfg.exists():
         try:
             cfg.update(json.loads(repo_cfg.read_text()))
@@ -123,9 +151,11 @@ def _load_config(cwd: Path) -> dict:
     return cfg
 
 
-def _audit(event: dict, cwd: Path, file_path: str, signals: list[str], mode: str) -> None:
-    """Append one JSON line to the audit log. This is the observability channel;
-    it records who (agent) weakened which test and how, in warn AND block mode."""
+def _audit(event: dict, root: Path, file_path: str, signals: list[str], mode: str) -> bool:
+    """Append one JSON line to the audit log at the repo root (fallback: the
+    plugin dir). Returns whether a line was written, so the caller can fall back
+    to stderr when neither path is writable (a real install may make the plugin
+    dir read-only, so this is best-effort, not guaranteed)."""
     line = json.dumps(
         {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -139,13 +169,14 @@ def _audit(event: dict, cwd: Path, file_path: str, signals: list[str], mode: str
         }
     )
     fallback = Path(__file__).resolve().parent.parent / ".loop-test-guard.log"
-    for target in (cwd / ".loop-test-guard.log", fallback):
+    for target in (root / ".loop-test-guard.log", fallback):
         try:
             with target.open("a") as fh:
                 fh.write(line + "\n")
-            return
+            return True
         except OSError:
             continue
+    return False
 
 
 def _message(file_path: str, signals: list[str], is_subagent: bool) -> str:
@@ -163,8 +194,8 @@ def _message(file_path: str, signals: list[str], is_subagent: bool) -> str:
 def main_from_event(event: dict) -> int:
     if event.get("tool_name") not in _EDIT_TOOLS:
         return 0
-    cwd = Path(event.get("cwd") or ".")
-    cfg = _load_config(cwd)
+    root = _repo_root(Path(event.get("cwd") or "."))
+    cfg = _load_config(root)
     mode = cfg.get("test_guard_mode", "warn")
     if mode == "off":
         return 0
@@ -186,10 +217,11 @@ def main_from_event(event: dict) -> int:
     if not signals:
         return 0
 
-    _audit(event, cwd, file_path, signals, mode)
+    logged = _audit(event, root, file_path, signals, mode)
     reason = _message(file_path, signals, is_subagent)
 
     if mode == "block":
+        # deny is the only permission decision this hook ever emits.
         print(
             json.dumps(
                 {
@@ -204,19 +236,15 @@ def main_from_event(event: dict) -> int:
         print(reason, file=sys.stderr)
         return 2
 
-    # warn (default): never stall; surface the reason best-effort and rely on the
-    # audit log as the guaranteed-visible channel.
-    print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "permissionDecisionReason": reason,
-                }
-            }
-        )
-    )
+    # warn (default): never stall, and NEVER emit a permissionDecision -- an
+    # explicit "allow" would suppress the user's ordinary edit-confirmation prompt
+    # on exactly the edits this hook flags. The audit log is the channel to watch;
+    # stderr carries the reason too (and is the only channel if the log write
+    # failed). Matches gate_guard's "JSON only on deny" contract.
+    if not logged:
+        print(reason, file=sys.stderr)
+    else:
+        print(f"{reason} [logged to .loop-test-guard.log]", file=sys.stderr)
     return 0
 
 
@@ -225,7 +253,14 @@ def main() -> int:
         event = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         return 0
-    return main_from_event(event)
+    try:
+        return main_from_event(event)
+    except Exception as exc:  # noqa: BLE001
+        # An advisory guard must never crash the user's edit. Fail OPEN (allow the
+        # edit) rather than closed, and leave a breadcrumb on stderr; a guard bug
+        # is not a reason to block legitimate work.
+        print(f"dev-loop test-guard: internal error, not enforcing: {exc}", file=sys.stderr)
+        return 0
 
 
 if __name__ == "__main__":
