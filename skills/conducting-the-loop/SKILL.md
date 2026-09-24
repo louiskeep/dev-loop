@@ -51,6 +51,10 @@ Load the phase's technique skill on demand rather than carrying all of it in con
 - REVIEW / GATE / REMEDIATE: `running-the-gate`.
 - DOCUMENT: `documenting-the-slice`.
 
+For the wider set of skills worth reaching for at each phase (brainstorming at
+FRAME, plans and specs at PLAN, TDD at DEVELOP, systematic-debugging at
+REMEDIATE, the writing-quality skills before DONE), see `skill-routing.md`.
+
 ## Rationalization table
 
 Every excuse below is a signal to STOP, not a reason to proceed.
