@@ -7,6 +7,188 @@ defined exit condition. The main thread is the conductor. It commands and
 directs the work. Heavy work goes to an agent by role. A hook-enforced loop
 makes four common failure patterns hard to trigger in the session.
 
+## How to use this
+
+Use dev-loop inside a Git repository that you open with Claude Code. Start with
+a small, reversible change on a feature branch.
+
+### 1. Install the plugin
+
+Add the GitHub repository as a marketplace, then install the plugin:
+
+```bash
+claude plugin marketplace add louiskeep/dev-loop
+claude plugin install dev-loop@cam-dev-loop
+```
+
+To test a local clone, add its absolute path instead:
+
+```bash
+claude plugin marketplace add /absolute/path/to/dev-loop
+claude plugin install dev-loop@cam-dev-loop
+```
+
+Start a new Claude Code session after installation. The new session loads the
+conductor instructions and hooks.
+
+### 2. Configure the project
+
+Create `.loop-config.json` in the project root. Set the real paths for the
+project's roadmap and shipped log.
+
+```json
+{
+  "protected_branches": ["main", "master"],
+  "roadmap_paths": ["docs/ROADMAP.md"],
+  "shipped_log_paths": ["docs/RECENTLY-SHIPPED.md"],
+  "codex_required_risks": ["R2", "R3"],
+  "escape_hatch": false,
+  "test_guard_mode": "warn",
+  "test_guard_subagent_only": false
+}
+```
+
+The default roadmap and shipped-log lists are empty. The docs-current check is
+inactive until the project configures these paths.
+
+Keep `test_guard_mode` set to `warn` during the first trial. Change it to
+`block` only after the audit log is accurate for the project.
+
+### 3. Ask the conductor to review the roadmap
+
+Use a prompt such as this one:
+
+> Use the dev-loop process. Review `docs/ROADMAP.md`, the shipped log, and the
+> relevant code. Recommend the next smallest coherent slice. Show FRAME first:
+> the goal, definition of done, boundaries, and risk rationale. Then write a
+> PLAN with observable behavior, failure modes, acceptance tests,
+> implementation steps, and verification requirements. Do not implement until
+> I approve the plan. Keep the loop state current. Use an independent reviewer.
+> Update the roadmap and shipped log before the final exact-commit gate. Ask
+> before you push or merge.
+
+The plugin does not use a special roadmap parser. The conductor reads the
+roadmap, shipped history, project docs, and relevant code. It then proposes a
+work slice and explains how to implement and verify it.
+
+### 4. Initialize the slice
+
+Agree on the risk level before you initialize the slice. Then run the state
+command from the plugin clone:
+
+```bash
+python /absolute/path/to/dev-loop/hooks/loop_state.py \
+  --repo /absolute/path/to/project \
+  init \
+  --slice first-dev-loop-trial \
+  --risk R1 \
+  --rationale "Bounded reversible change with limited blast radius"
+```
+
+Risk controls the required gates:
+
+- R0 is trivial and reversible work.
+- R1 is bounded and reversible work with limited impact.
+- R2 includes security, privacy, schema, compatibility, architecture,
+  concurrency, broad refactors, and controlled releases.
+- R3 includes destructive or irreversible operations and consequential
+  production changes.
+
+The `init` command creates `.loop-state.json`. It also adds the state file to
+the project's `.gitignore` file.
+
+For R2 and R3 work, record the approved plan review:
+
+```bash
+python /absolute/path/to/dev-loop/hooks/loop_state.py \
+  --repo /absolute/path/to/project \
+  record-gate plan_review \
+  --status green \
+  --reviewer plan-reviewer
+```
+
+### 5. Run the development loop
+
+The conductor moves the slice through these phases:
+
+```text
+FRAME -> PLAN -> DEVELOP -> SELF-CHECK -> VERIFY -> REVIEW
+                                                |
+                                             findings
+                                               v
+                                          REMEDIATE
+                                               |
+                                               v
+                              SELF-CHECK -> VERIFY -> REVIEW
+```
+
+Prepare the roadmap, shipped log, and other durable docs before the final gate.
+Include those changes in the commit that the reviewers inspect.
+
+Commit the complete slice before the final review:
+
+```bash
+git add path/to/changed-file
+git commit -m "Complete the approved slice"
+```
+
+Then complete the final gate and close-out:
+
+```text
+DOCUMENT PREP -> FINAL REVIEW -> GATE -> DOCUMENT CONFIRMATION
+```
+
+The final DOCUMENT confirmation checks that the durable docs match the gated
+commit. If this step changes a file, the commit changed. Repeat SELF-CHECK,
+VERIFY, REVIEW, and GATE on the new commit.
+
+### 6. Record the independent gates
+
+Record Dennis after his review of the exact commit:
+
+```bash
+python /absolute/path/to/dev-loop/hooks/loop_state.py \
+  --repo /absolute/path/to/project \
+  record-gate dennis \
+  --status green \
+  --reviewer dennis \
+  --commit HEAD
+```
+
+For R2 and R3 work, record the Codex gate on the same commit:
+
+```bash
+python /absolute/path/to/dev-loop/hooks/loop_state.py \
+  --repo /absolute/path/to/project \
+  record-gate codex \
+  --status green \
+  --reviewer codex \
+  --commit HEAD
+```
+
+Check the landing commit before a push or merge:
+
+```bash
+python /absolute/path/to/dev-loop/hooks/loop_state.py \
+  --repo /absolute/path/to/project \
+  check-merge \
+  --landing HEAD
+```
+
+### 7. Push one command at a time
+
+Push the gated commit with a plain Git command:
+
+```bash
+git push origin your-feature-branch
+```
+
+The guard rejects compound push or merge commands. A protected-branch update
+also requires green gates on the exact landing commit.
+
+For a first trial, use R1 work and keep server-side branch protection enabled.
+The plugin supports the workflow, but it does not replace remote protection.
+
 ## The loop, phase by phase
 
 ```text
