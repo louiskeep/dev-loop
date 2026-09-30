@@ -35,6 +35,9 @@ Hand the reviewer, and require back:
 - **Every finding in one pass.** Tell the reviewer to list all findings it can find, not stop at the
   first blocker, and allow small read-only probes (a scratch dir, bounded memory) so runtime behavior
   gets checked, not only the text.
+- **Risk-proportional severity.** A finding blocks only if it is plausible in real use of the system as
+  deployed. Astronomically unlikely events are recorded as low or follow-up items, not blockers. For
+  anything rated high or above, the reviewer states how the failure would occur in real use.
 - **Judgement against the plan's pinned guarantee.** Findings outside the plan's stated guarantee and
   non-goals go in a separate out-of-scope list and become follow-up items, not blockers.
 

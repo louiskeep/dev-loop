@@ -79,8 +79,13 @@ An independent reviewer evaluates the exact artifact against the plan, evidence,
 and applicable rulebooks. Review produces findings and a verdict with checked
 and unchecked scope. The first pass is exhaustive: the reviewer lists every
 finding it can find, not only the first blocker, and may run small read-only
-probes to check runtime behavior that reading alone can miss. Exit with the
-required independent verdict.
+probes to check runtime behavior that reading alone can miss. Severity is
+proportional to real-world risk: a finding blocks only if it is plausible in
+real use of the system as deployed. A finding that needs an astronomically
+unlikely event is recorded as low or as a follow-up item, with a sentence on
+why, and does not block. For anything rated high or above, the reviewer states
+how the failure would occur in real use. Exit with the required independent
+verdict.
 
 ### REMEDIATE
 
