@@ -32,6 +32,11 @@ Hand the reviewer, and require back:
   location, why it is wrong, the failure it causes, and a **root-cause remediation direction, not a
   symptom patch**. The reviewer identifies the fix; it does not write it.
 - The verdict's checked *and* unchecked scope. "Looks fine" is not a verdict.
+- **Every finding in one pass.** Tell the reviewer to list all findings it can find, not stop at the
+  first blocker, and allow small read-only probes (a scratch dir, bounded memory) so runtime behavior
+  gets checked, not only the text.
+- **Judgement against the plan's pinned guarantee.** Findings outside the plan's stated guarantee and
+  non-goals go in a separate out-of-scope list and become follow-up items, not blockers.
 
 Ask for per-finding root-cause remediation explicitly. A gate that only lists problems leaves the fix
 to guesswork.
@@ -43,6 +48,12 @@ to guesswork.
   the new commit**; re-gate on the fixed commit.
 - Do not weaken a pre-agreed acceptance criterion to make the gate pass. Change it only through a
   recorded decision.
+- Patch what was found. Do not redesign during remediation; a redesign is a new plan and needs human
+  direction.
+- Every re-gate prompt names the fix and asks the reviewer to check that fix for new breakage, not
+  only to re-check the earlier findings.
+- Count review rounds per plan or artifact. After three, stop for human direction: accept with
+  documented gaps, narrow the scope, or continue.
 - Ladder: Opus builds and fixes, Codex is the final gate, park for human direction after repeated
   failure. Do not convert retries into confidence.
 
@@ -51,4 +62,6 @@ to guesswork.
 - Merging on a gate that predates the current commit.
 - A gate prompt that says "find problems" without demanding per-finding root-cause remediation.
 - Marking a finding resolved without a re-review on the fixed commit.
+- A fourth review round on the same slice without a human decision.
+- Changing the design in response to findings instead of patching them.
 - Self-reviewing in the main session instead of delegating to a fresh context.

@@ -41,6 +41,11 @@ known failure modes, and acceptance tests before implementation. Use a
 fail-before proof when meaningful; when it is unsafe, intermittent, or not yet
 available, record the best available evidence and compensating validation.
 
+Pin the guarantee. The plan states exactly what the change promises and lists
+its non-goals. A review finding outside that stated guarantee becomes a
+recorded follow-up item, not a blocker for this change. A guarantee that is
+never written down lets each review round go one layer deeper.
+
 Test authorship is role-neutral. A planner, builder, or another qualified
 contributor may create tests, but no later contributor may weaken pre-agreed
 acceptance criteria. R1 may record test cases without a separately authored test
@@ -72,14 +77,21 @@ evidence, failures, skips, and limitations.
 
 An independent reviewer evaluates the exact artifact against the plan, evidence,
 and applicable rulebooks. Review produces findings and a verdict with checked
-and unchecked scope. Exit with the required independent verdict.
+and unchecked scope. The first pass is exhaustive: the reviewer lists every
+finding it can find, not only the first blocker, and may run small read-only
+probes to check runtime behavior that reading alone can miss. Exit with the
+required independent verdict.
 
 ### REMEDIATE
 
 Correct supported findings at the root. If a change alters an artifact, repeat
-SELF-CHECK and VERIFY, then obtain the required re-review. Exit only when
-findings are resolved, accepted through an approved exception, or returned for
-human direction.
+SELF-CHECK and VERIFY, then obtain the required re-review. Patch what the review
+found; do not redesign during remediation. A redesign is a new plan and needs
+human direction. Each re-review checks the specific fix for new breakage, not
+only the earlier findings. After three review rounds on the same plan or
+artifact, stop for human direction: accept with documented gaps, narrow the
+scope, or continue. Exit only when findings are resolved, accepted through an
+approved exception, or returned for human direction.
 
 ### GATE
 
