@@ -82,8 +82,9 @@ finding it can find, not only the first blocker, and may run small read-only
 probes to check runtime behavior that reading alone can miss. Severity is
 proportional to real-world risk: a finding blocks only if it is plausible in
 real use of the system as deployed. A finding that needs an astronomically
-unlikely event is recorded as low or as a follow-up item, with a sentence on
-why, and does not block. For anything rated high or above, the reviewer states
+unlikely event is recorded as low in the project's known-issues (tech debt)
+list, with a sentence on why; it does not block, is not scheduled, and is fixed
+only if it recurs in production. For anything rated high or above, the reviewer states
 how the failure would occur in real use. Exit with the required independent
 verdict.
 
