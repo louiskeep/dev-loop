@@ -39,6 +39,8 @@ Hand the reviewer, and require back:
   deployed. Astronomically unlikely events go in the project's known-issues (tech debt) list as low,
   fixed only if they recur in production; they are neither blockers nor roadmap work. For
   anything rated high or above, the reviewer states how the failure would occur in real use.
+- **The plan's design notes.** If the plan carries a "Design notes" section, the reviewer checks the
+  build against it (facts in one place, the named pattern actually followed).
 - **A design check only where it applies.** When the change adds a variant, a module, or an
   abstraction, ask the reviewer to check it against the design principles in
   `rules/architecture.md`, and to raise a finding only for a concrete change pain it names (for

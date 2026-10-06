@@ -46,6 +46,19 @@ its non-goals. A review finding outside that stated guarantee becomes a
 recorded follow-up item, not a blocker for this change. A guarantee that is
 never written down lets each review round go one layer deeper.
 
+Write design notes when the change adds structure. A plan that adds a module,
+an abstraction, or a new variant of something expected to keep growing (an
+operator, a route, a backend) carries a short "Design notes" section: which
+design principles from [architecture](architecture.md) apply and the concrete
+change pain each one addresses (or "none: no new structure"), the established
+pattern followed and its source, and where each new fact lives (one place, never
+restated). The builder's brief carries these notes plus the house style below,
+and the reviewer checks the build against them. House style: typed context
+objects over long parameter lists; one place per fact; single-purpose
+functions; no flag arguments that switch behavior; comments that explain why.
+Apply it to the code the change touches; it is not a license to restyle
+untouched code.
+
 Test authorship is role-neutral. A planner, builder, or another qualified
 contributor may create tests, but no later contributor may weaken pre-agreed
 acceptance criteria. R1 may record test cases without a separately authored test
