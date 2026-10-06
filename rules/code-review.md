@@ -44,3 +44,4 @@ DON'T silently repeat a review at GATE. See [development loop](development-loop.
 - [ ] Findings have severity, confidence, and evidence.
 - [ ] The verdict names checked and unchecked scope.
 - [ ] Release-blocking conditions are unambiguous.
+- [ ] Every new or edited log call was checked for data values, expression text, and input-echoing exception text ([observability](observability-and-resilience.md)).

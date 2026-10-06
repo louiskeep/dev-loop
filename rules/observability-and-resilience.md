@@ -32,10 +32,25 @@ DON'T retry indefinitely or hide a partial failure behind a generic success.
 
 DON'T place credentials, personal data, or raw sensitive payloads in telemetry.
 
+DO log where something happened and how much: the component, the column or
+field name, the operation, counts, and exception type names.
+
+DON'T log user-supplied expression or query text, data values, or raw exception
+messages from parsers, validators, or callbacks that can echo their input. A
+short hash of low-entropy text can be reversed by guessing, so it is not a safe
+substitute; log the location instead. Errors raised back to the caller who
+wrote the input are a different channel and may name the offending part.
+
+DO enforce this on every change, not in a later sweep: review checks each new
+or edited log call, and a codebase that handles personal data keeps an
+automated check for risky log interpolation.
+
 ## Red flags
 
 - "Retries make it reliable." Bound retries and define duplicate effects.
 - "We can debug it from logs." Confirm the needed signal exists and is safe.
+- "It only logs on the error path." Error paths see the worst input; check what
+  the message interpolates.
 
 ## Done when
 
