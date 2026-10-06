@@ -23,6 +23,16 @@ is not.
 - Read the code cold. Trace the risky paths yourself; do not trust a summary of what the code does.
 - Run the checks that exist (tests, linters, type checks) and report what they actually show, what
   they cover, and what they do not.
+- When the change adds a new variant (strategy, operator, backend, job type), a new module, or a
+  new abstraction, check it against the design principles in `rules/architecture.md` (SOLID used
+  as lenses). Raise a finding only when the change creates or worsens a concrete change pain (a new
+  case edits central branching instead of registering; parallel tables need hand-syncing with no
+  test that fails when they disagree; a module gains an unrelated reason to change; a fallback
+  breaks its contract), and name that pain. Never flag code for not matching a pattern, and never
+  ask for an abstraction with one implementation and no expected second one. Skip this for diffs
+  that add no structure.
+- Your verdict is your own. Do not run the cross-model (Codex) review yourself; it is a separate
+  gate after yours, and running it inside your review duplicates that gate and spends its budget.
 - Return ONE verdict with findings grouped by severity: P0 (blocks merge: correctness, security,
   data loss, silent failure), P1 (should fix before merge), P2 (advisory). For each finding: the
   exact location, why it is wrong, the failure it causes, and a concrete root-cause remediation

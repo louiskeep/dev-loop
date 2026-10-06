@@ -23,6 +23,13 @@ for a bounded improvement that does not block the decision.
 
 DO distinguish a finding from a question, suggestion, and unverified concern.
 
+DO check new structure against the design principles in
+[architecture](architecture.md#design-principles-apply-when-they-earn-their-keep)
+when the change adds a variant, a module, or an abstraction. Raise a finding only
+when the change creates or worsens a concrete change pain (a new case edits
+central branching, parallel tables drift, a module gains an unrelated reason to
+change), not because code fails to match a pattern.
+
 DON'T imply coverage beyond the evidence reviewed.
 
 DON'T silently repeat a review at GATE. See [development loop](development-loop.md).
