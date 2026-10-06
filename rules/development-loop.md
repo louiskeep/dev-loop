@@ -41,6 +41,13 @@ known failure modes, and acceptance tests before implementation. Use a
 fail-before proof when meaningful; when it is unsafe, intermittent, or not yet
 available, record the best available evidence and compensating validation.
 
+Name the rules. Every plan carries a "Rules consulted:" line near its top
+listing the rulebooks the [routing table](README.md) selected for this work
+(always including the universal and development-loop rules), read during
+planning rather than recalled. Plan reviewers check the list fits the work, and
+the builder's brief points at the same rulebooks. The dev-loop plugin's
+`rules_gate` hook enforces the read and the line.
+
 Pin the guarantee. The plan states exactly what the change promises and lists
 its non-goals. A review finding outside that stated guarantee becomes a
 recorded follow-up item, not a blocker for this change. A guarantee that is
@@ -58,6 +65,18 @@ objects over long parameter lists; one place per fact; single-purpose
 functions; no flag arguments that switch behavior; comments that explain why.
 Apply it to the code the change touches; it is not a license to restyle
 untouched code.
+
+Research established solutions before designing your own. Before an R2 or R3
+plan proposes custom logic for a non-trivial problem (a parser, scheduler,
+resource limit, protocol, statistical or crypto method, concurrency scheme), the
+planner searches online and in the codebase for how established tools,
+standards, libraries and papers solve it, and the plan carries an "Established
+solutions" section: what was found, which source the design follows (cited),
+and why any remaining custom code is needed. Prefer the standard library or a
+maintained library over a hand-written version; adopt a published pattern over
+an invented one. Keep the result proportionate: don't overbuild, and don't add
+machinery for 1% scenarios; record those as known issues or refuse them fail
+closed. Plan reviewers check this section. See [reuse first](reuse-first.md).
 
 Test authorship is role-neutral. A planner, builder, or another qualified
 contributor may create tests, but no later contributor may weaken pre-agreed
@@ -157,6 +176,9 @@ gate condition for closing the slice, the same way green tests are.
 - [ ] Remediation changes re-entered self-check and verification.
 - [ ] Review and gate have distinct recorded purposes.
 - [ ] Behavior, failure modes, and acceptance coverage were planned for R2/R3.
+- [ ] Plans carry a "Rules consulted:" line for the rulebooks actually read.
+- [ ] R2/R3 plans carry an "Established solutions" section (online and codebase
+      research, cited source pattern, justification for any custom code).
 - [ ] The slice's durable docs are current: the roadmap carries only current +
       next-up work, the completed item moved to the shipped log, and any trailing
       plan STATUS lines were reconciled to the code.

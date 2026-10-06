@@ -12,6 +12,16 @@ Use before creating non-trivial logic, artifacts, or operational capability.
 DO timebox a search for existing capabilities, internal components, templates,
 and maintained external options.
 
+DO search online (library documentation, standards, well-known open-source
+implementations, papers) before designing a custom solution to a non-trivial
+problem, and cite the pattern the design follows.
+
+DO prefer the standard library or a maintained library to hand-written code
+for parsing, protocols, resource limits and similar well-trodden problems.
+
+DON'T build machinery for rare (about 1%) scenarios; record them as known
+issues or refuse them fail closed.
+
 DO compare viable options for maintenance, provenance, license, security,
 stability, footprint, compatibility, and exit cost.
 

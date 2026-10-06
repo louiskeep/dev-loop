@@ -341,6 +341,17 @@ does not match a clean gate. A skill, `conducting-the-loop`, carries the
 judgment steps that the hooks cannot decide. The dev-rules ship under
 `rules/`.
 
+A sixth pattern is planning or coding from memory instead of the rules.
+The `rules_gate` hook (PreToolUse and PostToolUse on Edit, Write and
+MultiEdit) denies writing a plan (`docs/plans|specs/*.md`) or a source file in
+a git repository until the session, or the subagent doing the writing, has
+opened `rules/README.md` (the routing table), `00-universal.md` and
+`development-loop.md`, from `rules/` or the canonical dev-rules directory. It
+checks the transcript for those reads, then caches the result for the session.
+After a plan is written, a missing `Rules consulted:` line is fed back as a
+blocking reason. Set `rules_gate_mode` to `warn` or `off` in `config.json` or a
+repo's `.loop-config.json`; add copies of the rules elsewhere with `rules_dirs`.
+
 A fifth failure pattern is test-weakening. Its own PreToolUse hook,
 `test_guard`, watches edits to Edit, Write, and MultiEdit. A builder can
 loosen an acceptance test to make the suite pass, then call the change

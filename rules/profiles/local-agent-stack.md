@@ -13,8 +13,8 @@ Availability changes do not alter the required gates or authorization rules.
 
 | Durable role or capability | Current local mapping | Notes |
 |---|---|---|
-| Cross-model plan and final soundness review | Codex, `gpt-5.6-sol` | Two checkpoints in the local loop: reviews the Opus-authored plan BEFORE it is handed to the Sonnet builder (DEVELOP does not start until its plan findings are addressed), and reviews the finished product AFTER the dennis gate is green (before merge). Policy requires the role only where a repository or risk gate specifies it. |
-| Fresh-context adversarial review | dennis, Opus | Independent from the author. |
+| Cross-model plan and final soundness review | Codex, `gpt-6-astra` (via `~/bin/codex-review`; trial from 2026-10-05) | Two checkpoints in the local loop: reviews the Opus-authored plan BEFORE it is handed to the Sonnet builder (DEVELOP does not start until its plan findings are addressed), and reviews the finished product AFTER the dennis gate is green (before merge). Policy requires the role only where a repository or risk gate specifies it. |
+| Fresh-context adversarial review | dennis, Opus | Independent from the author. Gives his own tech-lead verdict; does NOT run Codex (Codex is the separate cross-model gate after him; Cam, 2026-10-05). |
 | Planning and difficult technical judgment | Opus | Local high-capability mapping. |
 | Routine implementation from an established guide | Sonnet | Local builder mapping. |
 | Routine documentation and mechanical synthesis | barry, Haiku | Local documentation mapping. |

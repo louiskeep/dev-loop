@@ -1,9 +1,16 @@
 {
-  "protected_branches": ["main", "master"],
+  "protected_branches": [
+    "main",
+    "master"
+  ],
   "roadmap_paths": [],
   "shipped_log_paths": [],
-  "codex_required_risks": ["R2", "R3"],
+  "codex_required_risks": [
+    "R2",
+    "R3"
+  ],
   "escape_hatch": false,
   "test_guard_mode": "warn",
-  "test_guard_subagent_only": false
+  "test_guard_subagent_only": false,
+  "rules_gate_mode": "block"
 }

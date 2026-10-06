@@ -23,7 +23,10 @@ tests during PLAN. Prefer fail-before proof when meaningful; otherwise record
 the evidence gap and compensating validation.
 
 DO preserve pre-agreed acceptance criteria regardless of who adds or maintains
-the tests. A builder may add tests but may not weaken that coverage.
+the tests. A builder may add tests but may not weaken that coverage. Weakening
+includes dropping an equality or metadata flag, narrowing a comparison to
+values-only, skipping or deleting a case, and loosening a tolerance. A reference
+or oracle divergence is fixed at the source, not tested around.
 
 DO measure test strength before any merge that changes source, not test count.
 Record per-unit line and branch coverage plus a mutation score for the units

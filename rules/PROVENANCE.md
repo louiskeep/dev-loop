@@ -12,3 +12,5 @@ rulebooks change.
 `development-loop.md`: the 2026-10-06 "design notes" paragraph (PLAN phase) was inserted verbatim from the source after the pinned-guarantee paragraph; the rest of that file's drift was not re-synced.
 
 2026-10-06: `architecture.md` and `refactoring.md` re-synced (deep modules, named refactorings); the property-based-testing rule was inserted into the drifted `testing.md` verbatim.
+
+2026-10-06: FULL re-sync. `rules/` now matches the source dev-rules exactly (all rulebooks, README routing table, pre-release-audit, catalogs, profiles, rules-manifest.json, docs/dev-rules-architecture.md). The plugin-only lines found before the sync were older wordings the source had replaced. Re-sync the whole directory whenever the source changes.
