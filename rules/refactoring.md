@@ -22,6 +22,12 @@ exception explains why separation would increase risk.
 DO record an explicit exception when no behavior-preservation evidence is
 available, including residual risk and compensating controls.
 
+DO name each structural step after the established refactoring it performs
+(Fowler's catalog, e.g. Extract Function, Replace Conditional with Polymorphism,
+Introduce Parameter Object, Move Function, Inline Variable) in the plan and the
+commit. Named steps are easier to review and keep a refactor from drifting into
+a behavior change.
+
 DON'T assume a test suite exists or fully covers the changed behavior.
 
 DON'T replace duplication with a boundary that lacks a shared invariant.

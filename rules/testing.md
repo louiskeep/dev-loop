@@ -41,6 +41,13 @@ evidence of a property nobody asserted.
 DO fix flaky tests or quarantine them with an owner, deadline, impact, and
 reason. Delete only tests that are obsolete.
 
+DO use property-based tests (Hypothesis in Python) for invariant claims such as
+"route A equals route B", "output is reproducible", "order or batching does
+not change the result", or round-trip guarantees. Generated inputs find the
+empty, null, boundary and ordering cases that hand-picked examples miss. Keep a
+fixed seed or database for reproducibility and pin any failing example as a
+regular test.
+
 DON'T optimize for a coverage number instead of meaningful assertions.
 
 DON'T over-mock until tests only prove the mock configuration.

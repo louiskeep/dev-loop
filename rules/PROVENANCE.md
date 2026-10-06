@@ -10,3 +10,5 @@ rulebooks change.
 `architecture.md` and `code-review.md` re-synced 2026-10-06 after the design-principles section (SOLID as lenses, applied only when they name a concrete change pain) and its review hook were added to the source rulebooks. Other rulebooks have drifted from the source since the snapshot and were not re-synced here.
 
 `development-loop.md`: the 2026-10-06 "design notes" paragraph (PLAN phase) was inserted verbatim from the source after the pinned-guarantee paragraph; the rest of that file's drift was not re-synced.
+
+2026-10-06: `architecture.md` and `refactoring.md` re-synced (deep modules, named refactorings); the property-based-testing rule was inserted into the drifted `testing.md` verbatim.

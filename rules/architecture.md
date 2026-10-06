@@ -52,6 +52,13 @@ far more than it uses. If no such problem exists, leave the code alone.
   not on a concrete low-level module, when the low-level side is volatile or has
   more than one implementation (for example compiled vs reference kernels).
 
+- **Deep modules and information hiding** (Ousterhout, *A Philosophy of
+  Software Design*). Prefer modules whose interface is small relative to what
+  they hide. A change that leaks an implementation decision into several
+  callers (the same fact restated in many places, a parameter threaded through
+  layers that do not use it) is the usual sign of a shallow boundary. Often a
+  better lens than SOLID for data-pipeline code.
+
 Cost check before applying any of them: an abstraction with one implementation
 and no expected second one is usually premature. Record the change reason that
 justifies it.
