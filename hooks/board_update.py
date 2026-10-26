@@ -41,7 +41,7 @@ def _board_path(project_root: Path, cfg: dict) -> Path:
 def _update(cwd: Path) -> None:
     try:
         project_root = ls.repo_root(cwd)
-    except Exception:  # noqa: BLE001 — not a git repo: use cwd as-is
+    except Exception:  # noqa: BLE001 (not a git repo: use cwd as-is)
         project_root = cwd
     cfg = lb.load_config(project_root)
     path = _board_path(project_root, cfg)
@@ -68,7 +68,7 @@ def main_from_event(event: dict) -> int:
     cwd = Path(event.get("cwd", "."))
     try:
         _update(cwd)
-    except Exception:  # noqa: BLE001 — a side-effect hook must never disrupt the turn
+    except Exception:  # noqa: BLE001 (a side-effect hook must never disrupt the turn)
         return 0
     return 0
 

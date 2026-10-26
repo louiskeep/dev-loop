@@ -104,6 +104,15 @@ def _find(cards: list[dict], card_id: str) -> dict | None:
     return next((c for c in cards if c.get("id") == card_id), None)
 
 
+# A card's origin. Cards seeded by refresh carry one of these; a hand-added
+# card, or one moved with `move`, carries no derived source and is authored.
+_DERIVED_SOURCES = {"roadmap", "shipped-log", "loop-state"}
+
+
+def _is_authored(card: dict) -> bool:
+    return card.get("source") not in _DERIVED_SOURCES
+
+
 # --------------------------------------------------------------------------
 # Seeding from existing data (non-destructive)
 # --------------------------------------------------------------------------
@@ -238,7 +247,14 @@ def scan_loop_states(repos: list[Path]) -> list[dict]:
 
 
 def refresh(board: dict, cfg: dict, project_root: Path) -> dict:
-    """Seed derived columns without deleting authored cards/notes/questions."""
+    """Re-derive the derived columns from the current source; keep authored cards.
+
+    Every refresh rebuilds each derived column from its source so a card the
+    source no longer produces is pruned, not left as a stale union with the new
+    cards. Authored cards (hand-added, or moved with `move`) always survive, and
+    a phase pinned with `set-phase` is carried as an overlay keyed to the card
+    id, only while that id is still derived from the source.
+    """
 
     def _resolve(p: str | None) -> Path | None:
         if not p:
@@ -246,45 +262,68 @@ def refresh(board: dict, cfg: dict, project_root: Path) -> dict:
         q = Path(p)
         return q if q.is_absolute() else (project_root / q)
 
-    roadmap = _resolve(cfg.get("roadmap"))
-    shipped = _resolve(cfg.get("shipped_log"))
-    cols = board["columns"]
-
-    if shipped and shipped.exists():
-        pinned = [c for c in cols["recently_completed"] if c.get("pinned")]
-        fresh = parse_shipped(shipped.read_text(), cfg.get("recently_completed_count", 8))
-        have = {c["id"] for c in pinned}
-        cols["recently_completed"] = pinned + [c for c in fresh if c["id"] not in have]
-
     def _parts(cid: str) -> set[str]:  # "A-4/B-5" also counts as A-4 and B-5
         return {cid, *(p.strip() for p in cid.split("/"))}
 
-    known: set[str] = set()
-    for c in cols["current"] + cols["next_up"]:
-        known |= _parts(c["id"])
-    if roadmap and roadmap.exists():
-        text = roadmap.read_text()
-        # current: merge table-derived fields into existing cards, append new ones.
+    def _carry_pin(card: dict, prev: dict | None) -> None:
+        if prev and prev.get("phase_locked"):
+            for k in ("phase", "phase_source", "phase_locked"):
+                if k in prev:
+                    card[k] = prev[k]
+
+    roadmap = _resolve(cfg.get("roadmap"))
+    shipped = _resolve(cfg.get("shipped_log"))
+    text = roadmap.read_text() if roadmap and roadmap.exists() else None
+    cols = board["columns"]
+
+    # recently_completed: re-derive from the shipped log; keep authored + pinned.
+    if shipped and shipped.exists():
+        keep = [c for c in cols["recently_completed"] if _is_authored(c) or c.get("pinned")]
+        keep_ids = {c["id"] for c in keep}
+        fresh = parse_shipped(shipped.read_text(), cfg.get("recently_completed_count", 8))
+        cols["recently_completed"] = keep + [c for c in fresh if c["id"] not in keep_ids]
+
+    # current: rebuild from the roadmap, dropping derived cards no longer in it.
+    prev_current = {c["id"]: c for c in cols["current"]}
+    authored_current = [c for c in cols["current"] if _is_authored(c)]
+    authored_ids = {c["id"] for c in authored_current}
+    rebuilt = list(authored_current)
+    if text is not None:
         for cand in parse_current_assignment(text, cfg.get("current_section", "")):
-            existing = _find(cols["current"], cand["id"])
-            if existing:
-                for k in ("lane", "note"):
-                    existing.setdefault(k, cand.get(k))
-            else:
-                cols["current"].append(cand)
-                known |= _parts(cand["id"])
-        # next_up: append not-yet-present, not-done roadmap items, capped.
+            if cand["id"] in authored_ids:  # authored card wins; fill only its gaps
+                existing = _find(rebuilt, cand["id"])
+                for k in ("lane", "note", "title"):
+                    if cand.get(k) is not None:
+                        existing.setdefault(k, cand[k])
+                continue
+            _carry_pin(cand, prev_current.get(cand["id"]))
+            rebuilt.append(cand)
+    cols["current"] = rebuilt
+
+    # next_up: rebuild from the roadmap; keep authored; dedup across every column
+    # so an in-flight or already-shipped id is not re-listed as next.
+    authored_next = [c for c in cols["next_up"] if _is_authored(c)]
+    known: set[str] = set()
+    for c in cols["recently_completed"] + cols["current"] + authored_next:
+        known |= _parts(c["id"])
+    rebuilt_next = list(authored_next)
+    if text is not None:
         cap = cfg.get("next_up_count", 6)
+        added = 0
         for cand in parse_next_up(
             text, cfg.get("next_up_section", ""), cfg.get("done_markers", ["DONE"])
         ):
-            if len([c for c in cols["next_up"] if c.get("source") == "roadmap"]) >= cap:
+            if added >= cap:
                 break
-            if not (_parts(cand["id"]) & known):
-                cols["next_up"].append(cand)
-                known |= _parts(cand["id"])
+            if _parts(cand["id"]) & known:
+                continue
+            rebuilt_next.append(cand)
+            known |= _parts(cand["id"])
+            added += 1
+    cols["next_up"] = rebuilt_next
 
-    # overlay live loop-state phase onto matching current cards (match by id or slice).
+    # overlay live loop-state phase; an unmatched slice becomes its own derived
+    # card, re-derived from the live scan each refresh.
     repos = [_resolve(r) for r in cfg.get("repos", [])]
     for st in scan_loop_states([r for r in repos if r]):
         slice_name = st["slice"]
@@ -299,8 +338,9 @@ def refresh(board: dict, cfg: dict, project_root: Path) -> dict:
             )
 
         card = next((c for c in cols["current"] if _matches(c)), None)
-        if card is None and st["slice"]:
-            card = {"id": st["slice"], "title": st["slice"], "source": "loop-state"}
+        if card is None and slice_name:
+            card = {"id": slice_name, "title": slice_name, "source": "loop-state"}
+            _carry_pin(card, prev_current.get(slice_name))
             cols["current"].append(card)
         if card is not None:
             if not card.get("phase_locked"):  # never stomp a conductor-pinned phase
@@ -505,6 +545,7 @@ def main(argv: list[str] | None = None) -> int:
 
     pi = sub.add_parser("init")
     pi.add_argument("--title", default="Program Board")
+    pi.add_argument("--force", action="store_true", help="overwrite an existing board (explicit reset)")
     sub.add_parser("refresh")
     pr = sub.add_parser("render")
     pr.add_argument("--out", default="board.html")
@@ -526,8 +567,8 @@ def main(argv: list[str] | None = None) -> int:
     board_path = Path(args.board) if args.board else project_root / BOARD_FILENAME
 
     if args.cmd == "init":
-        if board_path.exists():
-            print(f"board already exists at {board_path}", file=sys.stderr)
+        if board_path.exists() and not args.force:
+            print(f"board already exists at {board_path} (use --force to reset)", file=sys.stderr)
             return 1
         save_board(board_path, empty_board(args.title))
         print(f"wrote {board_path}")
@@ -567,6 +608,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             for col in _COLUMNS:
                 board["columns"][col] = [c for c in board["columns"][col] if c["id"] != args.card_id]
+            src["source"] = "authored"  # a deliberate move makes the card authored, so refresh keeps it
             board["columns"][args.column].append(src)
             save_board(board_path, board)
             print(f"{args.card_id} -> {args.column}")

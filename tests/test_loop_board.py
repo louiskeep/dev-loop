@@ -252,6 +252,101 @@ def test_hook_skips_irrelevant_bash(tmp_path):
     assert rc == 0 and not (tmp_path / "board.html").exists()  # not triggered
 
 
+# ---- refresh re-derives (prune stale) ------------------------------------
+
+_ROADMAP_TMPL = """# Roadmap
+
+## Current parallel assignment
+
+| Lane | Owner | Slice | Branch | State |
+|---|---|---|---|---|
+{rows}
+
+## Build order
+
+### Milestone
+- **Z-9 placeholder.** keeps the section present.
+"""
+
+
+def _roadmap_with(*labels):
+    rows = "\n".join(f"| Local | o | **{lbl}** | br | note |" for lbl in labels)
+    return _ROADMAP_TMPL.format(rows=rows)
+
+
+def _prune_cfg():
+    return {
+        "roadmap": "ROADMAP.md",
+        "shipped_log": "SHIPPED.md",
+        "current_section": "Current parallel assignment",
+        "next_up_section": "Build order",
+        "done_markers": ["DONE"],
+        "repos": [],
+    }
+
+
+def test_refresh_prunes_stale_derived_cards(tmp_path):
+    (tmp_path / "SHIPPED.md").write_text(SHIPPED)
+    road = tmp_path / "ROADMAP.md"
+    road.write_text(_roadmap_with("A-1 alpha", "B-1 beta"))
+    board = lb.empty_board()
+    lb.refresh(board, _prune_cfg(), tmp_path)
+    assert {c["id"] for c in board["columns"]["current"]} == {"A-1", "B-1"}
+    # source now lists B-1, C-1: A-1 must be pruned, C-1 added, no stale union.
+    road.write_text(_roadmap_with("B-1 beta", "C-1 gamma"))
+    lb.refresh(board, _prune_cfg(), tmp_path)
+    assert {c["id"] for c in board["columns"]["current"]} == {"B-1", "C-1"}
+
+
+def test_refresh_preserves_authored_cards(tmp_path):
+    (tmp_path / "SHIPPED.md").write_text(SHIPPED)
+    road = tmp_path / "ROADMAP.md"
+    road.write_text(_roadmap_with("A-1 alpha", "B-1 beta"))
+    board = lb.empty_board()
+    lb.refresh(board, _prune_cfg(), tmp_path)
+    board["columns"]["current"].append({"id": "MANUAL-1", "title": "hand added"})  # authored
+    a1 = next(c for c in board["columns"]["current"] if c["id"] == "A-1")
+    a1["phase"], a1["phase_locked"] = "VERIFY", True  # pinned phase on a derived card
+    board["questions"].append({"id": "q1", "title": "keep me"})
+    # change the source: drop B-1, add C-1; A-1 stays derived.
+    road.write_text(_roadmap_with("A-1 alpha", "C-1 gamma"))
+    lb.refresh(board, _prune_cfg(), tmp_path)
+    cur = {c["id"]: c for c in board["columns"]["current"]}
+    assert "MANUAL-1" in cur  # authored hand-added survives the re-derive
+    assert cur["A-1"]["phase"] == "VERIFY" and cur["A-1"]["phase_locked"] is True  # pin survives
+    assert "B-1" not in cur  # derived card dropped from the source is pruned
+    assert "C-1" in cur  # newly-derived card added
+    assert board["questions"] == [{"id": "q1", "title": "keep me"}]  # not over-pruned
+
+
+def test_move_marks_card_authored_and_survives_refresh(tmp_path):
+    (tmp_path / "SHIPPED.md").write_text(SHIPPED)
+    road = tmp_path / "ROADMAP.md"
+    road.write_text(_roadmap_with("A-1 alpha", "B-1 beta"))
+    (tmp_path / ".loop-config.json").write_text(json.dumps({"board": _prune_cfg()}))
+    _cli(tmp_path, "init")
+    _cli(tmp_path, "refresh")
+    assert _cli(tmp_path, "move", "A-1", "recently_completed").returncode == 0
+    road.write_text(_roadmap_with("B-1 beta"))  # A-1 gone from source
+    _cli(tmp_path, "refresh")
+    board = json.loads((tmp_path / ".loop-board.json").read_text())
+    rc = {c["id"] for c in board["columns"]["recently_completed"]}
+    cur = {c["id"] for c in board["columns"]["current"]}
+    assert "A-1" in rc  # a moved card survives even once it leaves the source
+    assert "A-1" not in cur  # and is not re-derived back into current
+
+
+def test_init_force_resets_existing_board(tmp_path):
+    _cli(tmp_path, "init", "--title", "T")
+    board = json.loads((tmp_path / ".loop-board.json").read_text())
+    board["columns"]["current"].append({"id": "X", "title": "x"})
+    (tmp_path / ".loop-board.json").write_text(json.dumps(board))
+    assert _cli(tmp_path, "init").returncode == 1  # non-destructive by default
+    assert _cli(tmp_path, "init", "--force").returncode == 0  # explicit reset
+    board = json.loads((tmp_path / ".loop-board.json").read_text())
+    assert board["columns"]["current"] == []
+
+
 def test_hook_refreshes_and_renders_on_trigger(tmp_path):
     cfg = _project(tmp_path)
     (tmp_path / ".loop-config.json").write_text(json.dumps({"board": cfg}))

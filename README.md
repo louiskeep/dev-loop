@@ -443,7 +443,7 @@ GitHub Projects): three columns read left to right as done / doing / next.
 The board stays current with no model tokens. Viewing it is a static HTML file,
 never in the model's context. The `board_update` hook (PostToolUse on Bash, and
 Stop) re-seeds and re-renders after each step, reacting to the signals the loop
-already produces — the conductor's own `loop_state.py` and git calls are the
+already produces: the conductor's own `loop_state.py` and git calls are the
 phase boundaries, and Stop marks the end of a step. The hook is a no-op in a
 repo with no `.loop-board.json`, so it is inert until you create a board.
 
@@ -454,18 +454,26 @@ python hooks/loop_board.py --repo <project> render --out board.html
 python hooks/loop_board.py --repo <project> serve        # live local server (reads board.json)
 ```
 
-`refresh` seeds the board without clobbering anything the conductor wrote. It
-regenerates `recently_completed` from the shipped log (pure history; entries
-marked `"pinned": true` survive), appends not-yet-done roadmap items to
-`next_up`, merges the roadmap's current-work table and live `.loop-state.json`
-phase into `current`, and leaves authored notes, questions, and pinned phases
-alone. Small edit helpers avoid hand-writing JSON:
+`refresh` re-derives the derived columns from the current source each time, so
+a card the source no longer produces is pruned rather than left beside the new
+cards. It regenerates `recently_completed` from the shipped log (pure history;
+entries marked `"pinned": true` survive), rebuilds `next_up` from the
+not-yet-done roadmap items, and rebuilds `current` from the roadmap's
+current-work table and live `.loop-state.json` phase. Authored cards survive
+the rebuild: a hand-added card, a card moved with `move`, a phase pinned with
+`set-phase` (carried by id while that id is still derived), and the questions
+list are all kept. The derived/authored split uses each card's `source` field.
+Small edit helpers avoid hand-writing JSON:
 
 ```bash
 python hooks/loop_board.py --repo <project> add-question "1-sentence topic reminder"
 python hooks/loop_board.py --repo <project> set-phase A-4 REVIEW   # pins the phase
 python hooks/loop_board.py --repo <project> move A-4 recently_completed
 ```
+
+`init` is non-destructive: it refuses to overwrite an existing board. Because
+`refresh` now re-derives correctly, the old delete-and-reinit reset is no longer
+needed; `init --force` is the explicit reset if you want a clean board.
 
 A hook-driven refresh derives only the coarse phases it can prove from recorded
 gates (PLAN -> DEVELOP -> REVIEW -> REMEDIATE -> GATE). The in-between phases
