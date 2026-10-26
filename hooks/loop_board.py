@@ -276,12 +276,20 @@ def refresh(board: dict, cfg: dict, project_root: Path) -> dict:
     text = roadmap.read_text() if roadmap and roadmap.exists() else None
     cols = board["columns"]
 
+    # ids held by an authored card in ANY column, captured before any rebuild. A
+    # derived rebuild must not re-add a card the conductor deliberately moved to
+    # another column (e.g. `move A-1 recently_completed` while the roadmap still
+    # lists A-1), or the card would show in two columns at once.
+    authored_anywhere = {c["id"] for col in cols.values() for c in col if _is_authored(c)}
+
     # recently_completed: re-derive from the shipped log; keep authored + pinned.
     if shipped and shipped.exists():
         keep = [c for c in cols["recently_completed"] if _is_authored(c) or c.get("pinned")]
         keep_ids = {c["id"] for c in keep}
         fresh = parse_shipped(shipped.read_text(), cfg.get("recently_completed_count", 8))
-        cols["recently_completed"] = keep + [c for c in fresh if c["id"] not in keep_ids]
+        cols["recently_completed"] = keep + [
+            c for c in fresh if c["id"] not in keep_ids and c["id"] not in authored_anywhere
+        ]
 
     # current: rebuild from the roadmap, dropping derived cards no longer in it.
     prev_current = {c["id"]: c for c in cols["current"]}
@@ -295,6 +303,8 @@ def refresh(board: dict, cfg: dict, project_root: Path) -> dict:
                 for k in ("lane", "note", "title"):
                     if cand.get(k) is not None:
                         existing.setdefault(k, cand[k])
+                continue
+            if cand["id"] in authored_anywhere:  # moved to another column; do not duplicate
                 continue
             _carry_pin(cand, prev_current.get(cand["id"]))
             rebuilt.append(cand)

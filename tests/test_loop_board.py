@@ -336,6 +336,24 @@ def test_move_marks_card_authored_and_survives_refresh(tmp_path):
     assert "A-1" not in cur  # and is not re-derived back into current
 
 
+def test_move_not_re_derived_while_source_still_lists_it(tmp_path):
+    # move a card to another column while the roadmap STILL lists it: the next
+    # refresh must not re-derive a fresh copy back into its old column.
+    (tmp_path / "SHIPPED.md").write_text(SHIPPED)
+    road = tmp_path / "ROADMAP.md"
+    road.write_text(_roadmap_with("A-1 alpha", "B-1 beta"))
+    (tmp_path / ".loop-config.json").write_text(json.dumps({"board": _prune_cfg()}))
+    _cli(tmp_path, "init")
+    _cli(tmp_path, "refresh")
+    assert _cli(tmp_path, "move", "A-1", "recently_completed").returncode == 0
+    _cli(tmp_path, "refresh")  # A-1 is still in the source current-table
+    board = json.loads((tmp_path / ".loop-board.json").read_text())
+    rc = [c["id"] for c in board["columns"]["recently_completed"]]
+    cur = [c["id"] for c in board["columns"]["current"]]
+    assert rc.count("A-1") == 1  # exactly once in its new column
+    assert "A-1" not in cur  # not duplicated back into current by the re-derive
+
+
 def test_init_force_resets_existing_board(tmp_path):
     _cli(tmp_path, "init", "--title", "T")
     board = json.loads((tmp_path / ".loop-board.json").read_text())

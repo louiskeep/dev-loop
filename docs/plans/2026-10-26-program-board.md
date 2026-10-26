@@ -33,7 +33,10 @@ with inline CSS, light/dark via `prefers-color-scheme`.
   authority: `roadmap` / `shipped-log` / `loop-state` are derived; a hand-added
   card, or one moved with `move` (which stamps `source: "authored"`), is
   authored and always kept. A phase pinned with `set-phase` is carried as an
-  overlay keyed to the card id, only while that id is still derived. A refresh
+  overlay keyed to the card id, only while that id is still derived. Edits to a
+  still-derived card's own fields (its note, title, lane) are reseeded from the
+  source on the next refresh; to hold a hand edit on such a card, `move` it
+  first so it becomes authored, or pin its phase with `set-phase`. A refresh
   can run on every step without eating conductor edits and without accumulating
   stale cards. `init` stays non-destructive; `init --force` is the explicit
   reset.
