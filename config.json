@@ -12,5 +12,17 @@
   "escape_hatch": false,
   "test_guard_mode": "warn",
   "test_guard_subagent_only": false,
-  "rules_gate_mode": "block"
+  "rules_gate_mode": "block",
+  "board": {
+    "repos": [],
+    "roadmap": "",
+    "shipped_log": "",
+    "current_section": "Current parallel assignment",
+    "next_up_section": "Build order",
+    "done_markers": ["DONE"],
+    "recently_completed_count": 8,
+    "next_up_count": 6,
+    "board_path": ".loop-board.json",
+    "html_out": "board.html"
+  }
 }

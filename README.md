@@ -431,6 +431,52 @@ lean.
 | `running-the-gate` | REVIEW, GATE, REMEDIATE | Runs dennis, then Codex, on the exact commit, and directs root-cause remediation for each finding. |
 | `documenting-the-slice` | DOCUMENT | Closes out the roadmap and the shipped log. |
 
+## Program board
+
+A read-at-a-glance kanban of where work stands: **Recently completed ·
+Current · Next up**, with a per-card phase strip and a side-discussions list
+under Current. It renders from one JSON document (`.loop-board.json`) that the
+conductor owns and edits; `loop_board.py render` turns that JSON into a
+self-contained HTML page. Kanban is the established board pattern (Trello,
+GitHub Projects): three columns read left to right as done / doing / next.
+
+The board stays current with no model tokens. Viewing it is a static HTML file,
+never in the model's context. The `board_update` hook (PostToolUse on Bash, and
+Stop) re-seeds and re-renders after each step, reacting to the signals the loop
+already produces — the conductor's own `loop_state.py` and git calls are the
+phase boundaries, and Stop marks the end of a step. The hook is a no-op in a
+repo with no `.loop-board.json`, so it is inert until you create a board.
+
+```bash
+python hooks/loop_board.py --repo <project> init --title "My Program Board"
+python hooks/loop_board.py --repo <project> refresh      # seed from roadmap + shipped log
+python hooks/loop_board.py --repo <project> render --out board.html
+python hooks/loop_board.py --repo <project> serve        # live local server (reads board.json)
+```
+
+`refresh` seeds the board without clobbering anything the conductor wrote. It
+regenerates `recently_completed` from the shipped log (pure history; entries
+marked `"pinned": true` survive), appends not-yet-done roadmap items to
+`next_up`, merges the roadmap's current-work table and live `.loop-state.json`
+phase into `current`, and leaves authored notes, questions, and pinned phases
+alone. Small edit helpers avoid hand-writing JSON:
+
+```bash
+python hooks/loop_board.py --repo <project> add-question "1-sentence topic reminder"
+python hooks/loop_board.py --repo <project> set-phase A-4 REVIEW   # pins the phase
+python hooks/loop_board.py --repo <project> move A-4 recently_completed
+```
+
+A hook-driven refresh derives only the coarse phases it can prove from recorded
+gates (PLAN -> DEVELOP -> REVIEW -> REMEDIATE -> GATE). The in-between phases
+with no state trace (FRAME, SELF-CHECK, VERIFY, DOCUMENT), substep notes, and
+side questions stay optional one-line conductor edits; a phase set with
+`set-phase` is pinned, so the hook's refresh never overrides it.
+
+Because the roadmap and shipped log live in another repo, point the board at
+them (and name the repos to scan for live loop-state) in the `board` config
+block below.
+
 ## Config
 
 Plugin defaults live in `config.json`. A repo can override them with a
@@ -442,6 +488,18 @@ Plugin defaults live in `config.json`. A repo can override them with a
 | `roadmap_paths` / `shipped_log_paths` | Paths that the docs-current check requires the slice to touch. |
 | `codex_required_risks` | Risk levels that require the Codex gate. Default: `["R2", "R3"]`. |
 | `escape_hatch` | When true, a command with a leading `DEVLOOP_OVERRIDE=<reason>` runs once. The plugin logs it to `.loop-audit.log`. |
+| `board` | Program-board settings (see below). |
+
+The `board` block (all paths resolve relative to the project root unless absolute):
+
+| Key | Meaning |
+|---|---|
+| `roadmap` / `shipped_log` | Paths to the roadmap and shipped-log docs the `refresh` reads. |
+| `repos` | Repo roots to scan for a live `.loop-state.json` (phase overlay). |
+| `current_section` / `next_up_section` | Roadmap headings `refresh` reads current-work rows and next-up task bullets from. |
+| `done_markers` | Tokens that mark a roadmap task done so `next_up` skips it. Default: `["DONE"]`. |
+| `recently_completed_count` / `next_up_count` | How many cards to seed into each column. |
+| `board_path` / `html_out` | Where the board JSON lives and where the hook renders the HTML. |
 
 ## Usage
 
