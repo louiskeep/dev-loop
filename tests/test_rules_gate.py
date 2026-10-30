@@ -307,3 +307,14 @@ def test_rules_consulted_block_wins_over_plan_lint(repo, tmp_path):
     out = rg.post_tool_use(_post(_plan(repo, text="no rules line\n")), cfg)
     assert out["decision"] == "block"
     assert "Rules consulted" in out["reason"]
+
+
+def test_plan_lint_drops_the_absolute_path_prefix_from_problem_lines(repo, tmp_path):
+    plan = _plan(repo)
+    body = 'echo "$2: first problem"; echo "$2: second problem"; exit 1'
+    out = rg.post_tool_use(
+        _post(plan), {"plan_lint_cmd": _fake_lint(tmp_path, body)}
+    )
+    text = out["hookSpecificOutput"]["additionalContext"]
+    assert "first problem" in text and "second problem" in text
+    assert str(plan) not in text

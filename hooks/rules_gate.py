@@ -269,7 +269,12 @@ def _plan_lint(kind: str, file_path: str, repo: Path, config: dict) -> dict | No
         )
         if proc.returncode != 1:
             return None
-        problems = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+        prefix = f"{file_path}: "
+        problems = [
+            ln.strip().removeprefix(prefix)
+            for ln in proc.stdout.splitlines()
+            if ln.strip()
+        ]
         if not problems:
             return None
         rel = Path(file_path).resolve().relative_to(repo.resolve()).as_posix()
