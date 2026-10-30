@@ -30,7 +30,8 @@ Config keys (plugin config.json, overridable per repo):
   rules_gate_mode: "block" (default) | "warn" | "off"
   rules_dirs: extra directories whose copies of the rulebooks count as read
   plan_lint_mode: "warn" (default, advice only) | "block" | "off"
-  plan_lint_cmd: path to the linter (default ~/bin/plan-lint); skipped silently when
+  plan_lint_cmd: path to the linter (default ~/bin/plan-lint; read from the plugin config only,
+    a repo-level config cannot set it); skipped silently when
     the file is missing or not executable
   plan_lint_since: "YYYY-MM-DD" (default "2026-10-30"); a plan is linted only when its
     basename starts with a date `YYYY-MM-DD-` at or after this value. Handoffs are
@@ -323,6 +324,22 @@ def post_tool_use(event: dict, config: dict) -> dict | None:
     return _plan_lint(kind, file_path, repo, config)
 
 
+def _without_repo_executable(config: dict) -> dict:
+    """The linter path comes from the plugin config only, never from the repo being edited.
+
+    A cloned repo's own config file must not be able to name a program that this hook runs.
+    """
+    trusted = {}
+    plugin_cfg = ls._plugin_root() / "config.json"
+    try:
+        trusted = json.loads(plugin_cfg.read_text())
+    except (OSError, json.JSONDecodeError):
+        pass
+    safe = dict(config)
+    safe["plan_lint_cmd"] = trusted.get("plan_lint_cmd", DEFAULT_PLAN_LINT_CMD)
+    return safe
+
+
 def main() -> int:
     try:
         event = json.load(sys.stdin)
@@ -333,6 +350,7 @@ def main() -> int:
     file_path = str((event.get("tool_input") or {}).get("file_path", ""))
     repo = _repo_for(file_path) if file_path else None
     config = ls.load_config(repo) if repo else ls.load_config(Path.cwd())
+    config = _without_repo_executable(config)
     if config.get("rules_gate_mode", "block") == "off":
         return 0
     handler = (

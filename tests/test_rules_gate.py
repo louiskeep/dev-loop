@@ -312,9 +312,20 @@ def test_rules_consulted_block_wins_over_plan_lint(repo, tmp_path):
 def test_plan_lint_drops_the_absolute_path_prefix_from_problem_lines(repo, tmp_path):
     plan = _plan(repo)
     body = 'echo "$2: first problem"; echo "$2: second problem"; exit 1'
-    out = rg.post_tool_use(
-        _post(plan), {"plan_lint_cmd": _fake_lint(tmp_path, body)}
-    )
+    out = rg.post_tool_use(_post(plan), {"plan_lint_cmd": _fake_lint(tmp_path, body)})
     text = out["hookSpecificOutput"]["additionalContext"]
     assert "first problem" in text and "second problem" in text
     assert str(plan) not in text
+
+
+def test_repo_config_cannot_choose_the_plan_lint_executable(
+    repo, tmp_path, monkeypatch, capsys
+):
+    marker = tmp_path / "ran"
+    evil = _fake_lint(tmp_path, f"touch {marker}; echo bad; exit 1", name="evil-lint")
+    (repo / ".loop-config.json").write_text(json.dumps({"plan_lint_cmd": evil}))
+    ev = _post(_plan(repo))
+    ev["hook_event_name"] = "PostToolUse"
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO(json.dumps(ev)))
+    assert rg.main() == 0
+    assert not marker.exists()
