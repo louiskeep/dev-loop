@@ -13,6 +13,10 @@ transcript scan for the rest of the session.
 PostToolUse (Edit|Write|MultiEdit): after a plan is written, a missing
 "Rules consulted:" line is fed back to the model as a blocking reason, so the
 plan names the rulebooks it was written against (rules/development-loop.md, PLAN).
+That check runs first. When it passes, plans and handoffs (`docs/handoffs/*.md`) are
+run through the external `plan-lint` and any problems are fed back as advice, so the
+plan contract (docs/handoffs/DEFECT-CATALOG.md) is enforced by the harness, not prose.
+Handoffs are linted but never subject to the pre-write rules-reading requirement.
 
 Plugin PreToolUse hooks also fire for subagent tool calls. When the event carries
 `agent_transcript_path`, the subagent's own transcript is checked, so a builder
@@ -25,6 +29,15 @@ list fits the work) is what catches a plan written against the wrong rules.
 Config keys (plugin config.json, overridable per repo):
   rules_gate_mode: "block" (default) | "warn" | "off"
   rules_dirs: extra directories whose copies of the rulebooks count as read
+  plan_lint_mode: "warn" (default, advice only) | "block" | "off"
+  plan_lint_cmd: path to the linter (default ~/bin/plan-lint); skipped silently when
+    the file is missing or not executable
+  plan_lint_since: "YYYY-MM-DD" (default "2026-10-30"); a plan is linted only when its
+    basename starts with a date `YYYY-MM-DD-` at or after this value. Handoffs are
+    always linted. Undated non-handoff files are skipped (older plans predate the contract).
+
+plan-lint exit codes: 0 clean, 1 problems (one per line), 2 bad path. Only exit 1 is
+reported; timeouts, a missing command, exit 2 and any exception yield no output.
 """
 
 from __future__ import annotations
@@ -32,6 +45,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -75,11 +89,18 @@ _CODE_SUFFIXES = {
     ".svelte",
 }
 _PLAN_DIRS = ("docs/plans", "docs/specs")
+_HANDOFF_DIR = "docs/handoffs"
+_DATE_PREFIX = re.compile(r"^(\d{4}-\d{2}-\d{2})-")
+PLAN_LINT_TIMEOUT = 15
+DEFAULT_PLAN_LINT_CMD = "~/bin/plan-lint"
+DEFAULT_PLAN_LINT_SINCE = "2026-10-30"
+_LINT_MAX_LINES = 8
+_LINT_LINE_CHARS = 160
 _RULES_LINE = re.compile(r"^\s*(\*\*)?Rules consulted:", re.IGNORECASE | re.MULTILINE)
 
 
 def classify(file_path: str, repo: Path | None) -> str | None:
-    """'plan', 'code', or None (not gated). Only files inside a git repo are gated."""
+    """'plan', 'handoff', 'code', or None (not gated). Only files inside a git repo are gated."""
     if repo is None:
         return None
     path = Path(file_path)
@@ -89,6 +110,8 @@ def classify(file_path: str, repo: Path | None) -> str | None:
         return None
     if path.suffix == ".md" and any(f"/{d}/" in f"/{rel}" for d in _PLAN_DIRS):
         return "plan"
+    if path.suffix == ".md" and rel.startswith(f"{_HANDOFF_DIR}/"):
+        return "handoff"
     if path.suffix in _CODE_SUFFIXES:
         return "code"
     return None
@@ -190,7 +213,7 @@ def pre_tool_use(event: dict, config: dict) -> dict | None:
     if not file_path:
         return None
     kind = classify(file_path, _repo_for(file_path))
-    if kind is None:
+    if kind is None or kind == "handoff":
         return None
     marker = _marker(event)
     if marker.exists():
@@ -220,25 +243,79 @@ def pre_tool_use(event: dict, config: dict) -> dict | None:
     }
 
 
-def post_tool_use(event: dict, config: dict) -> dict | None:
-    file_path = str((event.get("tool_input") or {}).get("file_path", ""))
-    if not file_path or classify(file_path, _repo_for(file_path)) != "plan":
+def _lint_applies(kind: str, file_path: str, config: dict) -> bool:
+    if kind == "handoff":
+        return True
+    m = _DATE_PREFIX.match(Path(file_path).name)
+    since = str(config.get("plan_lint_since", DEFAULT_PLAN_LINT_SINCE))
+    return bool(m) and m.group(1) >= since
+
+
+def _plan_lint(kind: str, file_path: str, repo: Path, config: dict) -> dict | None:
+    """Advice (or a block) from the external plan-lint; None on any failure."""
+    mode = config.get("plan_lint_mode", "warn")
+    if mode == "off" or not _lint_applies(kind, file_path, config):
+        return None
+    cmd = os.path.expanduser(str(config.get("plan_lint_cmd", DEFAULT_PLAN_LINT_CMD)))
+    if not (os.path.isfile(cmd) and os.access(cmd, os.X_OK)):
         return None
     try:
-        text = Path(file_path).read_text(errors="replace")
-    except OSError:
+        proc = subprocess.run(
+            [cmd, kind, file_path],
+            capture_output=True,
+            text=True,
+            timeout=PLAN_LINT_TIMEOUT,
+            check=False,
+        )
+        if proc.returncode != 1:
+            return None
+        problems = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+        if not problems:
+            return None
+        rel = Path(file_path).resolve().relative_to(repo.resolve()).as_posix()
+    except (OSError, subprocess.SubprocessError, ValueError):
         return None
-    if _RULES_LINE.search(text):
-        return None
+    shown = "; ".join(p[:_LINT_LINE_CHARS] for p in problems[:_LINT_MAX_LINES])
+    text = (
+        f"dev-loop plan-lint: {len(problems)} problem(s) in {rel}: {shown}. "
+        "These come from the plan contract (docs/handoffs/DEFECT-CATALOG.md); "
+        "fix them before sending this for review."
+    )
+    if mode == "block":
+        return {"decision": "block", "reason": text}
     return {
-        "decision": "block",
-        "reason": (
-            "dev-loop rules_gate: this plan has no 'Rules consulted:' line. Add one near "
-            "the top listing the rulebooks the README routing table selected and that you "
-            "read (always 00-universal and development-loop), e.g. "
-            "'Rules consulted: 00-universal, development-loop, feature-dev, testing'."
-        ),
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": text,
+        }
     }
+
+
+def post_tool_use(event: dict, config: dict) -> dict | None:
+    file_path = str((event.get("tool_input") or {}).get("file_path", ""))
+    if not file_path:
+        return None
+    repo = _repo_for(file_path)
+    kind = classify(file_path, repo)
+    if kind not in ("plan", "handoff") or repo is None:
+        return None
+    if kind == "plan":
+        try:
+            text = Path(file_path).read_text(errors="replace")
+        except OSError:
+            return None
+        if not _RULES_LINE.search(text):
+            return {
+                "decision": "block",
+                "reason": (
+                    "dev-loop rules_gate: this plan has no 'Rules consulted:' line. Add "
+                    "one near the top listing the rulebooks the README routing table "
+                    "selected and that you read (always 00-universal and "
+                    "development-loop), e.g. 'Rules consulted: 00-universal, "
+                    "development-loop, feature-dev, testing'."
+                ),
+            }
+    return _plan_lint(kind, file_path, repo, config)
 
 
 def main() -> int:

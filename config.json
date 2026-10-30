@@ -13,6 +13,9 @@
   "test_guard_mode": "warn",
   "test_guard_subagent_only": false,
   "rules_gate_mode": "block",
+  "plan_lint_mode": "warn",
+  "plan_lint_cmd": "~/bin/plan-lint",
+  "plan_lint_since": "2026-10-30",
   "board": {
     "repos": [],
     "roadmap": "",

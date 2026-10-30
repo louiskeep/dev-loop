@@ -153,3 +153,157 @@ def test_main_end_to_end_denies_via_stdin(repo, tmp_path, monkeypatch, capsys):
         json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecision"]
         == "deny"
     )
+
+
+# ---- plan-lint (PostToolUse advisory) ----
+
+_RULES_OK = "Rules consulted: 00-universal, development-loop\n"
+
+
+def _fake_lint(tmp_path, body, name="fake-plan-lint"):
+    """A stand-in plan-lint: `body` is shell run with $1=kind, $2=file."""
+    script = tmp_path / name
+    script.write_text(f"#!/bin/sh\n{body}\n")
+    script.chmod(0o755)
+    return str(script)
+
+
+def _bad_lint(tmp_path):
+    return _fake_lint(tmp_path, 'echo "problem one"; echo "problem two"; exit 1')
+
+
+def _post(path):
+    return {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(path)},
+    }
+
+
+def _plan(repo, name="2026-10-30-x.md", text=_RULES_OK):
+    p = repo / "docs/plans" / name
+    p.write_text(text)
+    return p
+
+
+def _handoff(repo, name="h.md"):
+    d = repo / "docs/handoffs"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / name
+    p.write_text("# handoff\n")
+    return p
+
+
+def test_classify_handoff(repo):
+    (repo / "docs/handoffs").mkdir()
+    assert rg.classify(str(repo / "docs/handoffs/a.md"), repo) == "handoff"
+    assert rg.classify(str(repo / "docs/handoffs/a.txt"), repo) is None
+    assert rg.classify(str(repo / "docs/plans/a.md"), repo) == "plan"
+
+
+def test_handoff_write_needs_no_rules_read(repo, tmp_path):
+    t = _transcript(tmp_path, [])
+    assert rg.pre_tool_use(_event(repo / "docs/handoffs/h.md", t), {}) is None
+
+
+def test_plan_lint_warn_returns_advice_with_problem_lines(repo, tmp_path):
+    cfg = {"plan_lint_cmd": _bad_lint(tmp_path)}
+    out = rg.post_tool_use(_post(_plan(repo)), cfg)
+    hso = out["hookSpecificOutput"]
+    assert hso["hookEventName"] == "PostToolUse"
+    ctx = hso["additionalContext"]
+    assert ctx.startswith(
+        "dev-loop plan-lint: 2 problem(s) in docs/plans/2026-10-30-x.md"
+    )
+    assert "problem one" in ctx and "problem two" in ctx
+    assert "DEFECT-CATALOG.md" in ctx
+
+
+def test_plan_lint_passes_kind_and_file_to_command(repo, tmp_path):
+    log = tmp_path / "args.log"
+    cmd = _fake_lint(tmp_path, f'echo "$1 $2" > {log}; echo OK; exit 0')
+    plan = _plan(repo)
+    assert rg.post_tool_use(_post(plan), {"plan_lint_cmd": cmd}) is None
+    assert log.read_text().split() == ["plan", str(plan)]
+
+
+def test_plan_lint_caps_lines_and_trims_long_ones(repo, tmp_path):
+    body = (
+        'i=0; while [ $i -lt 12 ]; do echo "line$i '
+        + "x" * 300
+        + '"; i=$((i+1)); done; exit 1'
+    )
+    out = rg.post_tool_use(
+        _post(_plan(repo)), {"plan_lint_cmd": _fake_lint(tmp_path, body)}
+    )
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "12 problem(s)" in ctx
+    assert "line7" in ctx and "line8" not in ctx
+    assert "x" * 161 not in ctx
+
+
+def test_plan_lint_block_mode_blocks(repo, tmp_path):
+    cfg = {"plan_lint_cmd": _bad_lint(tmp_path), "plan_lint_mode": "block"}
+    out = rg.post_tool_use(_post(_plan(repo)), cfg)
+    assert out["decision"] == "block"
+    assert "dev-loop plan-lint: 2 problem(s)" in out["reason"]
+
+
+def test_plan_lint_off_and_missing_command_return_none(repo, tmp_path):
+    plan = _plan(repo)
+    bad = _bad_lint(tmp_path)
+    assert (
+        rg.post_tool_use(_post(plan), {"plan_lint_cmd": bad, "plan_lint_mode": "off"})
+        is None
+    )
+    assert (
+        rg.post_tool_use(_post(plan), {"plan_lint_cmd": str(tmp_path / "nope")}) is None
+    )
+    notexec = tmp_path / "notexec"
+    notexec.write_text("#!/bin/sh\nexit 1\n")
+    assert rg.post_tool_use(_post(plan), {"plan_lint_cmd": str(notexec)}) is None
+
+
+def test_plan_lint_skips_plans_before_cutoff_and_undated(repo, tmp_path):
+    cfg = {"plan_lint_cmd": _bad_lint(tmp_path)}
+    assert rg.post_tool_use(_post(_plan(repo, "2026-10-29-old.md")), cfg) is None
+    assert rg.post_tool_use(_post(_plan(repo, "undated.md")), cfg) is None
+    newer = rg.post_tool_use(_post(_plan(repo, "2026-11-02-new.md")), cfg)
+    assert newer is not None
+    since = {**cfg, "plan_lint_since": "2026-10-01"}
+    assert rg.post_tool_use(_post(_plan(repo, "2026-10-29-old.md")), since) is not None
+
+
+def test_handoff_is_linted_regardless_of_name(repo, tmp_path):
+    cfg = {"plan_lint_cmd": _bad_lint(tmp_path)}
+    out = rg.post_tool_use(_post(_handoff(repo, "no-date.md")), cfg)
+    assert (
+        "problem(s) in docs/handoffs/no-date.md"
+        in out["hookSpecificOutput"]["additionalContext"]
+    )
+
+
+def test_handoff_uses_handoff_subcommand_and_skips_rules_line(repo, tmp_path):
+    log = tmp_path / "args.log"
+    cmd = _fake_lint(tmp_path, f'echo "$1" > {log}; exit 0')
+    assert rg.post_tool_use(_post(_handoff(repo)), {"plan_lint_cmd": cmd}) is None
+    assert log.read_text().strip() == "handoff"
+
+
+@pytest.mark.parametrize("body", ["exit 2", "echo boom; exit 3", "sleep 5; exit 1"])
+def test_plan_lint_failures_never_break_the_hook(repo, tmp_path, monkeypatch, body):
+    monkeypatch.setattr(rg, "PLAN_LINT_TIMEOUT", 0.3)
+    cfg = {"plan_lint_cmd": _fake_lint(tmp_path, body)}
+    assert rg.post_tool_use(_post(_plan(repo)), cfg) is None
+
+
+def test_plan_lint_clean_is_silent(repo, tmp_path):
+    cmd = _fake_lint(tmp_path, "echo OK; exit 0")
+    assert rg.post_tool_use(_post(_plan(repo)), {"plan_lint_cmd": cmd}) is None
+
+
+def test_rules_consulted_block_wins_over_plan_lint(repo, tmp_path):
+    cfg = {"plan_lint_cmd": _bad_lint(tmp_path)}
+    out = rg.post_tool_use(_post(_plan(repo, text="no rules line\n")), cfg)
+    assert out["decision"] == "block"
+    assert "Rules consulted" in out["reason"]
