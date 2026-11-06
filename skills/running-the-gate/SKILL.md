@@ -12,7 +12,7 @@ description: >-
 
 The gate is an independent read of the exact commit, not a rerun of your own confidence. Delegate it;
 do not self-review. Roles and tiers: `role-matrix.md`. Policy: `rules/code-review.md`,
-`rules/development-loop.md`.
+`rules/development-loop.md`, and the pre-merge done-state in `rules/profiles/local-operations.md`.
 
 ## Sequence
 

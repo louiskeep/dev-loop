@@ -13,7 +13,9 @@ description: >-
 A slice is not done until its durable docs match reality, and the roadmap is part of that. Treat
 "roadmap and shipped log current" as a close-the-slice gate condition, the same as green tests.
 Delegate to barry (Haiku for mechanical sync, Opus when the docs need judgment). Policy:
-`rules/documentation.md`, `rules/development-loop.md` (DOCUMENT).
+`rules/documentation.md`, `rules/development-loop.md` (DOCUMENT), and the close-out rules it
+points to in `rules/profiles/local-operations.md` (docs-current, graph-current, section-complete
+message).
 
 ## The close-out
 

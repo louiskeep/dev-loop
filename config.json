@@ -12,5 +12,6 @@
   "escape_hatch": false,
   "test_guard_mode": "warn",
   "test_guard_subagent_only": false,
-  "rules_gate_mode": "block"
+  "rules_gate_mode": "block",
+  "dev_rules_dir": "/home/cam/dev-rules"
 }
