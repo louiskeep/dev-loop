@@ -3,12 +3,16 @@
 PreToolUse (Edit|Write|MultiEdit): writing a plan (`docs/plans/*.md`,
 `docs/specs/*.md`) or a source file inside a git repository is denied until this
 session (or this subagent) has read the routing table and the core rulebooks:
-`README.md`, `00-universal.md` and `development-loop.md`, from the plugin's
-`rules/` snapshot or the canonical dev-rules directory. The check reads the
+`README.md`, `00-universal.md`, `development-loop.md` and
+`profiles/local-operations.md` (the local close-out rules the loop points to),
+from the plugin's `rules/` snapshot or the canonical dev-rules directory.
+Creating a NEW source file also requires `architecture.md` (where files go).
+The check reads the
 session transcript for Read tool calls (or shell commands) that opened those
 files, so it proves the files were opened in THIS session, not that they were
 remembered from an earlier one. Once satisfied, a marker file skips the
-transcript scan for the rest of the session.
+transcript scan for the rest of the session; a second marker does the same for
+the new-file requirement.
 
 PostToolUse (Edit|Write|MultiEdit): after a plan is written, a missing
 "Rules consulted:" line is fed back to the model as a blocking reason, so the
@@ -24,6 +28,7 @@ list fits the work) is what catches a plan written against the wrong rules.
 
 Config keys (plugin config.json, overridable per repo):
   rules_gate_mode: "block" (default) | "warn" | "off"
+  dev_rules_dir: the canonical dev-rules checkout (default /home/cam/dev-rules)
   rules_dirs: extra directories whose copies of the rulebooks count as read
 """
 
@@ -42,8 +47,15 @@ except ImportError:  # run standalone: python hooks/rules_gate.py
     import loop_state as ls
 
 _EDIT_TOOLS = {"Edit", "Write", "MultiEdit"}
-REQUIRED_RULES = ("README.md", "00-universal.md", "development-loop.md")
-_DEFAULT_RULES_DIRS = ("/home/cam/dev-rules",)
+REQUIRED_RULES = (
+    "README.md",
+    "00-universal.md",
+    "development-loop.md",
+    "profiles/local-operations.md",
+)
+# Creating a source file is a placement decision; architecture.md says where files go.
+NEW_FILE_RULES = ("architecture.md",)
+DEFAULT_DEV_RULES_DIR = "/home/cam/dev-rules"
 _CODE_SUFFIXES = {
     ".py",
     ".pyi",
@@ -96,12 +108,16 @@ def classify(file_path: str, repo: Path | None) -> str | None:
 
 def rules_dirs(config: dict) -> list[str]:
     dirs = [str(ls._plugin_root() / "rules")]
-    dirs += [d for d in _DEFAULT_RULES_DIRS if Path(d).is_dir()]
+    canonical = str(config.get("dev_rules_dir") or DEFAULT_DEV_RULES_DIR)
+    if Path(canonical).is_dir():
+        dirs.append(canonical)
     dirs += [str(d) for d in config.get("rules_dirs", [])]
     return [d.rstrip("/") for d in dirs]
 
 
-def _opened(item: dict, dirs: list[str]) -> set[str]:
+def _opened(
+    item: dict, dirs: list[str], names: tuple[str, ...] = REQUIRED_RULES
+) -> set[str]:
     """Rulebook names a single tool_use item opened from one of `dirs`."""
     if item.get("type") != "tool_use":
         return set()
@@ -110,27 +126,30 @@ def _opened(item: dict, dirs: list[str]) -> set[str]:
     if item.get("name") == "Read":
         fp = str(inp.get("file_path", ""))
         for d in dirs:
-            for name in REQUIRED_RULES:
+            for name in names:
                 if fp == f"{d}/{name}":
                     found.add(name)
     elif item.get("name") == "Bash":
         cmd = str(inp.get("command", ""))
         for d in dirs:
-            for name in REQUIRED_RULES:
+            for name in names:
                 if f"{d}/{name}" in cmd:
                     found.add(name)
     return found
 
 
-def rules_read(transcript: Path, dirs: list[str]) -> set[str]:
-    """Which REQUIRED_RULES this transcript shows were opened."""
+def rules_read(
+    transcript: Path, dirs: list[str], names: tuple[str, ...] = REQUIRED_RULES
+) -> set[str]:
+    """Which of `names` this transcript shows were opened."""
     found: set[str] = set()
+    basenames = {Path(n).name for n in names}
     try:
         lines = transcript.read_text(errors="replace").splitlines()
     except OSError:
         return found
     for line in lines:
-        if "tool_use" not in line or not any(n in line for n in REQUIRED_RULES):
+        if "tool_use" not in line or not any(n in line for n in basenames):
             continue
         try:
             entry = json.loads(line)
@@ -140,8 +159,8 @@ def rules_read(transcript: Path, dirs: list[str]) -> set[str]:
         if isinstance(content, list):
             for item in content:
                 if isinstance(item, dict):
-                    found |= _opened(item, dirs)
-        if found >= set(REQUIRED_RULES):
+                    found |= _opened(item, dirs, names)
+        if found >= set(names):
             break
     return found
 
@@ -173,15 +192,30 @@ def _repo_for(file_path: str) -> Path | None:
     return root
 
 
+def _where(name: str, dirs: list[str]) -> str:
+    """The directory to point the reader at: the canonical copy when it has the file."""
+    preferred = dirs[1:] + dirs[:1]
+    for d in preferred:
+        if Path(d, name).is_file():
+            return d
+    return preferred[0]
+
+
 def _deny_reason(kind: str, missing: list[str], dirs: list[str]) -> str:
-    where = dirs[1] if len(dirs) > 1 else dirs[0]
-    paths = ", ".join(f"{where}/{name}" for name in missing)
+    paths = ", ".join(f"{_where(name, dirs)}/{name}" for name in missing)
     what = "writing a plan" if kind == "plan" else "writing code"
+    new_file = (
+        " A new source file also needs architecture.md (Layout: where things go) "
+        "so it lands in the directory the repo map names."
+        if any(n in NEW_FILE_RULES for n in missing)
+        else ""
+    )
     return (
         f"dev-loop rules_gate: read the development rules before {what}. "
         f"Not yet read in this session: {paths}. Read them (Read tool), then read the "
         "task rulebooks the README routing table selects for this work, and retry. "
         "Plans must also carry a 'Rules consulted:' line listing the rulebooks used."
+        f"{new_file}"
     )
 
 
@@ -193,15 +227,24 @@ def pre_tool_use(event: dict, config: dict) -> dict | None:
     if kind is None:
         return None
     marker = _marker(event)
-    if marker.exists():
+    new_file_marker = marker.with_name(marker.name + ".new-file")
+    new_source = kind == "code" and not Path(file_path).exists()
+    need: tuple[str, ...] = ()
+    if not marker.exists():
+        need += REQUIRED_RULES
+    if new_source and not new_file_marker.exists():
+        need += NEW_FILE_RULES
+    if not need:
         return None
     transcript = event.get("agent_transcript_path") or event.get("transcript_path")
     dirs = rules_dirs(config)
-    found = rules_read(Path(transcript), dirs) if transcript else set()
-    missing = [n for n in REQUIRED_RULES if n not in found]
+    found = rules_read(Path(transcript), dirs, need) if transcript else set()
+    missing = [n for n in need if n not in found]
+    for done, names in ((marker, REQUIRED_RULES), (new_file_marker, NEW_FILE_RULES)):
+        if any(n in need for n in names) and all(n in found for n in names):
+            done.parent.mkdir(parents=True, exist_ok=True)
+            done.write_text(file_path)
     if not missing:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(file_path)
         return None
     reason = _deny_reason(kind, missing, dirs)
     if config.get("rules_gate_mode", "block") == "warn":

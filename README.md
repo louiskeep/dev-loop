@@ -345,12 +345,16 @@ A sixth pattern is planning or coding from memory instead of the rules.
 The `rules_gate` hook (PreToolUse and PostToolUse on Edit, Write and
 MultiEdit) denies writing a plan (`docs/plans|specs/*.md`) or a source file in
 a git repository until the session, or the subagent doing the writing, has
-opened `rules/README.md` (the routing table), `00-universal.md` and
-`development-loop.md`, from `rules/` or the canonical dev-rules directory. It
-checks the transcript for those reads, then caches the result for the session.
-After a plan is written, a missing `Rules consulted:` line is fed back as a
-blocking reason. Set `rules_gate_mode` to `warn` or `off` in `config.json` or a
-repo's `.loop-config.json`; add copies of the rules elsewhere with `rules_dirs`.
+opened `rules/README.md` (the routing table), `00-universal.md`,
+`development-loop.md` and `profiles/local-operations.md`, from `rules/` or the
+canonical dev-rules directory. Creating a new source file also needs
+`architecture.md`, which says where files go. It checks the transcript for
+those reads, then caches the result for the session. After a plan is written, a
+missing `Rules consulted:` line is fed back as a blocking reason. Set
+`rules_gate_mode` to `warn` or `off` in `config.json` or a repo's
+`.loop-config.json`; point `dev_rules_dir` at the canonical dev-rules checkout
+(default `/home/cam/dev-rules`); add copies of the rules elsewhere with
+`rules_dirs`.
 
 A fifth failure pattern is test-weakening. Its own PreToolUse hook,
 `test_guard`, watches edits to Edit, Write, and MultiEdit. A builder can
@@ -441,6 +445,9 @@ Plugin defaults live in `config.json`. A repo can override them with a
 | `protected_branches` | Branches that need a gate before an update. Default: `["main", "master"]`. |
 | `roadmap_paths` / `shipped_log_paths` | Paths that the docs-current check requires the slice to touch. |
 | `codex_required_risks` | Risk levels that require the Codex gate. Default: `["R2", "R3"]`. |
+| `rules_gate_mode` | `block` (default), `warn` or `off` for the `rules_gate` hook. |
+| `dev_rules_dir` | The canonical dev-rules checkout whose reads count for `rules_gate`. Default: `/home/cam/dev-rules`. |
+| `rules_dirs` | Extra directories whose copies of the rulebooks count as read. |
 | `escape_hatch` | When true, a command with a leading `DEVLOOP_OVERRIDE=<reason>` runs once. The plugin logs it to `.loop-audit.log`. |
 
 ## Usage
