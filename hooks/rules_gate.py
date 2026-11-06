@@ -182,6 +182,25 @@ def _marker(event: dict) -> Path:
     return base / re.sub(r"[^A-Za-z0-9_.-]", "_", key)
 
 
+def _transcript_for(event: dict) -> str | None:
+    """The transcript whose reads count for this call: the subagent's own when it is one.
+
+    Subagent events carry `agent_id` but, in practice, no `agent_transcript_path`
+    (seen 2026-11-06). Claude Code stores a subagent's transcript at
+    `<session>/subagents/agent-<agent_id>.jsonl` beside `<session>.jsonl`, so it is
+    derived from there. Falling back to the parent transcript would judge a
+    builder by the orchestrator's reads, which is what blocked builders.
+    """
+    if event.get("agent_transcript_path"):
+        return str(event["agent_transcript_path"])
+    main = event.get("transcript_path")
+    agent_id = event.get("agent_id")
+    if main and agent_id:
+        safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", str(agent_id))
+        return str(Path(main).with_suffix("") / "subagents" / f"agent-{safe_id}.jsonl")
+    return str(main) if main else None
+
+
 def _repo_for(file_path: str) -> Path | None:
     start = Path(file_path).parent
     while not start.exists() and start != start.parent:
@@ -219,7 +238,7 @@ def pre_tool_use(event: dict, config: dict) -> dict | None:
     marker = _marker(event)
     if marker.exists():
         return None
-    transcript = event.get("agent_transcript_path") or event.get("transcript_path")
+    transcript = _transcript_for(event)
     dirs = rules_dirs(config)
     found = rules_read(Path(transcript), dirs) if transcript else set()
     missing = [n for n in REQUIRED_RULES if n not in found]

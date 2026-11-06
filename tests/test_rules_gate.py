@@ -115,6 +115,30 @@ def test_subagent_must_read_rules_in_its_own_transcript(repo, tmp_path):
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
+def _subagent_layout(tmp_path, main_reads, agent_reads):
+    """Claude Code's layout: <session>.jsonl beside <session>/subagents/agent-<id>.jsonl."""
+    main_t = _transcript(tmp_path, main_reads, name="s1.jsonl")
+    sub = tmp_path / "s1" / "subagents"
+    sub.mkdir(parents=True)
+    _transcript(sub, agent_reads, name="agent-a1.jsonl")
+    return main_t
+
+
+def test_subagent_transcript_found_from_agent_id_when_path_missing(repo, tmp_path):
+    # Live events carry agent_id but no agent_transcript_path (2026-11-06): the
+    # subagent's own reads must still count.
+    main_t = _subagent_layout(tmp_path, [], _all_rules())
+    ev = _event(repo / "src/a.py", main_t, agent_id="a1")
+    assert rg.pre_tool_use(ev, {}) is None
+
+
+def test_subagent_reads_from_parent_do_not_count_via_agent_id(repo, tmp_path):
+    main_t = _subagent_layout(tmp_path, _all_rules(), [])
+    ev = _event(repo / "src/a.py", main_t, agent_id="a1")
+    out = rg.pre_tool_use(ev, {})
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
 def test_warn_mode_adds_context_instead_of_denying(repo, tmp_path):
     t = _transcript(tmp_path, [])
     out = rg.pre_tool_use(_event(repo / "src/a.py", t), {"rules_gate_mode": "warn"})
