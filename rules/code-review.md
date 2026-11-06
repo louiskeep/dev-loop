@@ -30,6 +30,14 @@ when the change creates or worsens a concrete change pain (a new case edits
 central branching, parallel tables drift, a module gains an unrelated reason to
 change), not because code fails to match a pattern.
 
+DO run tests at review, not only read: T1 on the exact head, your assigned risk
+cells, and your own mutations ([testing](testing.md#test-depth)). Record the
+head tested. Do not run the full suite; that runs once on the merge head.
+
+DO check the builder's report carries a Test scope block, that any slice-level
+full suite names its trigger, and that commits follow
+[workspace and VCS](workspace-and-vcs.md#commit-messages).
+
 DON'T imply coverage beyond the evidence reviewed.
 
 DON'T silently repeat a review at GATE. See [development loop](development-loop.md).
@@ -42,6 +50,6 @@ DON'T silently repeat a review at GATE. See [development loop](development-loop.
 ## Done when
 
 - [ ] Findings have severity, confidence, and evidence.
-- [ ] The verdict names checked and unchecked scope.
+- [ ] The verdict names checked and unchecked scope and the head SHA tested.
 - [ ] Release-blocking conditions are unambiguous.
 - [ ] Every new or edited log call was checked for data values, expression text, and input-echoing exception text ([observability](observability-and-resilience.md)).

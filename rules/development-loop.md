@@ -41,6 +41,10 @@ known failure modes, and acceptance tests before implementation. Use a
 fail-before proof when meaningful; when it is unsafe, intermittent, or not yet
 available, record the best available evidence and compensating validation.
 
+Plan from current code. Before measuring or citing code, `git fetch` and read from a
+fresh worktree or `git show origin/main:<path>`, never a local checkout that may be
+behind, and use a venv built from that tree.
+
 Name the rules. Every plan carries a "Rules consulted:" line near its top
 listing the rulebooks the [routing table](README.md) selected for this work
 (always including the universal and development-loop rules), read during
@@ -66,17 +70,40 @@ functions; no flag arguments that switch behavior; comments that explain why.
 Apply it to the code the change touches; it is not a license to restyle
 untouched code.
 
-Research established solutions before designing your own. Before an R2 or R3
-plan proposes custom logic for a non-trivial problem (a parser, scheduler,
-resource limit, protocol, statistical or crypto method, concurrency scheme), the
-planner searches online and in the codebase for how established tools,
-standards, libraries and papers solve it, and the plan carries an "Established
-solutions" section: what was found, which source the design follows (cited),
-and why any remaining custom code is needed. Prefer the standard library or a
-maintained library over a hand-written version; adopt a published pattern over
-an invented one. Keep the result proportionate: don't overbuild, and don't add
-machinery for 1% scenarios; record those as known issues or refuse them fail
-closed. Plan reviewers check this section. See [reuse first](reuse-first.md).
+Name the choke point. A plan that adds a rule more than one call site must
+follow, or adds a site to such a rule (a route, a command, a table, a loader,
+a client, a spawn), states where the rule is enforced by construction, which
+guard test fails when a site bypasses it, and the one mutation that must turn
+that guard red. A helper every site is expected to call is not an answer. See
+[cross-cutting concerns](cross-cutting-concerns.md).
+
+Name the placement. A plan that adds a file or package carries a short
+"Placement" table: each new file, the directory it goes in, the line of the
+repo's layout map (the "Where things go" section of its CODEMAP) that puts it
+there, and the existing module it sits beside. A file the map does not place is
+a map change, stated in the plan, not an improvised folder. A directory already
+over the fan-out limit takes no new modules; the plan names the sub-package
+instead. Plan reviewers check the table against the map. See
+[architecture](architecture.md).
+
+Research established solutions FIRST, as the starting point of PLAN, before
+drafting any custom design. For a non-trivial R2 or R3 problem (a parser,
+scheduler, resource limit, protocol, statistical or crypto method, concurrency
+scheme, data-integrity or retention scheme), the planner's FIRST move is an
+online plus in-codebase search for how established tools, standards, libraries
+and papers solve it. Do this before authoring a design, not to justify one after
+the fact, and never let an internal prior plan or your own recalled analysis
+substitute for the external search: a problem that looks fully reasoned-out
+internally is exactly the one most likely to be reinventing a named, vetted
+pattern (tamper-evident-log retention, seekable RNG, FK preservation, and the
+like all have established answers). The plan carries an "Established solutions"
+section: the search actually run, what was found, which source the design
+follows (cited), and why any remaining custom code is needed. Prefer the standard
+library or a maintained library over a hand-written version; adopt a published
+pattern over an invented one. Keep the result proportionate: don't overbuild,
+and don't add machinery for 1% scenarios; record those as known issues or refuse
+them fail closed. Plan reviewers check this section (including that the external
+search happened). See [reuse first](reuse-first.md).
 
 Test authorship is role-neutral. A planner, builder, or another qualified
 contributor may create tests, but no later contributor may weaken pre-agreed
@@ -88,7 +115,9 @@ coverage. Exit with the plan and required review evidence.
 
 Implement the approved approach in recoverable slices. Preserve acceptance
 criteria and record any approved change to them. Exit with the intended behavior
-implemented and relevant checks ready to run.
+implemented and relevant checks ready to run. Builders run T0 and T1
+([testing](testing.md#test-depth)) and write commit messages per
+[workspace and VCS](workspace-and-vcs.md#commit-messages).
 
 ### SELF-CHECK
 
@@ -111,7 +140,12 @@ An independent reviewer evaluates the exact artifact against the plan, evidence,
 and applicable rulebooks. Review produces findings and a verdict with checked
 and unchecked scope. The first pass is exhaustive: the reviewer lists every
 finding it can find, not only the first blocker, and may run small read-only
-probes to check runtime behavior that reading alone can miss. Severity is
+probes to check runtime behavior that reading alone can miss. Each review or
+gate runs T2 ([testing](testing.md#test-depth)): T1 on the exact head it
+records, its own mutations, and its assigned risk cells. The claimed risk cells
+are split by reviewer role, or else the first gate records the set it ran; a
+later gate re-runs a cell only when it disputes the result or the head changed.
+Severity is
 proportional to real-world risk: a finding blocks only if it is plausible in
 real use of the system as deployed. A finding that needs an astronomically
 unlikely event is recorded as low in the project's known-issues (tech debt)
@@ -138,30 +172,18 @@ known limitations, and release or recovery readiness. A repository may add a
 separate named gate; it must not silently duplicate review. R3 also requires
 explicit human authorization immediately before the side effect.
 
+The [local operations profile](profiles/local-operations.md) may add close-out
+steps, including the pre-merge done-state; they are gate conditions where it says so.
+
 ### DOCUMENT
 
 Update affected durable sources and project-required records. Add knowledge only
 when it has demonstrated cross-session value and is in scope and authorized.
 Exit with current docs or a stated reason no update was required.
 
-**Docs-current rule (Cam, 2026-09-15): a slice of work is not DONE until its
-durable docs match reality, and the roadmap is part of that.** After each slice
-(a gated, merge-ready or merged unit of work), as the final step of DOCUMENT:
-
-- Move the completed item OFF the roadmap into the shipped log (the repo's
-  "recently shipped" doc / ledger), dated, with the merge/gate evidence.
-- Update the roadmap's CURRENT-work status and NEXT-UP so the roadmap carries
-  only current + next-up work, never a backlog of already-done items.
-- Reconcile any plan/status doc whose own status lines now trail the code
-  (a plan's inline STATUS must not claim a task is pending when it merged).
-- Prefer a single authoritative shipped log over restating history in the
-  roadmap; the roadmap points to it rather than duplicating it.
-
-Auto-memory is a short pointer, not a substitute for this: the roadmap + shipped
-log are the durable, human-readable source of truth. A stale roadmap that lags
-the code by several phases is a process failure, not a cosmetic one -- it causes
-real confusion about what has shipped. Treat "roadmap + shipped log current" as a
-gate condition for closing the slice, the same way green tests are.
+The [local operations profile](profiles/local-operations.md) may add close-out
+steps, including the docs-current, graph-current, and section-complete message rules;
+they are gate conditions where it says so.
 
 ## Red flags
 
@@ -179,6 +201,9 @@ gate condition for closing the slice, the same way green tests are.
 - [ ] Plans carry a "Rules consulted:" line for the rulebooks actually read.
 - [ ] R2/R3 plans carry an "Established solutions" section (online and codebase
       research, cited source pattern, justification for any custom code).
-- [ ] The slice's durable docs are current: the roadmap carries only current +
-      next-up work, the completed item moved to the shipped log, and any trailing
-      plan STATUS lines were reconciled to the code.
+- [ ] A plan that adds files carries a Placement table checked against the
+      repo's CODEMAP "Where things go" map.
+- [ ] A plan that adds a rule with more than one site, or a site to one, names
+      the choke point, the guard test, and the mutation that turns it red.
+- [ ] Every close-out step the local operations profile marks as a gate
+      condition is met, or its recorded deferral is one the profile allows.

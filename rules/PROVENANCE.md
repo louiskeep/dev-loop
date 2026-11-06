@@ -14,3 +14,5 @@ rulebooks change.
 2026-10-06: `architecture.md` and `refactoring.md` re-synced (deep modules, named refactorings); the property-based-testing rule was inserted into the drifted `testing.md` verbatim.
 
 2026-10-06: FULL re-sync. `rules/` now matches the source dev-rules exactly (all rulebooks, README routing table, pre-release-audit, catalogs, profiles, rules-manifest.json, docs/dev-rules-architecture.md). The plugin-only lines found before the sync were older wordings the source had replaced. Re-sync the whole directory whenever the source changes.
+
+2026-11-06: FULL re-sync from dev-rules branch `enf/rules-routing` (a84cdf9). The owner's dated close-out rules (pre-merge done-state, docs-current, graph-current, section-complete message) moved from `development-loop.md` into `profiles/local-operations.md`; `rules_gate` now requires that profile. Also new: `cross-cutting-concerns.md`, `catalogs/recurring-defects.md`, `catalogs/external-references.md`.

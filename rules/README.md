@@ -20,7 +20,7 @@ canonical policy and task rulebooks that match the work.
 |---|---|
 | Any development work | [universal rules](00-universal.md) |
 | Non-trivial or uncertain risk | [risk and exceptions](risk-and-exceptions.md) |
-| End-to-end work and phase gates | [development loop](development-loop.md) |
+| End-to-end work and phase gates | [development loop](development-loop.md) and the [local operations profile](profiles/local-operations.md) |
 | Reduced human oversight | [autonomous operation](autonomous-operation.md) |
 | Delegation or capability selection | [delegation](delegation.md) |
 | Repository edits or version control | [workspace and VCS](workspace-and-vcs.md) |
@@ -34,6 +34,7 @@ canonical policy and task rulebooks that match the work.
 | A diff or change proposal | [code review](code-review.md) |
 | Tests or test maintenance | [testing](testing.md) |
 | A structural decision | [architecture](architecture.md) |
+| A rule many call sites must follow, or a table kept in sync by hand | [cross-cutting concerns](cross-cutting-concerns.md) |
 | APIs, CLIs, formats, events, or external consumers | [API and compatibility](api-and-compatibility.md) |
 | Schema, migration, or data change | [data and migrations](data-and-migrations.md) |
 | Release or deployment | [release and rollback](release-and-rollback.md) |
@@ -45,13 +46,33 @@ canonical policy and task rulebooks that match the work.
 | Delete, overwrite, force operation, or irreversible transform | [destructive operations](destructive-operations.md) |
 | Docs, comments, decisions, or lifecycle | [documentation](documentation.md) |
 
+## Route by symptom
+
+Use this table when you notice a smell during the work, not only at the start.
+Read the rulebook it names before you write the next change.
+
+| You notice | Smell | Read |
+|---|---|---|
+| The same check copied into each handler or command | Shotgun Surgery, scattered concern | [cross-cutting concerns](cross-cutting-concerns.md) |
+| A file edited for unrelated reasons, or past the cap | Divergent Change, Large Class | [architecture: layout](architecture.md#layout-where-things-go), [refactoring](refactoring.md) |
+| Unsure which directory a new file belongs in | | [architecture: layout](architecture.md#layout-where-things-go), the repo CODEMAP "Where things go" map |
+| Adding one variant touches several files | Open/closed | [architecture: design principles](architecture.md#design-principles-apply-when-they-earn-their-keep) |
+| A table that must be kept in step with another by hand | Parallel tables | [cross-cutting concerns](cross-cutting-concerns.md) |
+
 ## Supporting references
 
 - [Local agent stack profile](profiles/local-agent-stack.md) maps durable roles
   to optional local capabilities. It is not policy.
+- [Local operations profile](profiles/local-operations.md) is required wherever
+  the development loop applies. It holds the owner's dated close-out rules
+  (pre-merge done-state, docs-current, graph-current, section-complete message)
+  and the local tools they use. Its steps are gate conditions where it says so.
+- [Recurring defect classes](catalogs/recurring-defects.md) is required: builders and reviewers check every class on every code change.
 - [Python testing patterns](catalogs/python-testing-patterns.md) and
   [schema-migration testing patterns](catalogs/schema-migration-testing-patterns.md)
   are optional catalogs.
+- [External references](catalogs/external-references.md) is an optional
+  catalog: one line per outside source and when to fetch it.
 - [Rulebook architecture](docs/dev-rules-architecture.md) explains ownership,
   enforcement, and document lifecycle.
 

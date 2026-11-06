@@ -21,14 +21,19 @@ narrow, skip, or delete. An unbounded builder under a green-the-suite incentive
 will loosen the gate that stands between it and "done".
 
 DO bound a builder's EXECUTION, not just its edits. A builder runs ONLY the
-named tests for its task, never the whole suite (the orchestrator or CI owns the
-full-suite run). A builder NEVER launches a background or detached run: a
+named tests for its task, never the whole suite unless a testing escalation
+trigger fires (the orchestrator or CI owns the full-suite run). A builder NEVER launches a background or detached run: a
 long run started inside a subagent detaches from it, so the agent's later
 resumes cannot observe completion and it loops indefinitely burning budget. If a
 check needs longer than a single foreground command, the builder reports that
 and hands it back. Give the builder a tool-call or time budget and require it to
 stop and report on reaching it rather than grinding. A scoped port of a proven
 prototype should cost minutes, not a full-suite marathon.
+
+DO carry both house standards in every builder, worker, or subagent brief: the
+test scope rules in [testing](testing.md#test-depth) (its tiers, escalation
+triggers, and the Test scope block the report must return) and the commit
+message rules in [workspace and VCS](workspace-and-vcs.md#commit-messages).
 
 DO assign roles by capability: builder, planner, reviewer, documenter, or
 operator. Keep the roles independent when the risk policy requires it.
@@ -66,5 +71,6 @@ DON'T require delegation when a proportional inline pass is safer and clearer.
 ## Done when
 
 - [ ] The mechanism and roles fit the task risk.
-- [ ] The handoff includes sufficient scoped context.
+- [ ] The handoff includes sufficient scoped context, the test scope rules, and
+      the commit message rules.
 - [ ] Material findings were verified before use.
