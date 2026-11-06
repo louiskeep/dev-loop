@@ -172,8 +172,8 @@ known limitations, and release or recovery readiness. A repository may add a
 separate named gate; it must not silently duplicate review. R3 also requires
 explicit human authorization immediately before the side effect.
 
-The [local operations profile](profiles/local-operations.md) may add close-out
-steps, including the pre-merge done-state; they are gate conditions where it says so.
+The [local operations profile](profiles/local-operations.md) adds required close-out
+steps, including the pre-merge done-state; a merge is not green until they hold.
 
 ### DOCUMENT
 
@@ -181,9 +181,9 @@ Update affected durable sources and project-required records. Add knowledge only
 when it has demonstrated cross-session value and is in scope and authorized.
 Exit with current docs or a stated reason no update was required.
 
-The [local operations profile](profiles/local-operations.md) may add close-out
+The [local operations profile](profiles/local-operations.md) adds required close-out
 steps, including the docs-current, graph-current, and section-complete message rules;
-they are gate conditions where it says so.
+a slice is not done until they hold.
 
 ## Red flags
 
@@ -205,5 +205,5 @@ they are gate conditions where it says so.
       repo's CODEMAP "Where things go" map.
 - [ ] A plan that adds a rule with more than one site, or a site to one, names
       the choke point, the guard test, and the mutation that turns it red.
-- [ ] Every close-out step the local operations profile marks as a gate
-      condition is met, or its recorded deferral is one the profile allows.
+- [ ] Every item in the local operations profile's Done when list holds, or its
+      recorded deferral is one the profile allows.
