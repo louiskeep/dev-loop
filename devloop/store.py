@@ -35,11 +35,16 @@ def check_name(value, what: str = "name") -> str:
     return value
 
 
-def state_dir(project: str) -> Path:
+def state_path(project: str) -> Path:
+    """Where a project's state lives. Creates nothing, so a reader can ask first."""
     check_name(project, "project name")
     base = os.environ.get("DEVLOOP_HOME")
     root = Path(base) if base else Path.home() / ".local" / "state" / "devloop"
-    d = root / project
+    return root / project
+
+
+def state_dir(project: str) -> Path:
+    d = state_path(project)
     if not d.is_dir():
         d.mkdir(parents=True, exist_ok=True)
         os.chmod(d, 0o700)

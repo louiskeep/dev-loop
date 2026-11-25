@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import project as projmod
 from . import slices
+from .dash.lifecycle import dash_status
 
 
 def _tool(name, where):
@@ -165,4 +166,7 @@ def run_checks(project) -> list:
                 f"nodes: ssh to {host}",
             )
         )
+    state, url, port = dash_status(project)
+    where = f"running at {url}" if state == "running" else f"not running (port {port})"
+    out.append((True, f"dash: {where}"))
     return out
