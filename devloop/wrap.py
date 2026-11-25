@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from . import project as projmod
-from . import runs, store
+from . import push, runs, store
 from .caps import TAIL_CHARS, detect_cap, detect_cap_text
 
 VERDICT = re.compile(r"VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
@@ -175,6 +175,23 @@ def _write_result(rd, req, code, reason):
     store.write_text(store.out_dir(rd) / "result.md", text)
 
 
+def _push_writer(rd, req):
+    """Put the writer's commits on the remote before the run can be applied. A head that
+    is not on the remote must never become the slice head, so a failure turns the result
+    into FAILED with the reason."""
+    path = store.out_dir(rd) / "result.md"
+    hdr = store.read_header(path)
+    if hdr.get("status") != "DONE":
+        return
+    _, why = push.push_slice_branch(req)
+    if why is None:
+        return
+    body = path.read_text(encoding="utf-8", errors="replace").partition("\n---")[2]
+    text = f"status: FAILED\nhead: \nverdict: \ntests: {hdr.get('tests', '')}\n"
+    text += f"push: {why}\n---\npush failed: {why}\n{body.strip()}\n"
+    store.write_text(path, text)
+
+
 def _set_cap_until(project, code, rd, req):
     codex = req["kind"] in CODEX_KINDS
     files = (
@@ -312,6 +329,8 @@ def finish(project, rd, req, code, reason):
                 "no-verdict"  # a clean exit that named no verdict: retry, not a failure
             )
         _write_result(rd, req, code, reason)
+        if reason == "exit" and code == 0 and req["kind"] in push.WRITER_KINDS:
+            _push_writer(rd, req)
         if req["kind"] == "codex-fix":
             write_repair(rd, req)
     except Exception as exc:  # noqa: BLE001 - the exit file must still be written

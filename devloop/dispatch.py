@@ -289,6 +289,9 @@ def _prepare(project, cfg, kind, key, worktree, reviewer, level, select, covers)
     if not wt or not Path(wt).is_dir():
         raise runs.Refused("no worktree")
     req["worktree"] = str(wt)
+    if kind in ("builder", "codex-builder"):
+        req["branch"] = s["branch"]
+        req["bases"] = projmod.base_branches(cfg)
     if kind in runs.REVIEW_KINDS:
         _prepare_review(project, cfg, s, req, kind, reviewer, wt)
     elif kind == "test":

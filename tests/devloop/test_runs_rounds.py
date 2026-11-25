@@ -66,6 +66,10 @@ def test_codex_builder_result_carries_the_commit_it_finished_on(
     proj, ready, brief, fakebin, monkeypatch
 ):
     key, wt, head = ready("REMEDIATE")
+    bare = wt.parent / "origin.git"
+    git(wt.parent, "init", "-q", "--bare", str(bare))
+    git(wt, "remote", "add", "origin", str(bare))
+    git(wt, "checkout", "-q", "-b", "b")  # the slice branch; the loop pushes it
     at_round(proj, key, 4)
     r = go(proj, brief, "codex-builder", key)
     wrap.run(proj, r)

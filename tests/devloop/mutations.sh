@@ -39,6 +39,10 @@ mutate "public text carries raw next_action" devloop/status.py \
   'return f"{s['"'"'row'"'"']} {s['"'"'slice'"'"']} in {s['"'"'phase'"'"']}"' \
   'return str(s["next_action"] or "")' \
   $T/test_tick.py::test_public_outputs_use_event_fields
+mutate "wrapper never pushes the writer's commits" devloop/push.py \
+  '        pushed = _git(wt, "push", "-q", "origin", f"HEAD:{ref}")' \
+  '        pushed = _git(wt, "status", "-q")' \
+  $T/test_push.py::test_unpushed_commit_is_pushed_and_applied
 mutate "wrapper drops the exit-writing finally step" devloop/wrap.py \
   '        finish(project, rd, req, code, reason)' '        pass' \
   $T/test_wrap.py::test_wrapper_writes_exit_on_kill

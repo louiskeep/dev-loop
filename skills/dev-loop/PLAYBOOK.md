@@ -168,14 +168,15 @@ design. End with a result file.
 
 Work only in the given worktree and branch. Write the named tests first and run them red.
 Run T0 per edit and T1 per commit. Lint and format before each commit. Do not weaken an
-agreed test. Do not push to the base branch. Hand back the head SHA you finished on.
+agreed test. Commit on the slice branch and do not push: the loop pushes your commits after you
+exit, to the slice branch only, and never to a base branch. Hand back the head SHA you finished on.
 
 ### codex-builder
 
 Codex fixes the review findings in the given worktree for review round 4 to 6. Fix each
 finding at its root and add a regression test for it. Run T0 per edit and T1 per commit.
-Commit on the slice branch. Do not weaken an agreed test and do not push to the base
-branch.
+Commit on the slice branch. Do not weaken an agreed test. Do not push: the loop pushes the
+slice branch after you exit, and never a base branch.
 
 ### dennis
 
