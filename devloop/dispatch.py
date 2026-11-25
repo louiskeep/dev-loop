@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from . import project as projmod
-from . import notes, runs, slices, store
+from . import evidence, notes, runs, slices, store
 
 
 # --- admission ----------------------------------------------------------------
@@ -59,7 +59,10 @@ def _applied(project, run_id) -> bool:
 
 def _predecessor(project, s, cfg, purpose, name):
     """The run that satisfied the previous reviewer in the roster, or runs.Refused."""
-    roster = [projmod.reviewer_entry(e) for e in cfg["reviews"][s["risk"]][purpose]]
+    if purpose == "code":
+        roster = evidence.code_roster(project, cfg, s)
+    else:
+        roster = [projmod.reviewer_entry(e) for e in cfg["reviews"][s["risk"]][purpose]]
     names = [n for n, _ in roster]
     if name not in names:
         raise runs.Refused(f"{name} is not in the {s['risk']} {purpose} roster")

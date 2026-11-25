@@ -274,6 +274,21 @@ mutate "hold released by any choice" devloop/notes.py \
   'return s["hold_question"] == key and s["hold_release_option"] == choice' 'return True' \
   $T/test_notes.py::test_agent_question_never_lifts_a_hold
 
+mutate "codex-written head skips the dennis review" devloop/evidence.py \
+  '    if not _codex_wrote_head(project, s):
+        return roster' '    if True:
+        return roster' \
+  $T/test_runs_review_roster.py::test_r1_slice_fixed_by_codex_builder_needs_dennis_then_codex
+mutate "tick starts workers with the user MCP servers" devloop/project.py \
+  '    return ["--strict-mcp-config", "--mcp-config", path or NO_MCP]' '    return []' \
+  $T/test_runs_limits.py::test_claude_workers_start_with_no_mcp_servers
+mutate "memory admission ignores recent reservations" devloop/dispatch.py \
+  '    if free_mb - reserved - projmod.memory_mb(cfg, kind) < floor_mb:' '    if free_mb - projmod.memory_mb(cfg, kind) < floor_mb:' \
+  $T/test_runs_limits.py::test_burst_of_dispatches_stops_at_the_reservation
+mutate "tick dispatch limit is never enforced" devloop/dispatch.py \
+  '    if made >= projmod.max_dispatch_per_tick(cfg):' '    if False:' \
+  $T/test_runs_limits.py::test_tick_dispatch_limit
+
 echo
 echo "killed: $killed  survived: $survived  stale: $stale"
 [ "$survived" -eq 0 ] && [ "$stale" -eq 0 ]
