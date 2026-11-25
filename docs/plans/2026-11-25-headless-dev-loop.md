@@ -64,6 +64,33 @@ two owner additions on 2026-11-25 recorded below (node directory, rules parity).
   carry plan approval and resumes merged PRs in DOCUMENT; the board merge text is fixed
   words only. Round 3 is the last plan round (review-rounds cap); anything left after it
   is fixed in the build and checked at code review.
+- Codex round 3 (head 38f7d4a, last plan round): NO-GO, 4 BLOCKS-BUILD and 4 FIX-IN-BUILD.
+  The 4 blockers are closed in the plan text: the engine gate status must point at the
+  same `workflow_dispatch` run that is checked (Task 6); merge trains are stacked only, so
+  the tested head is always a slice head (Task 4); `plan_path` is frozen once a plan run
+  exists (Task 2); builder, planner and repair all reserve the canonical worktree root
+  (Task 4). The 4 FIX-IN-BUILD items are listed under "Build notes" for the builder and
+  are checked at code review.
+
+## Build notes (Codex round 3 FIX-IN-BUILD)
+
+1. Config has one command per allowed (reviewer, kind) pair; both Codex commands get
+   `CODEX_LAST_MSG`; the brief appends the verdict line its reader expects (`VERDICT:` for
+   reviews, `SELF-VERDICT:` for repair); a run whose final-message file is missing is
+   FAILED. Test both helpers end to end.
+2. A test run whose launch succeeded keeps its tester slot until termination is confirmed
+   (exit 0 or 1 from the payload, or the tick's `release` after a node check), including
+   255 disconnects. Store host and job label in the run. Elapsed time only triggers a
+   reconcile note in the snapshot, never a release.
+3. `exit_checklist(project, key, to_phase)` evaluates a named transition. DEVELOP to
+   SELF_CHECK also needs an applied builder run with status DONE whose head equals the
+   slice head (an imported PR needs one builder pass or `--plan-approved` import plus a
+   tick selfcheck). REVIEW shows GATE items as blocking while REMEDIATE stays open. Task 8
+   stdin includes `PLAYBOOK.md` and the project's `playbook_doc`; test with distinct
+   markers in both and in a worker's role section.
+4. Before `gh pr merge`, persist `merge_attempt{repo, pr, base, head}` on the slice. Every
+   merge call first reconciles a stored attempt (state, base and head) and finishes the
+   DOCUMENT move once. Test a crash right after a successful merge call.
 
 ## Owner additions (2026-11-25, after the spec)
 
@@ -365,7 +392,9 @@ def test_bad_project_config_is_refused(tmp_path, monkeypatch):
 - Produces: `PHASES: tuple[str, ...]`; `TRANSITIONS: dict[str, set[str]]`;
   `new_slice(project, row, slice_id, *, repo, risk=None) -> dict`;
   `set_fields(project, key, **fields) -> dict` (only `worktree, branch, pr, head, plan_path,
-  purpose, next_action, waiting_on, risk, rulebooks, full_suite_required`; `risk` only in
+  purpose, next_action, waiting_on, risk, rulebooks, full_suite_required`; `plan_path`
+  only until the first plan run is dispatched (after that a new plan means moving back to
+  FRAME, which starts a new lineage with zero rounds); `risk` only in
   FRAME, so a tier change means moving back to FRAME and earning the new roster's reviews;
   `full_suite_required` can only go False to True; a changed `head` increments nothing and
   leaves old evidence keyed by the old head); `plan_sha(slice) -> str` = sha256 of the
@@ -560,7 +589,9 @@ def test_exit_checklist_matches_move(proj): ...  # every missing item named by t
     in the run dir; code runs store `head` and
     `predecessor_run`. Admission under `admit.lock`: PAUSE or `cap-until` future; slot
     count of live or slot-holding runs `>= capacity[slot]`; a live writer reserving the
-    same worktree (builders, and codex-fix on the plan's directory); `MemAvailable <
+    canonical worktree root (`git rev-parse --show-toplevel` of the target, symlinks
+    resolved) for every writer: builder, planner and codex-fix (whose target is the
+    worktree holding the plan); `MemAvailable <
     min_free_gb`; a review whose roster predecessor has no applied satisfying run (code:
     GO on this head; plan: GO or the round cap on this plan path), so Codex never starts
     before Dennis is done. A writer's reservation (builder, planner, codex-fix) lasts until
@@ -568,10 +599,13 @@ def test_exit_checklist_matches_move(proj): ...  # every missing item named by t
     private detached checkout made with `git worktree add --detach <run_dir>/tree <head>`
     and removed after exit, so a builder's uncommitted files can never reach a test or
     review. Every payload gets an explicit `cwd` (the reserved worktree, the private
-    checkout, or the run dir). Merge trains: a `full` test may take `batch_repo` and
-    `batch_sha` (the trial merge head the tick built) plus `covers` (slice keys); dispatch
-    refuses a member from another repo or whose head is not an ancestor of `batch_sha`
-    (`git merge-base --is-ancestor`), and freezes each `(slice, head)` pair. Launch:
+    checkout, or the run dir). Merge trains are stacked only (the standing "stacked PRs, one
+    T3" flow): the tick stacks the members so the top slice's head contains them, and
+    dispatches the `full` test on that top slice with `covers` (slice keys). The tested
+    head is always the dispatching slice's head. Dispatch refuses a member from another
+    repo or whose head is not an ancestor of that head (`git merge-base --is-ancestor`),
+    and freezes each `(slice, head)` pair. Sibling batches that no slice head contains
+    are not supported in this version. Launch:
     `subprocess.Popen([devloop-wrap, project, run_id], start_new_session=True,
     stdin=DEVNULL, stdout=<run_dir>/wrap.log, stderr=STDOUT, close_fds=True)` (no inherited
     pipes, so the dispatching shell returns at once); records `pid`, `pid_start` (field 22 of
@@ -618,7 +652,7 @@ def test_exit_checklist_matches_move(proj): ...  # every missing item named by t
     For review kinds it appends: "End with one line: `VERDICT: GO`, `VERDICT:
     GO-WITH-FIXES` or `VERDICT: NO-GO`." Only `GO` counts as GO.
 - CLI: `devloop-dispatch <project> KIND KEY --brief FILE [--worktree DIR] [--reviewer NAME]
-  [--level t1|t2|full] [--select ID ...] [--batch-repo R --batch-sha SHA --covers KEY ...]
+  [--level t1|t2|full] [--select ID ...] [--covers KEY ...]
   [--retry-of RUN]`; no argv
   passthrough; prints run ID or `REFUSED: <reason>` exit 3. `devloop-state <p> applied RUN`.
 
@@ -637,7 +671,7 @@ def test_exit_checklist_matches_move(proj): ...  # every missing item named by t
   `test_repair_installed_only_if_plan_unchanged`, `test_lost_test_holds_slot`,
   `test_dispatch_closes_capture_pipes`, `test_repair_refused_outside_plan`,
   `test_reviewer_kind_binding_enforced`, `test_simultaneous_plan_reviews_refused`,
-  `test_plan_rounds_reset_on_new_plan_path`, `test_train_two_siblings_and_crash_after_first`,
+  `test_plan_rounds_reset_on_new_plan_path`, `test_stacked_train_credits_members_and_crash_after_first`,
   `test_repair_replay_after_install`, `test_writer_reserved_until_applied`,
   `test_planner_creates_absent_plan`.
 - [ ] **Step 2: Run, expect FAIL**
@@ -707,8 +741,12 @@ def test_exit_checklist_matches_move(proj): ...  # every missing item named by t
      pending; when `merge.repos[repo].verify_cmd` is set (Decoy engine:
      `scripts/dev/required_checks.py verify --tier merge --sha {head}`, run from a fresh
      `origin/main` checkout so a newly required job is never missed) it must exit 0; when
-     `merge.repos[repo].dispatch_workflow` is set, the newest run of that workflow on the
-     head must be SUCCESS and created after the final Codex GO; `mergeStateStatus` must be
+     `merge.repos[repo].dispatch_workflow` is set (both are required for Decoy engine), the
+     status named in `merge.repos[repo].gate_status` must point (its target URL run ID) at
+     a run of that workflow with event `workflow_dispatch`, on this head, created after the
+     final Codex GO, conclusion SUCCESS, every job SUCCESS; an older dispatch or a push run
+     does not count; the verifier runs with the engine venv python and `GH_TOKEN` from the
+     notify env file; `mergeStateStatus` must be
      CLEAN (or HAS_HOOKS) when `merge.require_up_to_date` (UNKNOWN refuses); a file matching `merge.changelog_glob` is in
      `files` when set. The later steps use this same repo and PR number.
   4. Notify "merging ROW SLICE PR". Run `gh pr merge <pr> -R <repo> --squash
