@@ -12,6 +12,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from . import notes
 from . import project as projmod
 from . import store
 
@@ -36,6 +37,8 @@ TIERS = ("R0", "R1", "R2")
 VERDICTS = ("GO", "GO-WITH-FIXES", "NO-GO")
 TICK_KINDS = ("selfcheck", "docs")
 MAX_ROUNDS = 3
+# Parks that only the owner may lift.
+OWNER_PARKS = ("round-3", "failed-twice")
 HISTORY_KEEP = 200
 
 # The phase a slice normally leaves through; the checklist and `move` agree on it.
@@ -204,6 +207,8 @@ _FIELDS = {
     "approved_plan_sha": _match(_SHA, optional=True),
     "plan_frozen": _bool,
     "imported": _bool,
+    "owner_answered": _bool,
+    "was_r3": _bool,
     "processed_run_ids": _strlist,
 }
 
@@ -302,6 +307,8 @@ def _blank(row, slice_id, repo, risk) -> dict:
         "approved_plan_sha": None,
         "plan_frozen": False,
         "imported": False,
+        "owner_answered": False,
+        "was_r3": risk == "R3",
         "processed_run_ids": [],
     }
 
@@ -328,6 +335,12 @@ def _board_call(project, cfg, args, **fields):
     if not ok:
         # Output is dropped on purpose: a failing tool may echo row text.
         store.append_event(project, "board-mirror-failed", **fields)
+        notes.problem(
+            project,
+            "board-mirror-failed",
+            impact="the board shows an older phase than the loop",
+            fix="check the board command in project.json",
+        )
 
 
 def _mirror(project, cfg, s):
@@ -500,6 +513,10 @@ def _plan_sha_or_none(s):
     return hashlib.sha256(f.read_bytes()).hexdigest()
 
 
+def _rank(risk):
+    return -1 if risk is None else RISKS.index(risk) if risk in RISKS else -1
+
+
 def set_fields(project: str, key: str, **fields) -> dict:
     unknown = sorted(set(fields) - set(SETTABLE))
     if unknown:
@@ -507,8 +524,16 @@ def set_fields(project: str, key: str, **fields) -> dict:
     with _edit(project, key) as s:
         if s["phase"] == "DONE":
             raise SliceError("slice is DONE")
-        if "risk" in fields and fields["risk"] != s["risk"] and s["phase"] != "FRAME":
-            raise SliceError("risk can change only in FRAME")
+        if s["phase"] == "HELD" and ("waiting_on" in fields or "risk" in fields):
+            raise SliceError("a held slice changes only through the owner's answer")
+        if "risk" in fields and fields["risk"] != s["risk"]:
+            if s["phase"] != "FRAME":
+                raise SliceError("risk can change only in FRAME")
+            if _rank(fields["risk"]) < _rank(s["risk"]) and s["was_r3"]:
+                # Lowering an R3 slice's risk is the owner's call, never the tick's.
+                store.require_interactive("lowering the risk of an R3 slice")
+            if fields["risk"] == "R3":
+                s["was_r3"] = True
         if (
             "plan_path" in fields
             and fields["plan_path"] != s["plan_path"]
@@ -632,9 +657,11 @@ def _verify_run(project, s, entry, *, kinds, expect, covers_ok=False):
     if unreadable or not req:
         return f"run {run_id} has no readable request", None
     own = (req.get("row"), req.get("slice")) == (s["row"], s["slice"])
-    covers = req.get("covers") if isinstance(req.get("covers"), list) else []
+    covers = req.get("covers") if isinstance(req.get("covers"), dict) else {}
     if not own and not (covers_ok and s["key"] in covers):
         return f"run {run_id} belongs to another slice", None
+    if not own and covers.get(s["key"]) != s["head"]:
+        return f"run {run_id} froze a different head for this slice", None
     if not (rd / "applied").is_file():
         return f"run {run_id} is not applied", None
     if req.get("kind") not in kinds:
@@ -877,7 +904,8 @@ def _move(project, key, to, reason, via_merge=False):
         if frm in ("PARKED", "HELD"):
             if to != s["parked_from"]:
                 raise TransitionError(f"{frm} resumes only to {s['parked_from']}")
-            if frm == "HELD" and (s["risk"] == "R3" or s["waiting_on"]):
+            gated = frm == "HELD" or s["park_reason"] in OWNER_PARKS
+            if gated and not s["owner_answered"]:
                 raise TransitionError(
                     "the owner must answer first (devloop-state answer)"
                 )
@@ -896,10 +924,13 @@ def _move(project, key, to, reason, via_merge=False):
             s["parked_from"], s["park_reason"] = parked_from, reason
         elif frm in ("PARKED", "HELD"):
             s["parked_from"] = s["park_reason"] = None
+            s["owner_answered"] = False
         if to == "FRAME":
-            # A new lineage earns every review again, so nothing carries over.
-            s["round"], s["plan_rounds"], s["evidence"] = 0, {}, {}
             s["approved_plan_sha"], s["plan_frozen"] = None, False
+            if not store.is_headless():
+                # A new lineage earns every review again. Only an interactive
+                # reframe may reset the counts: a headless one could dodge round 3.
+                s["round"], s["plan_rounds"], s["evidence"] = 0, {}, {}
         now = store.now_iso()
         s["phase"], s["last_moved_at"] = to, now
         s["history"] = (
@@ -929,6 +960,7 @@ def finish_merge(project: str, key: str, reason: str = "merged") -> dict:
 
 def release_hold(project: str, key: str) -> dict:
     """Release a HELD slice after the owner's answer. R3 then runs under the R2 roster."""
+    store.require_interactive("releasing a held slice")
     cfg = projmod.load_project(project)
     with _edit(project, key) as s:
         if s["phase"] != "HELD":
@@ -945,9 +977,20 @@ def release_hold(project: str, key: str) -> dict:
             waiting_on=None,
             parked_from=None,
             park_reason=None,
+            owner_answered=False,
             phase=to,
             last_moved_at=now,
         )
     store.append_event(project, "slice-released", key=key, to=to)
     _mirror(project, cfg, s)
     return copy.deepcopy(s)
+
+
+def owner_answer(project: str, key: str) -> None:
+    """Record the owner's answer on a held or owner-parked slice (interactive only)."""
+    store.require_interactive("answering for a held slice")
+    with _edit(project, key) as s:
+        if s["phase"] == "HELD" or (
+            s["phase"] == "PARKED" and s["park_reason"] in OWNER_PARKS
+        ):
+            s["owner_answered"] = True

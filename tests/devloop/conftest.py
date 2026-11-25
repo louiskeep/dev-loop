@@ -103,6 +103,7 @@ def mk_slice(proj):
         s = slices.new_slice(project, f"ROW{next(counter)}", "S1", repo="main")
         s["phase"] = phase
         s.update(fields)
+        s["was_r3"] = s["was_r3"] or s["risk"] == "R3"
         slices._save(project, s)
         return s["key"]
 
@@ -135,7 +136,7 @@ def mk_run(home):
         predecessor_run=None,
         verdict="GO",
         status="DONE",
-        covers=(),
+        covers=None,
         applied=True,
         result_head=None,
     ):
@@ -155,7 +156,7 @@ def mk_run(home):
                 "purpose": purpose,
                 "level": level,
                 "predecessor_run": predecessor_run,
-                "covers": list(covers),
+                "covers": dict(covers or {}),
             },
         )
         (d / "result.md").write_text(

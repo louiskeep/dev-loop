@@ -5,10 +5,11 @@ import json
 import sys
 
 from . import project as projmod
-from . import slices, store
+from . import notes, slices, store
 
 REFUSALS = (
     slices.SliceError,
+    notes.NotesError,
     projmod.ConfigError,
     store.StoreError,
     store.HeadlessRefused,
@@ -84,6 +85,35 @@ def _event(args):
     store.append_event(args.project, args.kind, **fields)
 
 
+def _notes(args):
+    p = args.project
+    if args.cmd == "ticklog":
+        notes.ticklog(p, sys.stdin.read() if args.text == "-" else args.text)
+    elif args.cmd == "problem":
+        notes.problem(p, args.key, impact=args.impact, fix=args.fix, detail=args.detail)
+    elif args.cmd == "problem-close":
+        notes.problem_close(p, args.key)
+    elif args.cmd == "lesson":
+        notes.lesson(
+            p, args.key, area=args.area, wrong=args.wrong, instead=args.instead
+        )
+    elif args.cmd == "ask":
+        q = notes.ask(
+            p,
+            args.key,
+            question=args.question,
+            options=args.option,
+            recommended=args.recommended,
+            wait=args.wait,
+        )
+        _out(q)
+    elif args.cmd == "answer":
+        notes.answer(p, args.key, args.choice)
+    elif args.cmd == "answers-sync":
+        for key in notes.read_answers(p):
+            print(key)
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="devloop-state")
     ap.add_argument("project")
@@ -130,6 +160,28 @@ def build_parser() -> argparse.ArgumentParser:
     ev = sub.add_parser("event")
     ev.add_argument("kind")
     ev.add_argument("pairs", nargs="*")
+
+    sub.add_parser("ticklog").add_argument("text")
+    pr = sub.add_parser("problem")
+    pr.add_argument("key")
+    pr.add_argument("--impact", required=True)
+    pr.add_argument("--fix", required=True)
+    pr.add_argument("--detail", default="")
+    sub.add_parser("problem-close").add_argument("key")
+    le = sub.add_parser("lesson")
+    le.add_argument("key")
+    for flag in ("area", "wrong", "instead"):
+        le.add_argument(f"--{flag}", required=True)
+    aq = sub.add_parser("ask")
+    aq.add_argument("key")
+    aq.add_argument("--question", required=True)
+    aq.add_argument("--option", action="append", required=True)
+    aq.add_argument("--recommended", required=True)
+    aq.add_argument("--wait", action="store_true")
+    an = sub.add_parser("answer")
+    an.add_argument("key")
+    an.add_argument("choice")
+    sub.add_parser("answers-sync")
     return ap
 
 
@@ -144,6 +196,8 @@ def main(argv=None) -> int:
             )
         elif args.cmd == "event":
             _event(args)
+        else:
+            _notes(args)
     except REFUSALS as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 3

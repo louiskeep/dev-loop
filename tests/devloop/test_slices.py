@@ -373,7 +373,9 @@ def test_full_run_covers_stacked_members(proj, ready, mk_run):
     k = ready("R1")
     slices.set_fields(proj, k, full_suite_required=True)
     top = ready("R1", head="b2")
-    mk_run(proj, "topfull", kind="test", key=top, head="b2", level="full", covers=[k])
+    mk_run(
+        proj, "topfull", kind="test", key=top, head="b2", level="full", covers={k: "a1"}
+    )
     slices.record_evidence(proj, k, "full", "GO", "topfull", head="a1")
     assert slices.move(proj, k, "GATE", "x")["phase"] == "GATE"
 
@@ -735,4 +737,109 @@ def test_cli_refuses_import_when_headless(proj, home):
 def test_gate_refused_when_the_slice_has_no_head(proj, mk_slice):
     k = mk_slice(proj, phase="REVIEW", risk="R0")
     with pytest.raises(slices.TransitionError, match="head set"):
+        slices.move(proj, k, "GATE", "x")
+
+
+# --- owner gates (review round on the first commits) --------------------------
+
+
+def test_headless_cannot_clear_a_hold(proj, mk_slice, monkeypatch):
+    k = mk_slice(proj, phase="FRAME", risk="R3", rulebooks=["a.md"])
+    slices.set_fields(proj, k, waiting_on="question q1")
+    slices.move(proj, k, "HELD", "R3 waits")
+    monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
+    with pytest.raises(slices.SliceError, match="held"):
+        slices.set_fields(proj, k, waiting_on=None)
+    with pytest.raises(slices.SliceError, match="held"):
+        slices.set_fields(proj, k, risk="R2")
+    with pytest.raises(slices.TransitionError, match="owner"):
+        slices.move(proj, k, "FRAME", "x")
+    with pytest.raises(store.HeadlessRefused):
+        slices.owner_answer(proj, k)
+    with pytest.raises(store.HeadlessRefused):
+        slices.release_hold(proj, k)
+    assert slices.load(proj, k)["phase"] == "HELD"
+
+
+@pytest.mark.parametrize("reason", ["round-3", "failed-twice"])
+def test_owner_parks_leave_only_after_an_interactive_answer(
+    proj, mk_slice, monkeypatch, reason
+):
+    k = mk_slice(proj, phase="REMEDIATE", round=2)
+    s = slices.load(proj, k)
+    s.update(phase="PARKED", parked_from="REMEDIATE", park_reason=reason)
+    slices._save(proj, s)
+    monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
+    with pytest.raises(slices.TransitionError, match="owner"):
+        slices.move(proj, k, "REMEDIATE", "x")
+    monkeypatch.delenv("DEVLOOP_HEADLESS")
+    slices.owner_answer(proj, k)
+    monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
+    assert slices.move(proj, k, "REMEDIATE", "x")["phase"] == "REMEDIATE"
+    assert slices.load(proj, k)["owner_answered"] is False
+
+
+def test_other_parks_resume_without_the_owner(proj, mk_slice, monkeypatch):
+    k = mk_slice(proj, phase="VERIFY")
+    slices.move(proj, k, "PARKED", "stuck")
+    monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
+    assert slices.move(proj, k, "VERIFY", "x")["phase"] == "VERIFY"
+
+
+def test_headless_reframe_keeps_rounds_and_evidence(proj, ready, monkeypatch):
+    k = ready("R1")
+    s = slices.load(proj, k)
+    s["round"] = 2
+    s["plan_rounds"] = {"p": {"dennis": 2}}
+    slices._save(proj, s)
+    monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
+    s = slices.move(proj, k, "FRAME", "dodge")
+    assert s["round"] == 2 and s["plan_rounds"] and s["evidence"]
+    k2 = ready("R1")
+    s = slices.load(proj, k2)
+    s["round"] = 2
+    slices._save(proj, s)
+    monkeypatch.delenv("DEVLOOP_HEADLESS")
+    s = slices.move(proj, k2, "FRAME", "owner reframe")
+    assert (s["round"], s["evidence"]) == (0, {})
+
+
+def test_headless_cannot_lower_risk_of_an_r3_slice(proj, mk_slice, monkeypatch):
+    k = mk_slice(proj, phase="FRAME", risk="R3")
+    monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
+    with pytest.raises(store.HeadlessRefused):
+        slices.set_fields(proj, k, risk="R2")
+    assert slices.load(proj, k)["risk"] == "R3"
+    # A slice that starts below R3 is unaffected, and raising to R3 is allowed.
+    k2 = mk_slice(proj, phase="FRAME", risk="R2")
+    slices.set_fields(proj, k2, risk="R1")
+    slices.set_fields(proj, k2, risk="R3")
+    with pytest.raises(store.HeadlessRefused):
+        slices.set_fields(proj, k2, risk="R1")
+    monkeypatch.delenv("DEVLOOP_HEADLESS")
+    slices.set_fields(proj, k2, risk="R1")
+
+
+def test_covers_must_record_the_members_current_head(proj, ready, mk_run):
+    k = ready("R1")
+    slices.set_fields(proj, k, full_suite_required=True)
+    top = ready("R1", head="b2")
+    mk_run(
+        proj,
+        "full-old",
+        kind="test",
+        key=top,
+        head="b2",
+        level="full",
+        covers={k: "zz"},
+    )
+    slices.record_evidence(proj, k, "full", "GO", "full-old", head="a1")
+    with pytest.raises(slices.TransitionError, match="head"):
+        slices.move(proj, k, "GATE", "x")
+    mk_run(proj, "full-list", kind="test", key=top, head="b2", level="full")
+    req = store.read_json(store.run_dir(proj, "full-list") / "request.json")
+    req["covers"] = [k]
+    store.write_json(store.run_dir(proj, "full-list") / "request.json", req)
+    slices.record_evidence(proj, k, "full", "GO", "full-list", head="a1")
+    with pytest.raises(slices.TransitionError):
         slices.move(proj, k, "GATE", "x")

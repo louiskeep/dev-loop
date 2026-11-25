@@ -58,8 +58,12 @@ def now_iso() -> str:
     )
 
 
+def is_headless() -> bool:
+    return os.environ.get("DEVLOOP_HEADLESS") == "1"
+
+
 def require_interactive(action: str) -> None:
-    if os.environ.get("DEVLOOP_HEADLESS") == "1":
+    if is_headless():
         raise HeadlessRefused(f"{action} is refused in a headless session")
 
 
