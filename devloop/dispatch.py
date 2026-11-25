@@ -279,6 +279,7 @@ def _prepare(project, cfg, kind, key, worktree, reviewer, level, select, covers)
     except slices.SliceError:
         raise runs.Refused("no such slice") from None
     req.update(row=s["row"], slice=s["slice"], plan_path=s["plan_path"])
+    req["plan_lineage"] = s["plan_lineage"]
     req["lineage"] = f"{s['round']}:{s['last_moved_at']}"
     if s["phase"] not in runs.KIND_PHASES[kind]:
         raise runs.Refused(f"{kind} does not run in {s['phase']}")

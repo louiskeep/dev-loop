@@ -565,6 +565,7 @@ def apply_effects(
     want_head=None,
     want_plan_sha=None,
     seq=None,
+    want_lineage=None,
 ) -> str:
     """Everything a run changes on a slice, plus its ID, in ONE locked replace.
 
@@ -579,6 +580,8 @@ def apply_effects(
             outcome = "stale"
         if want_plan_sha is not None and want_plan_sha != plan_sha_or_none(s):
             outcome = "stale"
+        if want_lineage is not None and want_lineage != s["plan_lineage"]:
+            outcome = "stale"  # dispatched before a redesign
         if outcome == "applied":
             if kind:
                 if kind in TICK_KINDS or verdict not in VERDICTS:
@@ -755,8 +758,14 @@ def _move(project, key, to, reason, via_merge=False, ident=None):
                 # Reviews of the old plan, even of the same bytes or path, stop counting:
                 # the new lineage earns every plan review again, Dennis first.
                 s["plan_lineage"] += 1
+                # Tick records and code reviews of the old design go too, even on a head
+                # that did not change.
                 for sha, bucket in list(s["evidence"].items()):
-                    for kind in [k for k in bucket if k.startswith("plan:")]:
+                    for kind in [
+                        k
+                        for k in bucket
+                        if k.startswith(("plan:", "code:")) or k in TICK_KINDS
+                    ]:
                         del bucket[kind]
                     if not bucket:
                         del s["evidence"][sha]

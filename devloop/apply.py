@@ -194,6 +194,8 @@ def _apply_evidence(project, key, run_id, req, res, s, ev_kind):
         {"want_plan_sha": req["plan_sha"]} if is_plan else {"want_head": req["head"]}
     )
     seq = req.get("seq")
+    if "plan_lineage" in req:
+        guard["want_lineage"] = req["plan_lineage"]
     if kind == "codex-fix" and res.verdict == "GO":
         sha, why = _install_repair(project, store.run_dir(project, run_id), req, s)
         if why == "missing":

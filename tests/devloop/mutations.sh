@@ -233,6 +233,9 @@ mutate "an ambiguous close is retried" devloop/board.py \
 mutate "a row mate in DOCUMENT does not block the merge" devloop/evidence.py \
   '        if o["row"] == s["row"] and o["key"] != s["key"] and o["phase"] == "DOCUMENT"' '        if False' \
   $T/test_merge.py::test_a_slice_cannot_enter_gate_or_merge_while_a_row_mate_is_in_document
+mutate "an old lineage builder run still counts" devloop/evidence.py \
+  '        if req.get("plan_lineage", 0) != s["plan_lineage"]:' '        if False:' \
+  $T/test_runs_rounds.py::test_redesign_with_an_unchanged_head_needs_a_new_builder_run
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

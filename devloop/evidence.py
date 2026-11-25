@@ -177,6 +177,8 @@ def _builder_run_ok(project, s):
             continue
         if (req.get("row"), req.get("slice")) != (s["row"], s["slice"]):
             continue
+        if req.get("plan_lineage", 0) != s["plan_lineage"]:
+            continue  # a builder run for an earlier plan does not count after a redesign
         hdr = store.read_header(store.out_dir(rd) / "result.md")
         if (
             (rd / "applied").is_file()

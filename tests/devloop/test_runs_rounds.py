@@ -185,3 +185,39 @@ def test_unchanged_bytes_after_redesign_do_not_return_to_develop(proj, ready, br
     slices.move(proj, key, "REMEDIATE", "review findings")
     with pytest.raises(slices.TransitionError, match="plan review"):
         slices.move(proj, key, "DEVELOP", "again")
+
+
+def test_redesign_with_an_unchanged_head_needs_a_new_builder_run(proj, ready, brief):
+    key, _, head = ready("DEVELOP")
+    old = go(proj, brief, "builder", key)
+    finish(proj, old, result=res("DONE", head=head))
+    runs.apply_run(proj, old)
+    slices.move(proj, key, "SELF_CHECK", "built")  # the old lineage's run counts
+    slices.record_tick_evidence(proj, key, "selfcheck", "GO", head=head)
+    s = slices.load(proj, key)
+    s.update(phase="REVIEW", round=6)
+    slices._save(proj, s)
+    s = slices.move(proj, key, "REMEDIATE", "review findings")
+    assert (s["phase"], s["plan_lineage"], s["head"]) == ("PLAN", 1, head)
+    assert "selfcheck" not in s["evidence"].get(head, {})  # tick evidence went too
+    s["phase"] = "DEVELOP"  # the new plan was approved; the head did not change
+    slices._save(proj, s)
+    with pytest.raises(slices.TransitionError, match="builder run"):
+        slices.move(proj, key, "SELF_CHECK", "built")
+    new = go(proj, brief, "builder", key)
+    assert runs.read_request(proj, new)["plan_lineage"] == 1
+    finish(proj, new, result=res("DONE", head=head))
+    runs.apply_run(proj, new)
+    assert slices.move(proj, key, "SELF_CHECK", "built")["phase"] == "SELF_CHECK"
+
+
+def test_a_run_dispatched_before_a_redesign_is_stale_when_applied(proj, ready, brief):
+    key, _, head = ready("VERIFY")
+    r = go(proj, brief, "test", key, level="t1")
+    finish(proj, r, result=res("DONE", "GO", head))
+    s = slices.load(proj, key)
+    s.update(phase="REVIEW", round=6)
+    slices._save(proj, s)
+    slices.move(proj, key, "REMEDIATE", "review findings")
+    assert runs.apply_run(proj, r) == "stale"
+    assert "t1" not in slices.load(proj, key)["evidence"].get(head, {})
