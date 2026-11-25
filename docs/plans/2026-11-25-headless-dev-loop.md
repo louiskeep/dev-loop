@@ -424,8 +424,8 @@ def test_bad_project_config_is_refused(tmp_path, monkeypatch):
   verdict, run_id, *, head: str|None=None, plan_sha: str|None=None) -> None` (exactly one of
   `head`, `plan_sha`; internal, called by `runs.apply_run`; the CLI exposes only `selfcheck`
   and `docs`); `slice_key(row, slice_id) -> str` = `f"{row}--{slice_id}"`. `new_slice`
-  refuses while another slice of the same row is not DONE (one open slice per row; PARKED
-  and HELD still hold the row). `import_slice(project, row, slice_id, *, repo, risk,
+  allows many open slices per row (owner call 2026-11-25). A slice may not enter GATE, and
+  `devloop-merge` refuses it, while another slice of the same row is in DOCUMENT. `import_slice(project, row, slice_id, *, repo, risk,
   rulebooks, worktree, branch, pr, head, plan_path, purpose, phase) -> dict` for cutover
   only: refused when `DEVLOOP_HEADLESS=1`; same row rule. Options: `--plan-approved`
   stores the plan file's current sha as `approved_plan_sha` (those plans passed their gates

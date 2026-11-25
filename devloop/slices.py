@@ -337,8 +337,6 @@ def _create(project, row, slice_id, repo, risk=None, **overrides) -> dict:
         for other in list_slices(project):
             if other["key"] == s["key"]:
                 raise SliceError("slice already exists")
-            if other["row"] == row and other["phase"] != "DONE":
-                raise SliceError("the row already has an open slice")
         _save(project, s)
     store.append_event(project, "slice-new", key=s["key"], row=row, slice=slice_id)
     board.mirror(project, cfg, s)

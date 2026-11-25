@@ -1033,3 +1033,20 @@ def test_a_crash_between_the_board_call_and_board_done_does_not_post_twice(
     assert gate.board().count("merged ") == 1
     assert next(iter(slices.merge_records(proj).values()))["board_done"] is True
     assert k
+
+
+def test_a_slice_cannot_enter_gate_or_merge_while_a_row_mate_is_in_document(proj, gate):
+    k = gate()
+    row = k.split("--")[0]
+    mate = slices.new_slice(proj, row, "S2", repo="main")["key"]
+    s = slices.load(proj, mate)
+    s["phase"] = "DOCUMENT"
+    slices._save(proj, s)
+    r = merge.merge(proj, k)
+    assert r.outcome == "refused" and "in DOCUMENT" in r.reason
+    assert not [c for c in gate.gh_calls() if c[:2] == ["pr", "merge"]]
+    assert any("in DOCUMENT" in p for p in slices.validate_gate(proj, k))
+    s = slices.load(proj, mate)
+    s["phase"] = "DONE"
+    slices._save(proj, s)
+    assert merge.merge(proj, k).outcome == "merged"

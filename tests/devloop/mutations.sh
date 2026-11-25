@@ -230,6 +230,9 @@ mutate "redesign keeps old plan reviews" devloop/slices.py \
 mutate "an ambiguous close is retried" devloop/board.py \
   '            if not rec.get("close_ambiguous"):' '            if False:' \
   $T/test_slices.py::test_close_attempt_without_a_saved_closure_is_ambiguous_and_never_retried
+mutate "a row mate in DOCUMENT does not block the merge" devloop/evidence.py \
+  '        if o["row"] == s["row"] and o["key"] != s["key"] and o["phase"] == "DOCUMENT"' '        if False' \
+  $T/test_merge.py::test_a_slice_cannot_enter_gate_or_merge_while_a_row_mate_is_in_document
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

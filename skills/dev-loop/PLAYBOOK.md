@@ -95,12 +95,17 @@ the fixer as a root-cause fix through that registry.
 - selfcheck GO on head [code]
 - t1 GO on head [code]
 - code review GO on head, for every reviewer in the roster [code]
+- no other slice of this row is in DOCUMENT [code]
 - the merge command also asks GitHub: the base branch, the head, the required checks and
   the changelog entry. It refuses with the reason and merges nothing.
 - the full suite was needed or not, per the testing triggers [judgment]
 - the PR is rebased on the base branch when the project requires it [judgment]
 
 Merge only with `devloop-merge PROJECT KEY`. A direct `gh pr merge` is blocked.
+
+A row may have many slices open at once. They each go through the phases on their own. The
+one ordering rule: a slice may not enter GATE, and `devloop-merge` refuses it, while another
+slice of the same row is in DOCUMENT. Finish that slice's docs first.
 
 ### DOCUMENT
 

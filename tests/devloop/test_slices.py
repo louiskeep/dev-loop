@@ -520,12 +520,12 @@ def test_ids_are_anchored(proj, row, sid):
         slices.new_slice(proj, row, sid, repo="main")
 
 
-def test_new_slice_refused_while_row_open(proj):
+def test_many_slices_of_a_row_may_be_open(proj):
     slices.new_slice(proj, "R9", "S1", repo="main")
-    with pytest.raises(slices.SliceError, match="open"):
-        slices.new_slice(proj, "R9", "S2", repo="main")
+    slices.new_slice(proj, "R9", "S2", repo="main")
     slices.move(proj, "R9--S1", "PARKED", "stuck")
-    with pytest.raises(slices.SliceError, match="open"):
+    assert slices.new_slice(proj, "R9", "S3", repo="main")["phase"] == "FRAME"
+    with pytest.raises(slices.SliceError, match="already exists"):
         slices.new_slice(proj, "R9", "S2", repo="main")
     with pytest.raises(slices.SliceError, match="repo"):
         slices.new_slice(proj, "R8", "S1", repo="nope")

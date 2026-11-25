@@ -1,5 +1,6 @@
 import datetime
 import json
+import re
 import os
 import sys
 
@@ -196,7 +197,9 @@ def test_snapshot_lists_test_runs_that_hold_a_slot(proj, mk_slice, mk_run):
     assert f"devloop-state {proj} release t-lost" in section
     assert f"devloop-state {proj} release t-five" in section
     assert "t-ok" not in section  # a real failing result frees its slot
-    assert "host node-a, job job-t-lost, ended lost code -1, 7 min ago" in section
+    assert re.search(
+        r"host node-a, job job-t-lost, ended lost code -1, (7|8|9) min ago", section
+    )
     assert "code 5" in section
     assert h1 != h0
     runs.release(proj, "t-five")

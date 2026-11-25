@@ -188,6 +188,14 @@ def _builder_run_ok(project, s):
     return False
 
 
+def _row_in_document(project, s):
+    return [
+        o["key"]
+        for o in slices.list_slices(project)
+        if o["row"] == s["row"] and o["key"] != s["key"] and o["phase"] == "DOCUMENT"
+    ]
+
+
 def _outstanding(project, s):
     """Run IDs that could still replace evidence for this head: a test or review that
     is live, or finished but not applied. Their result is unknown, so the old GO cannot
@@ -225,7 +233,11 @@ _EVIDENCE_KINDS = ("test", "dennis", "codex-review", "codex-fix")
 def _gate_items(project, s, cfg):
     if not s["head"]:
         return [("head set", False)]
-    items = [("no test or review outstanding on head", not _outstanding(project, s))]
+    items = [
+        ("no test or review outstanding on head", not _outstanding(project, s)),
+        # A row's docs finish before its next slice merges.
+        ("no other slice of this row is in DOCUMENT", not _row_in_document(project, s)),
+    ]
     sha = slices.plan_sha_or_none(s)
     items.append(
         (
