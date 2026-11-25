@@ -75,7 +75,7 @@ mutate "PR head is never compared" devloop/merge.py \
     )' 'return True' \
   $T/test_merge.py::test_merge_refuses_head_mismatch
 mutate "an unknown merge state is retried" devloop/merge.py \
-  'if attempt or s["merge_unknown"]:' 'if attempt:' \
+  'if attempt or s["merge_unknown"]:' 'if False:' \
   $T/test_merge.py::test_merge_unknown_state_no_retry
 mutate "merge guard forgets gh pr merge" hooks/headless_merge_guard.py \
   'if _ANYWHERE.search(text) or _GH_PR_MERGE.search(text):' 'if _ANYWHERE.search(text):' \
@@ -108,7 +108,7 @@ mutate "zero exit without a result reads DONE" devloop/runs.py \
         status = status or "DONE"' \
   $T/test_runs.py::test_zero_exit_without_result_is_failed
 mutate "skip check ignores the unchanged hash" devloop/tick.py \
-  'if digest == state.get("last_hash") and fresh:' 'if False:' \
+  '        digest == state.get("last_hash")' '        False' \
   $T/test_tick.py::test_skip_unchanged_snapshot_until_two_hours
 mutate "skip never expires" devloop/tick.py \
   '        < SKIP_WINDOW_S
@@ -166,8 +166,8 @@ mutate "a selection earns t2 or full" devloop/runs.py \
   '    if select and level in ("t2", "full"):' '    if False:' \
   $T/test_runs.py::test_selection_is_refused_for_t2_and_full_but_not_t1
 mutate "guard ignores configured bases" devloop/project.py \
-  '    names = {"main"}' '    return "main"
-    names = {"main"}' \
+  '    names = {"main", "master"}' '    return "main,master"
+    names = {"main", "master"}' \
   $T/test_tick.py::test_tick_session_gets_the_configured_base_branches
 mutate "run conclusion compared case-sensitively" devloop/merge.py \
   '    return isinstance(conclusion, str) and conclusion.lower() == "success"' '    return conclusion == "SUCCESS"' \

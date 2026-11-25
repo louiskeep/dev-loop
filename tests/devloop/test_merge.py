@@ -699,7 +699,9 @@ def test_crash_after_the_move_still_counts_and_delivers_the_board_once(
     assert merge.merge(proj, k).outcome == "refused"  # already in DOCUMENT
     assert gate.board().count("merged ") == 1
     assert next(iter(slices.merge_records(proj).values()))["board_done"] is True
-    merge.merge(proj, k)
+    ident = {"repo": "main", "slug": "own/main", "pr": 7, "head": HEAD}
+    slices.deliver_board(proj, ident)
+    slices.deliver_board(proj, ident)
     assert gate.board().count("merged ") == 1  # idempotent per repo, PR and head
     from devloop import status
 
