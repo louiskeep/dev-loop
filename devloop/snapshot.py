@@ -141,10 +141,10 @@ def _command_outputs(project, cfg):
 
 
 def _questions(project):
-    path = notes._questions_path(project)
+    path = notes.questions_path(project)
     if not path.is_file():
         return []
-    _, qs, _, _ = notes._load_questions(path)
+    _, qs, _, _ = notes.load_questions(path)
     return [q for q in qs.values() if q["wait"] and not q["answer"]]
 
 
@@ -178,7 +178,7 @@ def build_snapshot(project) -> tuple:
         for e in store.read_json(sd / "problems.json").get("problems", {}).values()
         if e.get("open")
     ]
-    ticks = notes._read_ticklog(sd / "tick-log.md")[-5:]
+    ticks = notes.read_ticklog(sd / "tick-log.md")[-5:]
     areas = sorted({s["row"] for s in active})
     outputs = _command_outputs(project, cfg)
 

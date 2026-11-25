@@ -98,7 +98,7 @@ mutate "a lost test run frees its slot" devloop/runs.py \
   '    return (rd / "released").is_file() or (' '    return True or (' \
   $T/test_runs.py::test_lost_test_holds_slot
 mutate "a reused pid reads alive" devloop/runs.py \
-  'return _proc_start(pid) == str(start)' 'return _proc_start(pid) is not None' \
+  'return proc_start(pid) == str(start)' 'return proc_start(pid) is not None' \
   $T/test_runs.py::test_reused_pid_reads_dead
 mutate "zero exit without a result reads DONE" devloop/runs.py \
   'if status not in STATUSES:

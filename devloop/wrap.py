@@ -234,7 +234,7 @@ def run(project, run_id) -> int:
     store.out_dir(rd).mkdir(exist_ok=True)
     me = os.getpid()
     runs.update_request(
-        project, run_id, pid=me, pid_start=runs._proc_start(me), boot_id=runs._boot_id()
+        project, run_id, pid=me, pid_start=runs.proc_start(me), boot_id=runs.boot_id()
     )
     proc, code, reason = None, -1, "exit"
     try:
@@ -259,7 +259,7 @@ def run(project, run_id) -> int:
                 project,
                 run_id,
                 payload_pgid=proc.pid,
-                payload_start=runs._proc_start(proc.pid),
+                payload_start=runs.proc_start(proc.pid),
             )
             reason = _watch(proc, req, rd)
             code = proc.returncode

@@ -133,7 +133,7 @@ def slice_key_of(req) -> str:
 # --- liveness -----------------------------------------------------------------
 
 
-def _proc_start(pid):
+def proc_start(pid):
     try:
         text = Path(f"/proc/{int(pid)}/stat").read_text()
     except (OSError, ValueError, TypeError):
@@ -143,7 +143,7 @@ def _proc_start(pid):
     return rest[19] if len(rest) > 19 else None
 
 
-def _boot_id():
+def boot_id():
     try:
         return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
     except OSError:
@@ -151,9 +151,9 @@ def _boot_id():
 
 
 def _alive(pid, start, boot):
-    if not pid or start is None or boot != _boot_id():
+    if not pid or start is None or boot != boot_id():
         return False
-    return _proc_start(pid) == str(start)
+    return proc_start(pid) == str(start)
 
 
 def wrapper_alive(req) -> bool:
@@ -791,8 +791,8 @@ def _launch(project, rd, run_id):
         project,
         run_id,
         pid=proc.pid,
-        pid_start=_proc_start(proc.pid),
-        boot_id=_boot_id(),
+        pid_start=proc_start(proc.pid),
+        boot_id=boot_id(),
     )
 
 

@@ -273,7 +273,7 @@ def _dead_run(proj, key, **extra):
         "key": key,
         "pid": 2**22 + 5,
         "pid_start": "1",
-        "boot_id": runs._boot_id(),
+        "boot_id": runs.boot_id(),
         "reader": "claude",
         **extra,
     }
@@ -291,7 +291,7 @@ def test_dead_run_without_exit_is_failed(proj, ready):
 
 def test_reused_pid_reads_dead(proj):
     me = os.getpid()
-    live = {"pid": me, "pid_start": runs._proc_start(me), "boot_id": runs._boot_id()}
+    live = {"pid": me, "pid_start": runs.proc_start(me), "boot_id": runs.boot_id()}
     assert runs.wrapper_alive(live) is True
     assert runs.wrapper_alive({**live, "pid_start": "1"}) is False
     assert runs.wrapper_alive({**live, "boot_id": "other"}) is False
@@ -302,7 +302,7 @@ def test_lost_wrapper_kills_payload_group(proj, ready):
     rd = _dead_run(proj, key)
     p = subprocess.Popen(["sleep", "60"], start_new_session=True)
     runs.update_request(
-        proj, "builder.dead", payload_pgid=p.pid, payload_start=runs._proc_start(p.pid)
+        proj, "builder.dead", payload_pgid=p.pid, payload_start=runs.proc_start(p.pid)
     )
     runs.collect(proj)
     assert p.wait(timeout=10) == -signal.SIGKILL

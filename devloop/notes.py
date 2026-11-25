@@ -48,7 +48,7 @@ def _dir(project):
 # --- tick log ----------------------------------------------------------------
 
 
-def _read_ticklog(path):
+def read_ticklog(path):
     entries, at, body = [], None, []
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     for line in text.splitlines():
@@ -80,7 +80,7 @@ def ticklog(project: str, text: str) -> None:
     d = _dir(project)
     path = d / "tick-log.md"
     with store.locked(path):
-        entries = _read_ticklog(path) + [(store.now_iso(), body)]
+        entries = read_ticklog(path) + [(store.now_iso(), body)]
         if len(entries) > TICKLOG_KEEP:
             old, entries = entries[:-TICKLOG_KEEP], entries[-TICKLOG_KEEP:]
             by_month = {}
@@ -208,7 +208,7 @@ _FIELD = re.compile(
 )
 
 
-def _questions_path(project) -> Path:
+def questions_path(project) -> Path:
     cfg = projmod.load_project(project)
     custom = (cfg.get("questions") or {}).get("path")
     return Path(custom) if custom else _dir(project) / "questions.md"
@@ -284,7 +284,7 @@ def _render_questions(qs):
     return "\n".join(lines) + "\n"
 
 
-def _load_questions(path):
+def load_questions(path):
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     before, body, after = _split_page(text)
     return before, _parse_questions(body), after, body is not None
@@ -304,7 +304,7 @@ def _save_questions(path, before, qs, after, had_block):
     store.write_text(path, text)
 
 
-def _env_file(path):
+def read_env_file(path):
     """KEY=VALUE lines from the notify env file (holds the webhook; never the crontab)."""
     env = {}
     try:
@@ -327,7 +327,7 @@ def notify(project, text, limit=300):
         return
     env = dict(os.environ)
     if spec.get("env_file"):
-        env.update(_env_file(spec["env_file"]))
+        env.update(read_env_file(spec["env_file"]))
     ok = False
     try:
         r = subprocess.run(
@@ -392,9 +392,9 @@ def ask(
             or (held["phase"] == "PARKED" and held["park_reason"] in slices.OWNER_PARKS)
         ):
             raise NotesError("a held slice's question is the owner's to ask")
-    path = _questions_path(project)
+    path = questions_path(project)
     with store.locked(_lock_for(project)):
-        before, qs, after, had = _load_questions(path)
+        before, qs, after, had = load_questions(path)
         if key in qs and qs[key]["answer"]:
             raise NotesError("question already answered")
         q = {
@@ -434,7 +434,7 @@ def ensure_hold_question(project, key):
     """
     from . import slices
 
-    path = _questions_path(project)
+    path = questions_path(project)
     with store.locked(_lock_for(project)):
         s = _slice_for(project, key)
         held = s and (
@@ -443,7 +443,7 @@ def ensure_hold_question(project, key):
         )
         if not held:
             return
-        before, qs, after, had = _load_questions(path)
+        before, qs, after, had = load_questions(path)
         code = "owner-hold" if s["phase"] == "HELD" else s["park_reason"]
         own = qs.get(key)
         hold = {
@@ -474,9 +474,9 @@ def _lifts_hold(s, key, choice):
 def _apply_answer(project, key, choice):
     from . import slices
 
-    path = _questions_path(project)
+    path = questions_path(project)
     with store.locked(_lock_for(project)):
-        before, qs, after, had = _load_questions(path)
+        before, qs, after, had = load_questions(path)
         q = qs.get(key)
         if q is None:
             raise NotesError("no such question")
@@ -511,9 +511,9 @@ def answer(project: str, key: str, choice: str) -> None:
 
 def read_answers(project: str) -> list:
     """Apply answers the owner typed into the page. Returns the keys applied."""
-    path = _questions_path(project)
+    path = questions_path(project)
     with store.locked(_lock_for(project)):
-        _, qs, _, _ = _load_questions(path)
+        _, qs, _, _ = load_questions(path)
     applied = []
     for key, q in qs.items():
         if not q["answer"] or q["answer"] == q["applied"]:

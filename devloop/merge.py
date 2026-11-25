@@ -156,7 +156,7 @@ def _verify_cmd(project, cfg, repo_cfg, rules, base, head):
     env = None
     env_file = (cfg.get("notify") or {}).get("env_file")
     if env_file:
-        env = {**os.environ, **notes._env_file(env_file)}
+        env = {**os.environ, **notes.read_env_file(env_file)}
     try:
         r = subprocess.run(
             [a.replace("{head}", head) for a in cmd],
