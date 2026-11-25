@@ -40,7 +40,7 @@ mutate "public text carries raw next_action" devloop/status.py \
   'return str(s["next_action"] or "")' \
   $T/test_tick.py::test_public_outputs_use_event_fields
 mutate "wrapper never pushes the writer's commits" devloop/push.py \
-  '        pushed = _git(wt, "push", "-q", "origin", f"HEAD:{ref}")' \
+  '        pushed = _git(wt, "push", "-q", "origin", f"{local}:{ref}")' \
   '        pushed = _git(wt, "status", "-q")' \
   $T/test_push.py::test_unpushed_commit_is_pushed_and_applied
 mutate "wrapper drops the exit-writing finally step" devloop/wrap.py \
@@ -82,20 +82,18 @@ mutate "an unknown merge state is retried" devloop/merge.py \
   'if attempt or s["merge_unknown"]:' 'if False:' \
   $T/test_merge.py::test_merge_unknown_state_no_retry
 mutate "merge guard forgets gh pr merge" hooks/headless_merge_guard.py \
-  'if _ANYWHERE.search(text) or _GH_PR_MERGE.search(text):' 'if _ANYWHERE.search(text):' \
+  '            _ANYWHERE.search(text) or _GH_PR_MERGE.search(text)' '            _ANYWHERE.search(text)' \
   $T/test_merge.py::test_merge_guard_denies_in_headless_mode
 mutate "merge guard ignores a subagent id" hooks/headless_merge_guard.py \
   'worker = in_run or bool(event.get("agent_id"))' 'worker = in_run' \
   $T/test_merge.py::test_subagent_is_not_the_orchestrator
 mutate "merge guard blocks every git push" hooks/headless_merge_guard.py \
-  '    return any(
-        _push_targets_base(' '    return bool(_GIT_PUSH.search(text)) or any(
-        _push_targets_base(' \
+  '            if _push_targets_base(" ".join(rest), root):' '            if True:' \
   $T/test_merge.py::test_merge_guard_allows_reads_feature_pushes_and_devloop_merge
 mutate "merge guard blocks any text with merge" hooks/headless_merge_guard.py \
-  '    return any(
-        _push_targets_base(' '    return "merge" in text or any(
-        _push_targets_base(' \
+  '        elif exe == "git" and check_base_pushes:' '        elif "merge" in text:
+            return True
+        elif exe == "git" and check_base_pushes:' \
   $T/test_merge.py::test_merge_guard_allows_reads_feature_pushes_and_devloop_merge
 mutate "request ledger always matches" devloop/store.py \
   'return want is not None and want == request_digest(run_dir(project, run_id))' 'return True' \
@@ -282,7 +280,7 @@ mutate "hold released by any choice" devloop/notes.py \
   $T/test_notes.py::test_agent_question_never_lifts_a_hold
 
 mutate "codex-written head skips the dennis review" devloop/evidence.py \
-  '    if not _codex_wrote_head(project, s):
+  '    if s["head_writer"] != "codex-builder":
         return roster' '    if True:
         return roster' \
   $T/test_runs_review_roster.py::test_r1_slice_fixed_by_codex_builder_needs_dennis_then_codex
@@ -290,7 +288,7 @@ mutate "tick starts workers with the user MCP servers" devloop/project.py \
   '    return ["--strict-mcp-config", "--mcp-config", path or NO_MCP]' '    return []' \
   $T/test_runs_limits.py::test_claude_workers_start_with_no_mcp_servers
 mutate "memory admission ignores recent reservations" devloop/dispatch.py \
-  '    held = runs.reserved_mb(project, cfg) + projmod.memory_mb(cfg, kind)' '    held = projmod.memory_mb(cfg, kind)' \
+  '    held = runs.reserved_mb(cfg) + projmod.memory_mb(cfg, kind)' '    held = projmod.memory_mb(cfg, kind)' \
   $T/test_runs_limits.py::test_burst_of_dispatches_stops_at_the_reservation
 mutate "tick dispatch limit is never enforced" devloop/dispatch.py \
   '    if made >= projmod.max_dispatch_per_tick(cfg):' '    if False:' \
@@ -307,8 +305,8 @@ mutate "the dashboard leaves its pid file behind" devloop/dash/lifecycle.py \
   '            _files(project)["pid"].unlink(missing_ok=True)' '            pass' \
   $T/test_dash_cli.py::test_sigterm_removes_pid_file
 mutate "a reader creates the runs directory" devloop/runs.py \
-  '    return store.state_dir(project) / "runs"' '    d = store.state_dir(project) / "runs"
-    d.mkdir(exist_ok=True)
+  '    return store.state_path(project) / "runs"' '    d = store.state_path(project) / "runs"
+    d.mkdir(parents=True, exist_ok=True)
     return d' \
   $T/test_dash_shared.py::test_readers_create_no_directories $T/test_dash_view.py::test_build_view_writes_nothing
 mutate "error responses skip the security headers" devloop/dash/server.py \
@@ -353,6 +351,32 @@ mutate "the renderer stops escaping" devloop/dash/render.py \
 mutate "playbook heading needs an exact match only" devloop/dispatch.py \
   '    return heading == f"### {kind}" or (' '    return heading == f"### {kind}" and (' \
   $T/test_runs_dispatch.py::test_section_matches_the_plain_heading_and_the_kind_in_backticks
+
+mutate "wrapper keeps the worker's head instead of the pushed one" devloop/wrap.py \
+  '        if hdr.get("head") != pushed:' '        if False:' \
+  $T/test_push.py::test_amended_head_is_pushed_and_reported
+mutate "writer provenance is never recorded" devloop/slices.py \
+  '                s["head_writer"] = writer' '                pass' \
+  $T/test_runs_review_roster.py::test_apply_records_the_writer_of_the_head
+mutate "a missing Senior reviewer no longer fails the gate" devloop/evidence.py \
+  '    if senior_missing(cfg, s):' '    if False:' \
+  $T/test_runs_review_roster.py::test_codex_written_head_without_a_senior_reviewer_fails_closed
+mutate "merge reads the configured roster, not the effective one" devloop/merge.py \
+  '    roster = evidence.code_roster(project, cfg, s)' \
+  '    roster = [projmod.reviewer_entry(e) for e in cfg["reviews"][s["risk"]]["code"]]' \
+  $T/test_merge.py::test_gate_workflow_between_senior_and_codex_go_is_refused
+mutate "merge runs inside a worker" devloop/merge.py \
+  '    if os.environ.get("DEVLOOP_RUN"):' '    if False:' \
+  $T/test_merge.py::test_merge_refuses_inside_a_worker
+mutate "guard denies any mention of a command" hooks/headless_merge_guard.py \
+  '        elif exe == "devloop-merge" and worker:' '        elif "devloop-merge" in text and worker:' \
+  $T/test_merge_guard_segments.py
+mutate "memory reservations stay per project" devloop/runs.py \
+  '    for name in _project_names():' '    for name in [n for n in _project_names() if n != "p"]:' \
+  $T/test_runs_limits.py::test_two_projects_share_the_memory_headroom
+mutate "the reservation amount is not frozen at dispatch" devloop/dispatch.py \
+  '        req["memory_mb"] = projmod.memory_mb(cfg, kind)' '        pass' \
+  $T/test_runs_limits.py::test_dispatch_freezes_the_reservation_amount
 
 echo
 echo "killed: $killed  survived: $survived  stale: $stale"

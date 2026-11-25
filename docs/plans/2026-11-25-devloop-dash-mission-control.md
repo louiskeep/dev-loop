@@ -15,8 +15,8 @@ api-and-compatibility, testing, workspace-and-vcs.
 Risk: S1 and S2 are **R1** (read-only, local, reversible). S3 adds owner write actions over
 HTTP (a new trust boundary), so it is **R2**: written plan, adversarial review (Senior
 reviewer, then Outside reviewer, per the local operations profile), exact-head gate. Risk
-only rises; the coordinator confirms the S3 tier. Repo `/home/cam/dev-loop-plugin`, branch
-`feat/headless-loop`, planned from head `7af0177`.
+only rises; the coordinator confirmed R2 for S3. Repo `/home/cam/dev-loop-plugin`, branch
+`feat/headless-loop`, planned from head `7af0177`, revised against `a3c3b59`.
 
 **Goal (owner, 2026-11-25):** "I want something more like this"
 (github.com/Dri-water/observe-agents-do-things, MIT). Rebuild the dashboard in that dense
@@ -37,8 +37,8 @@ those facts into worker cards, the feed, the KPI numbers and per-slice drawer da
 `view.py` adds them to the sealed view (schema 2). `render.py` keeps the page shell and
 pipeline; `render_live.py` renders the KPI strip, attention bar, worker cards, feed and
 drawer sources; `render_control.py` renders the decisions drawer, the "Decided for you"
-list and the loop controls. `server.py` gains one POST table, `ACTIONS`, whose handlers call
-the same state functions the CLI uses. `dash.js` polls `/fragment` and drives both drawers.
+list and the loop controls. `server.ROUTES` becomes one `(method, path)` table that also holds four POST routes,
+whose handlers in `actions.py` call the same state functions the CLI uses. `dash.js` polls `/fragment` and drives both drawers.
 
 **Tech Stack:** Python 3.11 stdlib (`os`, `json`, `re`, `collections`, `secrets`,
 `hmac`, `urllib.parse`, `subprocess`), vanilla JS, CSS custom properties, inline SVG.
@@ -48,7 +48,8 @@ so fuzz tests use seeded `random` and are named as seeded fuzz.
 ## Global Constraints
 
 - GET and HEAD routes never write state and run no command. Writes happen only in POST
-  handlers listed in `server.ACTIONS`, each through an existing state function.
+  handlers listed as POST entries of `server.ROUTES`, each through an existing state
+  function.
 - Stdlib Python only. No external network, CDN, web font or JS library.
 - Role labels from `project.role_label` and `pool_label` only. Run kind names such as
   `dennis` never reach a page.
@@ -72,7 +73,7 @@ so fuzz tests use seeded `random` and are named as seeded fuzz.
    `test_overlimit_line_across_polls_is_dropped`, Task 3).
 2. An owner answers a question in a stale tab after the tick changed it: the answer is
    refused with "This question changed. Reload to see the new version."
-   (`test_answer_with_old_version_is_refused`, Task 9).
+   (`test_answer_with_old_version_is_refused`, Task 9b).
 3. A double click on "Go with recommended": one answer is recorded, the second post gets
    "Already answered" (`test_double_post_records_one_answer`, Task 11).
 4. A shell command whose first word is data (`customer42`) or hides behind quotes: the page
@@ -127,41 +128,99 @@ page, reading `~/.codex/sessions` or any file outside the project's state dir, a
   the question waits for the owner. `wait` is derived from the class; the CLI `--wait` flag
   stays and forces `product`.
 - **Free-text answers** are stored as `other: <text>` (single line, 1 to 500 characters)
-  for non-hold questions. Holds accept only their two options. The tick treats an
-  `other:` answer as the owner's instruction (TICK and PLAYBOOK wording, Task 9).
-- **Question version**: `notes.question_version(q)` is 16 hex of sha256 over the canonical
-  JSON of the stored record. A dashboard answer carries it; `_apply_answer` compares it
-  inside the questions lock and refuses a mismatch. The CLI passes no version.
+  for non-hold questions. Holds accept only their two options and render only those two.
+  The tick treats an `other:` answer as the owner's instruction (TICK and PLAYBOOK
+  wording, Task 9).
+- **Managed markers are refused**: no persisted question field (question, context, detail,
+  options, recommended, answer) may contain `BLOCK_START` or `BLOCK_END`
+  (`devloop/notes.py:19`); a single check in `notes._line` (used by `ask` and by answer
+  validation) raises `NotesError("text may not contain the questions page markers")`, so
+  the page parser (`devloop/notes.py:222`) never sees repeated markers.
+- **Question version**: one shared pure function, `store.canonical_digest(obj) -> str`
+  (16 hex of sha256 over sorted, compact JSON), extracted from `view.version_of`
+  (`devloop/dash/view.py:221`). `version_of` keeps its payload (the view without its own
+  `version`); `notes.question_version(q)` passes the stored record. Fixtures pin both
+  outputs. A dashboard answer carries the version; the CLI passes none.
+- **Answer rules** (`notes._apply_answer`, all under the questions lock, in this order):
+  1. Unknown key: "This question is gone. Reload."
+  2. Invalid choice (not an option, bad `other:` text, `other:` on a hold, a managed
+     marker): the fixed `NotesError` message.
+  3. The record's current answer equals the choice: if its effect is still pending
+     (`applied != answer`), finish the effect (rule 6) and report "Finished applying your
+     answer."; otherwise "Already answered." with no change (a dashboard duplicate).
+  4. `expect_version` given and different from the current record: "This question changed.
+     Reload to see the new version."
+  5. A different answer on a record that already has one is allowed only when the record is
+     a tech decision (override), a hold answered `keep-held` (now `approve`), or the caller
+     is the CLI or page sync (today's behavior). Otherwise "Already answered."
+  6. Commit order, each step idempotent: save `answer` and `answered_at` with `applied`
+     unchanged; apply the slice effect (release the hold only if still HELD; clear
+     `waiting_on` only if it still names this question); set `applied = answer`; append
+     the event. A failure after the first save reports "Your answer was saved, but applying
+     it did not finish. Retry to finish." and a retry (rule 3) or the next page sync
+     (`answer != applied`) completes it without a second decision.
+  Page sync (`read_answers`, `devloop/notes.py:555`) passes the answer and version it
+  observed; rules 3 and 4 recheck them under the lock.
+- **The tick sees owner decisions**: the snapshot's question section
+  (`devloop/snapshot.py:161`) also lists owner answers whose `answered_at` is newer than
+  the last model pass or whose effect is pending (key, answer text, version), and the
+  digest (`devloop/snapshot.py:315`) includes `(key, version)` for open and recently
+  answered questions, so an override or an `other:` instruction defeats the skip check
+  (`devloop/tick.py:169`).
 - **One write path**: the dashboard calls `notes.answer(..., via="dashboard",
   expect_version=V)`, `store.set_paused(project, on, via)` (the CLI `pause`/`resume` branch,
   `devloop/state_cli.py:257`, moves into it) and `tick.spawn_detached(project)` (moved from
   `wrap._wake_tick`, `devloop/wrap.py:241`, so wrapper wake-ups and the button start a tick
   the same way). No new file format: two optional fields (`Detail`, `Class`)
   join the existing questions page.
-- **"Run a tick now"** is refused when `tick.lock_held(project)` is true (non-blocking flock
-  probe on `tick.lock`, released at once, `devloop/tick.py:199`). The probe and spawn can
-  race with cron; the tick's own lock then coalesces the second start into
-  `tick.requested`, so the race is harmless.
+- **Tick running status is passive**: `tick.running(project, proc="/proc") -> bool`
+  stats `tick.lock` without creating it (absent means not running) and looks for its
+  device and inode in `/proc/locks` as a held FLOCK. It never opens or flocks the file, so
+  a GET cannot create state or make an arriving tick defer (`devloop/tick.py:197`). The
+  tick keeps its real flock.
+- **"Run a tick now"** runs under one server-side `threading.Lock`: check `tick.running`,
+  check the debounce, call `tick.spawn_detached`, and only on a successful spawn record
+  `last_tick`. A spawn failure (`OSError` from `Popen`) returns 500 "Could not start a
+  tick." and sets no debounce. `spawn_detached` raises; the wrapper's caller keeps its
+  best-effort behavior by catching `OSError` itself (`devloop/wrap.py:249`). A race with
+  cron is resolved by the tick's own flock (`tick.requested`).
 - **Token and origin**: one `secrets.token_urlsafe(32)` per server process, embedded in the
   page and every form. A POST needs the token (compared with `hmac.compare_digest`) and an
-  `Origin` (or, without it, `Referer`) whose host and port equal the request's `Host`.
-  A stale tab after a server restart gets "This page is out of date. Reload." The token is
-  not in `/api/state` or the ETag.
+  `Origin` (or, without it, `Referer`) whose scheme, host and effective port equal
+  `http` and the request's `Host` (port 80 when absent). A stale tab after a server
+  restart gets "This page is out of date. Reload." The token is not in `/api/state`.
+  Token-bearing HTML (`/`, `/fragment`) is sent with `Cache-Control: no-store` and no
+  ETag, so a reload never reuses an old token through a 304; `/api/state` keeps its
+  state-only ETag and 304.
+- **Stale drafts**: each question form carries `data-key` and `data-version`, and its
+  textarea id includes both. When a poll brings a new version of an open question, the
+  drawer keeps the old form and draft visible, shows "This question changed while you were
+  typing. Read the new version; your text is kept.", and disables Save until the owner
+  clicks "Use my text with the new version", which loads the new form with the draft. No
+  draft is ever sent against a version the owner has not seen.
 - **"Copy for Claude"** copies: "Help me decide dev loop question KEY in project PROJECT.
   The question, its options and the background are in PATH. Read it, explain the trade-off,
   and recommend an option." PATH is the questions file path, shown only in this copy text
-  (owner request). The clipboard API needs a secure context (loopback is one; a LAN IP over
+  (owner request), taken from `notes.questions_path(project)` (`devloop/notes.py:211`) on
+  the server, so a configured external page is named correctly. The clipboard API needs a secure context (loopback is one; a LAN IP over
   http is not), so the button falls back to selecting a read-only text box.
 - **Drawers**: one shell outside `#app-body`, two kinds by hash: `#slice=KEY` and
   `#q=KEY`. Drawer data rides in hidden sources inside `/fragment`, so GET routes stay
-  five. A slice beyond `DRAWER_SLICES` opens checklist-only from its pipeline card; only a
+  five. Question sources exist for open owner questions and for each overrideable "Decided
+  for you" entry. Form keys are the real question keys (seal kind `qkey`: must pass
+  `notes._key`, never `plain`, so `hold:release-deadbeef` round-trips). A slice beyond `DRAWER_SLICES` opens checklist-only from its pipeline card; only a
   key with neither source nor card reads "no longer active".
 - **Choke points**: transcript text reaches the view only through `safe_target`, re-checked
-  by `_seal`'s `target` kind. Writes happen only in `server.ACTIONS` handlers, reached only
-  through `_post`, which checks token, origin and body size before any handler runs.
+  by `_seal`'s `target` kind. One route table, `server.ROUTES = {(method, path): Route(
+  handler, fields)}`, drives GET and POST dispatch; every POST route is reached only through
+  `_post`, which checks length, token, origin and the route's field contract before the
+  handler runs. The guard test walks `ROUTES` itself.
 - **Builder work assumed in the tree** (coordinator note): dashboard config reads do not
   create files, ledger parsing is tolerant, text is normalized after truncation, and the
-  dashboard iterates `project.SLOTS`.
+  dashboard iterates `project.SLOTS`. `project.project_path` still calls
+  `store.state_path` (`devloop/project.py:88`); Task 4 checks that it creates nothing
+  (`test_view_build_creates_no_directories`) and switches it to a non-creating path if it
+  does.
 - **Principles applied**: single responsibility (parsing and caching, view assembly, live
   HTML, control HTML and actions in separate modules; `view.py` is 640 lines and `render.py`
   485); information hiding (`Cache.read` hides offsets, rotation and format). House style:
@@ -205,7 +264,7 @@ All constants live at the top of `devloop/dash/transcript.py` and `live.py`.
 | `DRAWER_RUNS` | 8 | runs listed per slice drawer, newest first |
 | `DRAWER_SLICES` | 30 | active slices given a drawer source |
 | `POST_BYTES` | 8192 | largest POST body accepted |
-| `TICK_DEBOUNCE_S` | 10 | a second "Run a tick now" within this window is refused |
+| `TICK_DEBOUNCE_S` | 10 | after a successful spawn, a second "Run a tick now" within this window is refused |
 
 Cache identity: `(st_dev, st_ino)`. Fast path: `os.stat(path)`; if inode, size and
 `st_mtime_ns` match the entry, no open and no read. Otherwise open `"rb"`, `os.fstat`, and
@@ -217,7 +276,9 @@ Missing or rotated transcripts:
 - File absent and run executing: `starting`; absent and run finished: `none`.
 - Kind with `transcript: outside` (`codex-fix`): `outside`, never `starting`.
 - `OSError` on open: `unreadable` on that card only.
-- Inode changed or size below the cursor: a discontinuity (below), tail read again.
+- Inode changed or size below the cursor: a new file generation. The cursor resets to 0
+  and the counters and parser state reset, then the cold-tail rule picks the start; the
+  feed log keeps its facts.
 - Run finished and in no drawer: its cache entry is evicted; its last feed facts stay in
   the feed log.
 
@@ -257,13 +318,15 @@ Claude (`parse_claude_line(raw: bytes) -> ClaudeFacts | None`), structural:
 
 Codex text (`CodexParser.feed`): Codex text mixes commands with their output, so a line of
 output can look like a block header. Rules:
-- Tags come from block headers: a line exactly `exec` starts a call (tag SHELL, or SEARCH
-  or READ when the command name is in `CODEX_SEARCH` or `CODEX_READ`); `succeeded in Nms`
+- Tags come from block headers: a line exactly `exec` starts a call (tag SHELL);
+  `succeeded in Nms`
   or `exited N in Nms` ends it (`exited` non-zero adds an error); `apply_patch` or
   `file update` starts a patch block whose `A`/`M`/`D` lines each count one WRITE or EDIT.
-- Targets: a Codex SHELL, SEARCH or READ call shows the command name only when it is in
-  `PUBLIC_COMMANDS` and the command line has no quote, backslash, `$`, backtick or `<`.
-  Codex patch lines never show a file name (they may be command output). Otherwise `?`.
+- Targets: a Codex call goes through `shell_word` after cutting a trailing ` in /...`.
+  The installed launchers always print the quoted `/bin/bash -lc "..."` or `'...'` wrapper
+  with a trailing directory (all 178 sampled `exec` lines), so the expected target for real
+  Codex output is `?`. Codex patch lines never show a file name. Codex cards therefore
+  show tags, counts, errors, model and tokens, not targets.
 - Model: read once per file identity from the file head (first 4 KiB, between the first two
   `--------` lines), never from a tail. A header-looking line mid-file is ignored.
 - `tokens used` then a number line sets `tokens_out`.
@@ -347,20 +410,25 @@ that every entry passes `safe_target`.
 - Run leaves `executing` (`devloop/runs.py:233`): its card leaves the grid; it stays in its
   slice's drawer history; its feed facts stay in the feed log.
 - GET view build raises: the existing fixed 500 (`devloop/dash/server.py:107`).
-- POST refusals, each a fixed message, HTTP status, and no state change:
+- POST refusals, checked in this order, each a fixed message and status, and no state
+  call:
+  - `Content-Length` missing, not a nonnegative integer, or over `POST_BYTES`: 400 "Bad
+    request."
   - token missing or wrong: 403 "This page is out of date. Reload."
-  - origin missing or foreign: 403 "Refused: not sent from this page."
-  - body over `POST_BYTES`, bad form encoding, unknown or missing field: 400 "Bad request."
-  - question unknown: 409 "This question is gone. Reload."
-  - version differs: 409 "This question changed. Reload to see the new version."
-  - already answered (product question with an answer, version unchanged would be
-    impossible, so this is the double post): 409 "Already answered."
-  - choice not an option and not a valid `other:` text, or `other:` on a hold: 400 with
-    the `NotesError` message (fixed strings from `notes.py`).
-  - tick lock held: 409 "A tick is running now." Within `TICK_DEBOUNCE_S`: 409 "A tick was
-    just started."
-  - a state function raises anything else: 500 "Could not save. Nothing was changed." and
-    the log gets the exception class name only.
+  - origin missing or foreign (scheme, host or effective port): 403 "Refused: not sent
+    from this page."
+  - body not strict form encoding, a field outside the route's contract, a field given
+    more than once, or not exactly one answer mode (`choice` or `other`): 400 "Bad
+    request." Parsing uses `keep_blank_values=True`, so `other=` counts as given.
+- Answer outcomes after the checks, in the order of the answer rules (Design notes): 409
+  "This question is gone. Reload."; 400 with the fixed `NotesError` message; 409 "Already
+  answered." or 200 "Finished applying your answer."; 409 "This question changed. Reload
+  to see the new version."; 500 "Your answer was saved, but applying it did not finish.
+  Retry to finish."
+- Tick outcomes: 409 "A tick is running now."; 409 "A tick was just started."; 500 "Could
+  not start a tick." (no debounce recorded).
+- Any other exception in a handler: 500 "Something went wrong. Reload to see what was
+  saved." and the log gets the exception class name only.
 - POST success: 303 to `/` (no JS) or JSON `{"ok": true, "message": ...}` when the request
   sends `Accept: application/json` (JS).
 - Client: a drawer open on a key with no source and no pipeline card reads "This slice is
@@ -371,12 +439,14 @@ that every entry passes `safe_target`.
 
 - GET (read-only, as today): `/`, `/fragment`, `/api/state`, `/static/dash.css`,
   `/static/dash.js` (`devloop/dash/server.py:144`).
-- POST (`server.ACTIONS`): `/act/answer` (fields `t`, `key`, `version`, `choice` or
-  `other`), `/act/pause` (`t`), `/act/resume` (`t`), `/act/tick` (`t`).
+- POST (entries in the same `server.ROUTES` table): `/act/answer` (fields `t`, `key`,
+  `version`, and exactly one of `choice` or `other`), `/act/pause` (`t`), `/act/resume`
+  (`t`), `/act/tick` (`t`).
 - HEAD mirrors GET; any other method, or POST to a GET path, is 501 or 405 with fixed
   text; unknown paths 404.
-- `_post` runs token, origin and size checks before looking up the handler, so a new
-  action cannot skip them.
+- `do_POST` looks up `("POST", path)` in `ROUTES` and always calls `_post`, which runs
+  length, token, origin and field checks before the handler, so a new POST route cannot
+  skip them. `/` and `/fragment` send `Cache-Control: no-store` and no ETag.
 
 ### FK shapes
 
@@ -386,8 +456,9 @@ that every entry passes `safe_target`.
   run walk before the slot filter.
 - Card to transcript: path from `store.out_dir(rd)` and the kind's `transcript` value;
   `req["out"]` is honoured only when it equals `out_dir(rd) / "codex.out"`.
-- Answer form to question: `key` must exist in the questions page; `version` must equal
-  `question_version` of that record inside the lock. A hold item's form key is `hold:KEY`.
+- Answer form to question: `key` (a `qkey`, round-trippable) must exist in the questions
+  page; `version` must equal `question_version` of that record inside the lock. A hold
+  item's form key is `hold:KEY`; an override's form key is the decided question's key.
 - Tech ratchet answer to its planned fix: the TICK wording requires the answer text to
   name the roadmap row, plan or follow-up key that retires the entry.
 
@@ -401,11 +472,11 @@ problem, unreadable).
 - `kpi`: `running`[int], `slots`[int], `needs_you`[int], `merged_today`[int?],
   `tools_per_min`[int] (exact trailing 60 s from second buckets), `free_mb`[int?],
   `memory_state`[word?], `last_pass_at`[at?].
-- `needs_you[]` (tree fields plus): `answer_key`[id?] (`hold:KEY` for holds; null when no
+- `needs_you[]` (tree fields plus): `answer_key`[qkey?] (`hold:KEY` for holds; null when no
   question record exists, as for `merge_unknown`), `question`[owner_text?],
   `detail`[owner_text?], `options`[owner_text list], `recommended`[owner_text?],
   `klass`[word: tech, product], `version`[version?].
-- `decided[]` (tech questions decided by the Tech lead, newest 20): `key`[id],
+- `decided[]` (tech questions decided by the Tech lead, newest 20): `key`[qkey],
   `question`[owner_text], `detail`[owner_text?], `options`[owner_text list],
   `applied`[owner_text], `answer`[owner_text?] (set after an override), `at`[at?],
   `version`[version].
@@ -424,19 +495,20 @@ problem, unreadable).
 
 New scalar kinds: `tag`, `target` (`safe_target(v) == v`), `model` (fullmatch
 `[a-z][a-z0-9.-]{1,48}`, no `scrub._TOKEN` match), `icon`, `harness`, `owner_text` (str,
-no newline, at most 1000 characters).
+no newline, at most 1000 characters, no managed marker), `qkey` (passes `notes._key`).
 
 Not in the view: run ids, run kind names, reviewer names, tool inputs other than the
 basename or allowlisted name, prompts, tool results, model text, session ids, directories,
-costs, the page token, the questions file path (only in the copy text, rendered from
-`answer_at` plus the state dir at render time on the server).
+costs, the page token, the questions file path (only in the copy text, from
+`notes.questions_path` at render time on the server).
 
 ### Output surfaces
 
 - `/` and `/fragment` HTML: KPI strip with loop controls, attention bar (owner questions,
   then stuck), "Decided for you", worker grid, feed, pipeline, known problems, capacity,
   memory, shipped, parked, hidden drawer sources (slices and questions).
-- `/api/state` JSON: the sealed schema 2 view.
+- `/api/state` JSON: the sealed schema 2 view, with ETag and 304.
+- Tick snapshot: recent owner answers (key, text, version) and their versions in the digest.
 - POST responses: fixed messages listed in Exit paths.
 - Server log: method, path, status; for POST also the action name and outcome word.
   Never a form value or question text.
@@ -444,23 +516,23 @@ costs, the page token, the questions file path (only in the copy text, rendered 
   `loop-paused`, `loop-resumed`, `tick-requested`, with IDs only.
 - Slack: the tech-decision line from `_post_question`; dashboard answers post the existing
   answered line.
-- Questions page: `Detail` and `Class` lines; `Answer: other: ...`.
+- Questions page: `Detail`, `Class` and `Answered` lines; `Answer: other: ...`.
 - Browser: theme in `localStorage`; drawer key in `location.hash`; filters in the query.
 
 ## Defect classes
 
 | # | Class | Closing structure | Sentry or property test | Mutation that must fail it |
 |---|---|---|---|---|
-| 1 | value-free output | transcript text reaches the view only through `safe_target` (Claude structured file fields) and `PUBLIC_COMMANDS`; Codex patch names never published; `_seal` kinds re-check | `test_transcript_secrets_reach_no_route`: asserts 200, the positive facts (`SHELL git` from Claude, `SEARCH rg` from Codex, `EDIT view.py` in a finished drawer) and the absence of `customer42` and every planted secret on all three GET routes | drop the `PUBLIC_COMMANDS` check in `shell_word` (planted `customer42 --x` then reaches the page as a sealed target) |
+| 1 | value-free output | transcript text reaches the view only through `safe_target` (Claude structured file fields) and `PUBLIC_COMMANDS`; Codex patch names never published; `_seal` kinds re-check | `test_transcript_secrets_reach_no_route`: asserts 200, the positive facts (`SHELL git` from Claude; the Codex card's model and a tool count of 3 from a sanitized fixture of the real `bash -lc` shape; `EDIT view.py` in a finished drawer) and the absence of `customer42` and every planted secret on all three GET routes | drop the `PUBLIC_COMMANDS` check in `shell_word` (planted `customer42 --x` then reaches the page as a sealed target) |
 | 2 | cleanup on every exit path | `with open(path, "rb")`; `Cache.collect` evicts entries for runs neither live nor in a drawer; `tick.spawn_detached` uses `start_new_session`, DEVNULL stdin, `close_fds` | `test_cache_evicts_a_previously_cached_path` (asserts the path left `cache.entries`), `test_spawn_detached_leaves_no_child_fds` | delete the eviction step in `Cache.collect` |
-| 3 | state consistency | GET never writes; POST writes only through `notes.answer`, `store.set_paused`, `tick.spawn_detached` under their existing locks; cursor advances by bytes read | `test_get_routes_write_nothing` (walks every GET in `ROUTES`, state dir listing, sizes and mtimes unchanged), `test_truncate_between_fstat_and_read_then_regrow` | advance the cursor to the fstat size instead of `start + len(data)` |
-| 4 | route completeness | `ROUTES` keyed by `(method, path)`; every POST goes through `_post` (token, origin, size) before `ACTIONS` lookup | `test_every_post_route_refuses_without_token_and_origin` (walks `ACTIONS`), `test_only_known_routes_and_methods` | call the handler before the token check in `_post` |
-| 5 | referential integrity | drawer runs selected by key in the run walk; answer key and version resolved inside the questions lock; hold forms use `hold:KEY` | `test_drawer_keeps_finished_run_history`, `test_hold_answer_uses_hold_key`, `test_unknown_question_key_is_refused` | build the hold form with the slice key instead of `answer_key` |
-| 6 | untrusted input | transcript bytes: every line length-checked before parsing, typed field access, per-line boundary in `Cache.read`; POST bodies: size cap, strict field set, `other:` text validated by `notes` | seeded fuzz `test_parser_never_raises_on_random_bytes`, `test_parser_error_on_one_line_keeps_the_next` (injected through `Cache.read`), `test_post_body_limits_and_unknown_fields` | remove the per-line `try` in `Cache.read` |
-| 7 | TOCTOU (check then use) | reader: open, then `fstat` the open file; answer: version compared inside `store.locked` of the questions page; tick: lock probe races resolved by the tick's own flock | `test_path_replaced_between_stat_and_open_reads_new_file_only`, `test_answer_with_old_version_is_refused`, `test_double_post_records_one_answer` | compare the version before taking the questions lock |
+| 3 | state consistency | GET never writes (passive tick status); POST writes only through `notes.answer`, `store.set_paused`, `tick.spawn_detached` under their existing locks; answer effects idempotent in a fixed commit order; cursor advances by bytes read | `test_get_routes_write_nothing` (walks every GET and HEAD in `ROUTES` with `tick.lock` absent and present), `test_failed_effect_is_finished_on_retry`, `test_truncate_between_fstat_and_read_then_regrow` | advance the cursor to the fstat size instead of `start + len(data)` |
+| 4 | route completeness | one `ROUTES` table keyed by `(method, path)` drives dispatch; every POST route goes through `_post` (length, token, origin, field contract) | `test_every_post_route_refuses_bad_token_or_origin` (walks the POST entries of `ROUTES`; valid origin with a bad token, then valid token with a bad origin; asserts the refusal and zero calls to the patched state functions), `test_only_known_routes_and_methods` | call the handler before the token check in `_post` |
+| 5 | referential integrity | drawer runs selected by key in the run walk; answer key and version resolved inside the questions lock; hold forms use `hold:KEY` | `test_drawer_keeps_finished_run_history`, `test_hold_answer_uses_hold_key` (submits the rendered hold form), `test_override_form_round_trips` (submits a rendered override), `test_unknown_question_key_is_refused` | seal `answer_key` through `plain` (a `hold:...deadbeef` key becomes `?`) |
+| 6 | untrusted input | transcript bytes: every line length-checked before parsing, typed field access, per-line boundary in `Cache.read`; POST bodies: nonnegative length cap, blanks kept, one value per field, one answer mode; question text: managed markers refused | seeded fuzz `test_parser_never_raises_on_random_bytes`, `test_parser_error_on_one_line_keeps_the_next` (injected through `Cache.read`), `test_post_body_contract` (each refusal with every other check valid, zero state calls), `test_managed_markers_refused` | remove the per-line `try` in `Cache.read` |
+| 7 | TOCTOU (check then use) | reader: open, then `fstat` the open file; answer: version compared inside `store.locked` of the questions page; tick: lock probe races resolved by the tick's own flock | `test_path_replaced_between_stat_and_open_reads_new_file_only` (asserts the cached identity is the new inode, the cursor equals the new bytes consumed, and the next poll reads only appended bytes), `test_reask_between_check_and_lock_is_refused` (a patched lock entry re-asks the question just before acquiring; the revised record must stay untouched), `test_double_post_records_one_answer` | compare the version before taking the questions lock |
 | 8 | weak tests | every mutation here is a `mutate` entry; the runner runs each entry's tests unmutated first and counts a kill only when pytest exits 1 (failed assertions), not 2 to 5 | `mutations.sh` reports every dash entry killed; a baseline-red entry prints `RED-BASE` | make the first read ignore `TAIL_BYTES`, caught by `test_first_read_is_bounded_by_tail_bytes` |
-| 9 | refactor drift | `pause`/`resume` move into `store.set_paused`; `_wake_tick` moves into `tick.spawn_detached`; `CODEX_KINDS` derived from `runs.KINDS`; event tags on `status.EVENTS` | `test_cli_and_dashboard_pause_share_one_path`, `test_codex_kinds_derived_from_registry`, `test_every_event_kind_has_a_tag`, `test_every_run_kind_has_harness_icon_and_transcript` | hard-code `CODEX_KINDS` again without `codex-builder` |
-| 10 | frozen contracts | `VIEW_SCHEMA` schema 2; route table; questions page reads old pages unchanged; CLI answer without version works as today | `test_view_keys_match_schema`, `test_schema_is_two`, `test_old_questions_page_reads_as_product`, `test_cli_answer_unchanged` | default a missing `Class` line to `tech` |
+| 9 | refactor drift | `pause`/`resume` move into `store.set_paused`; `_wake_tick` moves into `tick.spawn_detached`; `CODEX_KINDS` derived from `runs.KINDS`; event tags on `status.EVENTS`; `version_of` and `question_version` share `store.canonical_digest` | `test_cli_and_dashboard_pause_share_one_path`, `test_version_digest_fixtures`, `test_codex_kinds_derived_from_registry`, `test_every_event_kind_has_a_tag`, `test_every_run_kind_has_harness_icon_and_transcript` | hard-code `CODEX_KINDS` again without `codex-builder` |
+| 10 | frozen contracts | `VIEW_SCHEMA` schema 2; route table; questions page reads old pages unchanged; CLI answer without version works as today | `test_view_keys_match_schema`, `test_schema_is_two`, `test_old_questions_page_class_from_wait`, `test_old_wait_no_record_survives_rewrite`, `test_cli_answer_unchanged`, `test_version_digest_fixtures` | read a missing `Class` line as `product` even when `Wait: no` |
 
 ## Acceptance tests
 
@@ -474,8 +546,9 @@ fixtures from `tests/devloop/conftest.py` apply as usual. Files:
 `transcript_fixture.py` writes synthetic files with real shapes (field names only):
 `claude_events(items) -> bytes` (`system/init`, `assistant` with `tool_use` or text only,
 repeated message ids, `user` with several `tool_result` blocks, thinking, `result`) and
-`codex_text(blocks) -> bytes` (header, `exec` blocks, `succeeded`/`exited`, `apply_patch`
-and `file update:` blocks, `codex`/`thinking`, `tokens used`).
+`codex_text(blocks) -> bytes` (header, `exec` blocks in the real quoted `/bin/bash -lc
+"..." in /dir` shape, `succeeded`/`exited`, `apply_patch` and `file update:` blocks,
+`codex`/`thinking`, `tokens used`; a sanitized copy of the real layout, no real values).
 
 Reader and parser (S1):
 - `test_shell_word_cases` (parametrized): `"git status"` gives `git`;
@@ -492,8 +565,8 @@ Reader and parser (S1):
 - `test_text_only_message_counts_tokens`, `test_tokens_deduped_by_message_id`,
   `test_token_total_survives_dedup_eviction` (2 500 distinct ids: total exact).
 - `test_two_results_with_different_error_flags` (one call errors, the other does not).
-- `test_codex_exec_and_patch_blocks` (tags, counts, errors, tokens; patch lines carry no
-  target), `test_codex_output_mimicking_exec_shows_no_data` (output lines `exec` then
+- `test_codex_exec_and_patch_blocks` (tags, counts, errors, tokens; the real `bash -lc`
+  wrapper gives target `?`; patch lines carry no target), `test_codex_output_mimicking_exec_shows_no_data` (output lines `exec` then
   `customer42`: target `?`), `test_codex_model_only_from_file_head` (a `model:` line
   mid-tail is ignored), `test_codex_unknown_format_yields_no_calls`.
 - `test_first_read_is_bounded_by_tail_bytes`, `test_steady_poll_reads_only_new_bytes`,
@@ -503,9 +576,11 @@ Reader and parser (S1):
   polls, and in one chunk with its newline; the next good line is parsed; pending never
   exceeds `MAX_LINE`), `test_tail_jump_clears_codex_continuation` (a jump while an `exec`
   waits for its command: the first line after the jump is not taken as a command).
-- `test_rotation_between_polls_resets_offset`, `test_truncate_between_fstat_and_read_then_regrow`
-  (no bytes skipped or doubled after regrowth), `test_path_replaced_between_stat_and_open_reads_new_file_only`
-  (old and new files hold distinct records; only new records appear).
+- `test_rotation_by_shorter_file`, `test_rotation_by_same_size_file` (each replacement has
+  a distinct record at byte zero, which must appear, then an append, which must appear
+  once), `test_truncate_between_fstat_and_read_then_regrow` (no bytes skipped or doubled
+  after regrowth), `test_path_replaced_between_stat_and_open_reads_new_file_only` (as
+  class 7).
 - `test_unmatched_calls_keep_state_bounded` (1 000 calls without results over 50 polls:
   state size constant), `test_rate_is_exact_across_a_minute_boundary` (80 calls in 60 s
   spanning a minute boundary: `tools_per_min` 80).
@@ -534,7 +609,8 @@ Page (S2):
   `test_drawer_keeps_finished_run_history`, `test_drawer_files_from_claude_edit_and_write`,
   `test_drawer_sources_capped_and_fallback_hooks` (slice 31 has a pipeline card with
   `data-card-key` and no source), `test_drawer_run_status_and_verdict_from_result_header`.
-- `test_owner_question_shown_in_full_with_real_hint` (question, detail and every option
+- `test_view_build_creates_no_directories` (unknown and known project).
+- `test_owner_question_shown_in_full_with_real_hint` (question and every option
   verbatim, including an unprefixed value such as `hunter2`; the hint reads
   `devloop-state p answer KEY <option>` with the real key),
   `test_hold_answer_uses_hold_key`.
@@ -551,31 +627,55 @@ Page (S2):
   tokens included), `test_phone_rules_present`.
 
 Control (S3):
-- `test_ask_records_class_and_detail`, `test_tech_question_is_decided_now`
-  (applied = recommended, event `question-decided`, Slack line "Tech lead decided"),
-  `test_product_question_waits`, `test_class_defaults_to_product`,
-  `test_old_questions_page_reads_as_product`, `test_wait_flag_forces_product`.
+- `test_ask_records_class_and_detail` (detail shown in the view from here on, not in S2),
+  `test_tech_question_is_decided_now` (applied = recommended, event `question-decided`,
+  Slack line "Tech lead decided"), `test_product_question_waits`,
+  `test_class_defaults_to_product`, `test_old_questions_page_class_from_wait`
+  (`Wait: no` without `Class` reads as a tech decision, `Wait: yes` as product),
+  `test_old_wait_no_record_survives_rewrite` (asking another question keeps it `Wait: no`),
+  `test_wait_flag_forces_product`.
+- `test_managed_markers_refused` (both markers in question, detail, option and an `other:`
+  answer are refused; the owner's text around the block is preserved; a later valid
+  answer succeeds and the page still parses).
 - `test_other_answer_stored_and_validated` (`other: use the slower path` accepted;
   empty, newline or 501 characters refused; refused on a hold),
-  `test_answer_with_old_version_is_refused`, `test_cli_answer_unchanged`,
-  `test_override_of_tech_decision_records_owner_answer`.
-- `test_cli_and_dashboard_pause_share_one_path`, `test_tick_spawn_refused_while_locked`,
-  `test_spawn_detached_leaves_no_child_fds`, `test_wrapper_wakes_tick_through_spawn_detached`.
-- `test_every_post_route_refuses_without_token_and_origin`, `test_post_body_limits_and_unknown_fields`,
-  `test_double_post_records_one_answer`, `test_stale_token_after_restart_is_refused`,
-  `test_unknown_question_key_is_refused`, `test_tick_debounce`,
+  `test_answer_with_old_version_is_refused`, `test_reask_between_check_and_lock_is_refused`,
+  `test_cli_answer_unchanged`, `test_override_of_tech_decision_records_owner_answer`,
+  `test_keep_held_then_approve`, `test_page_sync_rechecks_under_lock` (the page is edited
+  between read and apply), `test_duplicate_same_answer_is_already_answered`,
+  `test_failed_effect_is_finished_on_retry` (failure injected right after the page save:
+  message says saved but not finished; final page, slice phase and event count 1 after
+  the retry), `test_version_digest_fixtures` (pinned outputs for a view and a record).
+- `test_override_wakes_skippable_tick` (a tech override changes the digest; the pass gets
+  the saved answer text), `test_other_instruction_reaches_snapshot`.
+- `test_cli_and_dashboard_pause_share_one_path`, `test_tick_running_is_passive` (GET and
+  HEAD with `tick.lock` absent and present create nothing, and a tick arriving during a
+  poll still runs), `test_spawn_detached_leaves_no_child_fds`,
+  `test_wrapper_wakes_tick_through_spawn_detached`, `test_spawn_failure_reports_and_allows_retry`,
+  `test_overlapping_tick_posts_spawn_once`.
+- `test_every_post_route_refuses_bad_token_or_origin`, `test_post_body_contract`
+  (negative or non-numeric length, duplicate `choice`, `choice` with `other=`, neither
+  mode, unknown field, foreign scheme, foreign port; each with all other checks valid),
+  `test_double_post_records_one_answer`, `test_stale_token_after_restart_is_refused`
+  (server A's HTML is not reused by server B with identical state: no ETag, `no-store`;
+  the refreshed form submits), `test_unknown_question_key_is_refused`, `test_tick_debounce`,
   `test_get_routes_write_nothing`, `test_post_success_json_and_redirect`,
   `test_each_write_appends_its_event` (`via=dashboard`), `test_post_log_has_no_values`,
   `test_server_env_is_not_headless` (the detached server child has no
   `DEVLOOP_HEADLESS`).
 - `test_decisions_drawer_has_actions` (Go with recommended, each option, free-text box,
-  Copy for Claude with the questions file path in its text), `test_decided_for_you_list`,
+  Copy for Claude with `notes.questions_path` in its text, forms carry `data-key` and
+  `data-version`), `test_hold_drawer_offers_only_two_choices`, `test_decided_for_you_list`
+  (each entry has a question source),
   `test_controls_render_paused_and_tick_running`.
 - JS (no pytest runner; VERIFY in Task 13): drawers by click and hash, kept across polls;
-  form input kept across swaps; fetch submit shows the server message; copy fallback on a
+  a draft kept across swaps of the same version, and a re-ask between typing and Save
+  shows the changed notice and blocks Save until the owner confirms; fetch submit shows the server message; copy fallback on a
   LAN IP; 390 px with no horizontal scroll, both themes.
 
 ## Placement
+
+The repo has no CODEMAP (base plan, "Placement"); placement follows that plan's table.
 
 | New file | Directory | Why there | Sits beside |
 |---|---|---|---|
@@ -583,7 +683,7 @@ Control (S3):
 | `live.py` | `devloop/dash/` | live view sections; `view.py` is 640 lines | `view.py` |
 | `render_live.py` | `devloop/dash/` | live HTML; `render.py` is 485 lines | `render.py` |
 | `render_control.py` | `devloop/dash/` | decisions drawer, decided list, controls | `render.py` |
-| `actions.py` | `devloop/dash/` | POST checks and `ACTIONS` handlers | `server.py` |
+| `actions.py` | `devloop/dash/` | POST checks and handlers named in `ROUTES` | `server.py` |
 | `conftest.py`, `transcript_fixture.py`, `test_transcript.py`, `test_live.py`, `test_controls.py` | `tests/devloop/dash/` | `tests/devloop/` is over the fan-out bar | `tests/devloop/dash_fixture.py` |
 
 Present consumers: `transcript.py` (S1) is used by `live.py` (S2); the plan pairs them under
@@ -593,7 +693,7 @@ has its caller in the same slice.
 Expected size: 5 new source modules (about 330, 280, 280, 220, 200 lines); 5 new test
 files (about 1 100 lines); edits to `view.py`, `server.py`, `render.py`, `dash.css`
 (rewrite, about 300 lines), `dash.js` (about +180), `lifecycle.py`, `runs.py`, `wrap.py`,
-`status.py`, `notes.py`, `store.py`, `tick.py`, `state_cli.py`,
+`status.py`, `notes.py`, `store.py`, `tick.py`, `state_cli.py`, `snapshot.py`, `project.py`,
 `skills/dev-loop/TICK.md`, `PLAYBOOK.md`, `SKILL.md`,
 `dash_fixture.py`, existing dash tests, `mutations.sh`. New public names: those in each
 task's Interfaces block.
@@ -604,7 +704,7 @@ task's Interfaces block.
 |---|---|---|---|---|
 | S1 transcript reader | 1, 2, 3 | R1 | `transcript.py`, registry fields | Outside reviewer; T1 = `pytest tests/devloop/dash tests/devloop/test_dash_view.py tests/devloop/test_runs_dispatch.py tests/devloop/test_wrap.py` plus ruff |
 | S2 mission-control page | 4, 5, 6, 7, 8 | R1 | schema 2, live model, new page, drawers, leak sentry; one PR; every commit serves 200 on `/` and `/fragment` | Outside reviewer; T1 = `pytest tests/devloop -k dash` plus `tests/devloop/dash`; dash mutations; VERIFY record |
-| S3 loop control | 9, 10, 11, 12, 13 | R2 | question class and detail, free-text answers, one write path, POST actions, decisions drawer, controls | Senior reviewer then Outside reviewer; T1 = `pytest tests/devloop -k "dash or notes or tick or state or wrap or status"`; control mutations; VERIFY record |
+| S3 loop control | 9, 9b, 10, 11, 12, 13 | R2 (confirmed) | question class and detail, free-text answers, one write path, POST actions, decisions drawer, controls | Senior reviewer then Outside reviewer; T1 = `pytest tests/devloop -k "dash or notes or tick or state or wrap or status or snapshot"`; control mutations; VERIFY record |
 
 T2 at each gate runs T1 on the exact head plus that slice's mutations. S3 touches a
 serialized format (questions page) and a trust boundary, so its gate escalates to the full
@@ -621,7 +721,13 @@ suite once on its merge head, diffed against the stored main baseline.
 - **Stream-json or Codex text changes shape.** Unknown fields and lines are ignored; cards
   fall back to elapsed time.
 - **An owner answer lands on the wrong version, twice, or from a stale tab.** Version check
-  inside the questions lock; per-process token; same-origin check; fixed refusal messages.
+  inside the questions lock; drafts bound to `(key, version)`; per-process token with
+  `no-store` HTML; same-origin check; fixed refusal messages.
+- **An answer is saved but the hold is not released.** Idempotent commit order; a retry or
+  page sync finishes the effect; the message says what happened.
+- **The owner answers and the tick does not notice.** Recent answers and their versions
+  are in the snapshot and digest.
+- **Pasted text breaks the questions page.** Managed markers are refused in every field.
 - **The dashboard and the CLI disagree on pause or answers.** One function each, shared;
   `test_cli_and_dashboard_pause_share_one_path`.
 - **A GET starts writing.** `test_get_routes_write_nothing` walks every GET route.
@@ -659,6 +765,34 @@ decisions:
 - V2-LOG: no inner cache lock (the server serializes builds); `read_states` passes one
   mapping to cards, feed and KPI; the name assertion is scoped to labels and words.
 
+Outside reviewer, plan round 2: GO-WITH-FIXES. Folded with coordinator decisions (R2 for S3
+confirmed):
+- V1 markers in free text: refused in every persisted field (`test_managed_markers_refused`).
+- V1 stale drafts: forms and drafts bound to `(key, version)`; explicit confirm after a
+  re-ask.
+- V1 answered rules: ordered rules under the lock; duplicates "Already answered"; tech
+  override and `keep-held` to `approve` allowed; page sync rechecks.
+- V1 failed answer: idempotent commit order, truthful message, retry finishes.
+- V1 tick input: recent answers and versions in snapshot and digest.
+- V1 GET-side tick probe: passive `/proc/locks` read; no lock file created.
+- V1 "Run a tick now": serialized check and spawn, debounce only on success, spawn failure
+  reported; the wrapper keeps best effort at its call site.
+- V1 POST parsing: nonnegative length, blanks kept, one value per field, one answer mode,
+  scheme, host and port compared.
+- V1 stale token: `no-store` and no ETag on token-bearing HTML.
+- V1 override and hold forms: `qkey` seal kind, override sources, hold forms with two
+  choices, copy path from `notes.questions_path`.
+- V1 rotation: cursor reset on a new generation, then the cold-tail start.
+- V1 Codex positive control: real `bash -lc` shape gives `?`; the sentry uses the Codex
+  model and tool count from a sanitized fixture.
+- V1 Task 9 gate: old auto-decision tests move to `klass="tech"` with the new event and
+  wording; persisted `Wait: no` records keep their meaning.
+- DESIGN: one `ROUTES` table for POST; observable bad-token and bad-origin tests; lock and
+  reader mutations made decisive; the `Kind(...)` mutant updated; `canonical_digest`
+  shared.
+- V2-LOG folded: CODEMAP note in Placement; S2 asserts no `detail` (it lands in Task 9);
+  the config path check in Task 4.
+
 ## Task 1: Registry fields, safe extractors and the Claude line parser
 
 **Files:**
@@ -675,7 +809,7 @@ decisions:
   codex-builder `codex`/`codex-text`; codex-fix `codex`/`outside`; test, duty
   `script`/`none`. `wrap.CODEX_KINDS = tuple(k for k, s in runs.KINDS.items() if s.harness
   == "codex")`.
-- `transcript.TOOL_TAGS`, `TOOL_KINDS`, `PUBLIC_COMMANDS`, `CODEX_SEARCH`, `CODEX_READ`;
+- `transcript.TOOL_TAGS`, `TOOL_KINDS`, `PUBLIC_COMMANDS`;
   `safe_target(name: object) -> str`; `shell_word(cmd: object) -> str`;
   `Call = namedtuple("Call", "tag target at call_id")`;
   `ClaudeFacts` dataclass: `calls: list[Call]`, `results: list[tuple[str, bool]]`,
@@ -692,7 +826,9 @@ decisions:
 - [ ] **Step 2: Run** `pytest tests/devloop/dash/test_transcript.py -q`. Expected: FAIL,
   `ModuleNotFoundError: devloop.dash.transcript`.
 - [ ] **Step 3: Implement** as in "Claude and Codex parsing". No file access in this task.
-  Update every `Kind(...)` in `runs.py`.
+  Update every `Kind(...)` in `runs.py`, and the exact-text `Kind(...)` mutant in
+  `tests/devloop/mutations.sh` (the `"test": Kind("tester", ...)` entry) so it does not go
+  `STALE`.
 - [ ] **Step 4: Run** the file plus `pytest tests/devloop/test_wrap.py
   tests/devloop/test_runs_dispatch.py tests/devloop/test_dash_shared.py -q`, ruff check and
   format. Expected: PASS.
@@ -757,10 +893,12 @@ st = os.stat(path)                    # OSError: state starting/none (outside fo
 if identity, size and mtime unchanged: return entry
 with open(path, "rb") as fh:          # OSError: state unreadable
     fs = os.fstat(fh.fileno()); ident = (fs.st_dev, fs.st_ino); end = fs.st_size
-    if entry.ident and (ident != entry.ident or end < entry.offset): discontinuity(entry)
+    if entry.ident and (ident != entry.ident or end < entry.offset):
+        new_generation(entry)         # offset = 0, counters and parser reset, partial
     if (entry.offset == 0 and end > TAIL_BYTES) or end - entry.offset > STEP_BYTES:
         start = end - TAIL_BYTES; discontinuity(entry) if entry.offset
         fh.seek(start - 1); aligned = fh.read(1) == b"\n"; skip_to_newline = not aligned
+    elif entry.offset == 0: start = 0
     else: start = entry.offset
     fh.seek(start); data = fh.read(end - start)
 entry.offset = start + len(data); entry.mtime_ns = fs.st_mtime_ns; entry.ident = ident
@@ -791,15 +929,17 @@ each new call: append to entry.calls and cache.feed_log with label
 - Produces: `SCHEMA = 2`; `status.EventDesc = namedtuple("EventDesc", "words tag")`,
   `status.EVENTS`, `EVENT_KINDS = tuple(EVENTS)`, `event_tag(kind) -> str | None`;
   `ctx.events` read once; needs_you fields `answer_key`, `detail`, `klass`, `version`
-  (detail null, klass `product`, version from `notes.question_version` once Task 9 adds it;
-  until then null); scalar kind `owner_text` replacing `line` for question fields;
+  (detail null, klass `product`, version null until Task 9; S2 tests assert `detail` is
+  null and nothing more); scalar kinds `owner_text` (replacing `line` for question
+  fields) and `qkey`; `store.canonical_digest(obj) -> str` with `view.version_of` using it;
   `render._needs` updated for the new fields and the hold hint.
 
 - [ ] **Step 1: Write the failing tests** `test_schema_is_two`,
   `test_html_routes_serve_200_and_schema_2`, `test_owner_question_shown_in_full_with_real_hint`,
   `test_hold_answer_uses_hold_key` (hint part), `test_every_event_kind_has_a_tag`,
-  `test_activity_and_feed_read_events_once` (activity part); update the schema 1 pin
-  (`tests/devloop/test_dash_server.py:56`).
+  `test_activity_and_feed_read_events_once` (activity part),
+  `test_view_build_creates_no_directories`, `test_version_digest_fixtures` (view part);
+  update the schema 1 pin (`tests/devloop/test_dash_server.py:56`).
 - [ ] **Step 2: Run** `pytest tests/devloop -k dash -q`. Expected: FAIL.
 - [ ] **Step 3: Implement.** Hold items read their `hold:KEY` record when present for
   question, options and recommended. Hint copy: "Answer: devloop-state PROJECT answer
@@ -901,7 +1041,8 @@ each new call: append to entry.calls and cache.feed_log with label
 - Modify: `tests/devloop/test_dash_server.py`, `tests/devloop/mutations.sh`
 
 - [ ] **Step 1: Write** `test_transcript_secrets_reach_no_route` as class 1 (asserts 200,
-  positive facts, absences). Apply the class 1 mutation by hand: the test fails on the
+  positive facts including the Codex card's model and tool count from the sanitized
+  real-shape fixture, absences). Apply the class 1 mutation by hand: the test fails on the
   absence assertion with a 200 response. Restore.
 - [ ] **Step 2: Run** `pytest tests/devloop/test_dash_server.py -q`. Expected: PASS.
 - [ ] **Step 3:** Add `mutate` entries for classes 1, 5 (drawer part), 9 (registry and event
@@ -922,13 +1063,18 @@ each new call: append to entry.calls and cache.feed_log with label
 **Files:**
 - Modify: `devloop/notes.py`, `devloop/state_cli.py`,
   `devloop/status.py`, `skills/dev-loop/TICK.md`, `skills/dev-loop/PLAYBOOK.md`,
-  `skills/dev-loop/SKILL.md`
-- Test: `tests/devloop/dash/test_controls.py`, `tests/devloop/test_notes.py`
+  `skills/dev-loop/SKILL.md`, `devloop/dash/view.py` (detail, klass, version filled)
+- Test: `tests/devloop/dash/test_controls.py`, `tests/devloop/test_notes.py` (the
+  auto-decision cases at `tests/devloop/test_notes.py:117` and the Slack wording at
+  `:481` move to `klass="tech"`, `question-decided` and the new wording)
 
 **Interfaces:**
 - Produces: `notes.ask(project, key, *, question, options, recommended, wait=False,
   detail="", klass="product") -> dict` (`klass` in `("tech", "product")`; product when
-  `wait`; `wait` stored as `klass == "product"`); `notes.question_version(q: dict) -> str`;
+  `wait`; `wait` stored as `klass == "product"`; a record without `Class` reads its class
+  from `Wait`: `no` is tech, `yes` is product, and is rewritten unchanged);
+  `notes.question_version(q: dict) -> str` (via `store.canonical_digest`);
+  `notes._line` refuses the managed markers;
   `notes.answer(project, key, choice, *, expect_version=None, via="cli") -> None`;
   `notes.OTHER_PREFIX = "other: "`; `notes.valid_choice(q, choice) -> bool`;
   questions page fields `Detail` (`_line(detail, 1000)`) and `Class`; events `question-decided`
@@ -937,14 +1083,16 @@ each new call: append to entry.calls and cache.feed_log with label
 - Slack (`_post_question`): tech reads "Tech lead decided KEY: OPTION. Override on the
   dashboard."; product keeps today's waiting wording.
 
-- [ ] **Step 1: Write the failing tests** S3 notes list (`test_ask_records_class_and_detail`
-  to `test_override_of_tech_decision_records_owner_answer`, `test_wait_flag_forces_product`)
-  in `tests/devloop/dash/test_controls.py`; keep `tests/devloop/test_notes.py` green.
+- [ ] **Step 1: Write the failing tests** `test_ask_records_class_and_detail`,
+  `test_tech_question_is_decided_now`, `test_product_question_waits`,
+  `test_class_defaults_to_product`, `test_old_questions_page_class_from_wait`,
+  `test_old_wait_no_record_survives_rewrite`, `test_wait_flag_forces_product`,
+  `test_managed_markers_refused`, `test_version_digest_fixtures` (record part) in
+  `tests/devloop/dash/test_controls.py`; update the old auto-decision tests in
+  `tests/devloop/test_notes.py` as listed above.
 - [ ] **Step 2: Run** `pytest tests/devloop/dash/test_controls.py tests/devloop/test_notes.py
   -q`. Expected: FAIL.
-- [ ] **Step 3: Implement.** The version check, the answered check and the choice check run
-  inside `store.locked(_lock_for(project))` in `_apply_answer`. `read_answers` uses
-  `valid_choice` too. Docs: TICK step 10 says to pass `--class`, `--detail` (what is
+- [ ] **Step 3: Implement** the class, detail, marker and version parts. Docs: TICK step 10 says to pass `--class`, `--detail` (what is
   happening, why it matters, what each option does, in short plain sentences), with the
   product and tech definitions above and "when unsure, product". PLAYBOOK gets: the
   question row says an `other: <text>` answer is the owner's instruction and the tick
@@ -955,8 +1103,41 @@ each new call: append to entry.calls and cache.feed_log with label
   and an Architect tech review for a central handler), modelled on the Decoy playbook rows.
   SKILL.s answer section names the dashboard.
 - [ ] **Step 4: Run** `pytest tests/devloop -k "notes or dash or state" -q`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(devloop): classify owner questions and accept typed answers`,
-  last line `cam`.
+- [ ] **Step 5: Commit** `feat(devloop): classify owner questions and add question
+  versions`, last line `cam`.
+
+## Task 9b: Answer rules, idempotent effects and tick input
+
+**Files:**
+- Modify: `devloop/notes.py` (`_apply_answer`, `answer`, `read_answers`, `Answered` field),
+  `devloop/snapshot.py` (`_questions`, digest), `devloop/state_cli.py`
+- Test: `tests/devloop/dash/test_controls.py`, `tests/devloop/test_notes.py`,
+  `tests/devloop/test_snapshot_status.py`
+
+**Interfaces:**
+- Consumes: Task 9.
+- Produces: `notes.answer(project, key, choice, *, expect_version=None, via="cli") ->
+  str` (the fixed outcome message); `notes.OTHER_PREFIX = "other: "`;
+  `notes.valid_choice(q, choice) -> bool`; `notes.AnswerPending(NotesError)` (saved, effect
+  not finished); the `Answered:` page field; `snapshot._questions` returns open questions
+  plus `recent_answers(project, since)`; the digest's stable part gains
+  `"questions": sorted((key, version))` for both.
+
+- [ ] **Step 1: Write the failing tests** `test_other_answer_stored_and_validated`,
+  `test_answer_with_old_version_is_refused`, `test_reask_between_check_and_lock_is_refused`,
+  `test_cli_answer_unchanged`, `test_override_of_tech_decision_records_owner_answer`,
+  `test_keep_held_then_approve`, `test_page_sync_rechecks_under_lock`,
+  `test_duplicate_same_answer_is_already_answered`, `test_failed_effect_is_finished_on_retry`,
+  `test_override_wakes_skippable_tick`, `test_other_instruction_reaches_snapshot`.
+- [ ] **Step 2: Run** `pytest tests/devloop/dash/test_controls.py tests/devloop/test_notes.py
+  tests/devloop/test_snapshot_status.py -q`. Expected: FAIL.
+- [ ] **Step 3: Implement** the answer rules and commit order in Design notes, all checks
+  inside `store.locked(_lock_for(project))`. `read_answers` passes the observed answer and
+  version. The CLI prints the outcome message.
+- [ ] **Step 4: Run** `pytest tests/devloop -k "notes or dash or state or snapshot or tick"
+  -q`. Expected: PASS.
+- [ ] **Step 5: Commit** `feat(devloop): finish owner answers safely and show them to the
+  tick`, last line `cam`.
 
 ## Task 10: One write path for pause, resume and tick
 
@@ -967,18 +1148,20 @@ each new call: append to entry.calls and cache.feed_log with label
 
 **Interfaces:**
 - Produces: `store.set_paused(project, on: bool, via: str) -> None` (touch or unlink
-  `PAUSE`, append `loop-paused` or `loop-resumed`); `tick.lock_held(project) -> bool`;
-  `tick.spawn_detached(project, via: str) -> None` (the old `wrap._wake_tick` body, output
-  appended to `cron.log`, event `tick-requested` when `via != "wrapper"`); the CLI
+  `PAUSE`, append `loop-paused` or `loop-resumed`); `tick.running(project, proc="/proc")
+  -> bool` (passive: `os.stat` of `tick.lock`, then its `MAJ:MIN:INODE` among FLOCK lines
+  of `/proc/locks`; never opens the lock file); `tick.spawn_detached(project, via: str) ->
+  None` (the old `wrap._wake_tick` body, output appended to `cron.log`, event
+  `tick-requested` when `via != "wrapper"`; raises `OSError` on a failed `Popen`); the CLI
   `pause`/`resume` call `set_paused(..., via="cli")`; `wrap.finish` calls
-  `tick.spawn_detached(project, "wrapper")`; `lifecycle` drops `DEVLOOP_HEADLESS` from the
+  `tick.spawn_detached(project, "wrapper")` inside its own `try/except OSError`; `lifecycle` drops `DEVLOOP_HEADLESS` from the
   server child env.
 
 - [ ] **Step 1: Write the failing tests** `test_cli_and_dashboard_pause_share_one_path`,
-  `test_tick_spawn_refused_while_locked` (lock part), `test_spawn_detached_leaves_no_child_fds`,
+  `test_tick_running_is_passive`, `test_spawn_detached_leaves_no_child_fds`,
   `test_wrapper_wakes_tick_through_spawn_detached`, `test_server_env_is_not_headless`.
 - [ ] **Step 2: Run** `pytest tests/devloop/dash/test_controls.py -q -k "pause or spawn or
-  wakes or headless"`. Expected: FAIL.
+  wakes or headless or passive"`. Expected: FAIL.
 - [ ] **Step 3: Implement** by moving code, leaving no old copy or alias.
 - [ ] **Step 4: Run** `pytest tests/devloop -k "tick or wrap or state or dash" -q`. Expected:
   PASS.
@@ -993,24 +1176,38 @@ each new call: append to entry.calls and cache.feed_log with label
 - Test: `tests/devloop/dash/test_controls.py`, `tests/devloop/test_dash_server.py`
 
 **Interfaces:**
-- Produces: `server.ROUTES: dict[tuple[str, str], handler]`; `Handler.do_POST`;
-  `actions.ACTIONS = {"/act/answer": answer, "/act/pause": pause, "/act/resume": resume,
-  "/act/tick": run_tick}`; `actions.check_post(handler) -> dict[str, str]` (token via
-  `hmac.compare_digest`, origin, `Content-Length <= POST_BYTES`, `parse_qs` with
-  `strict_parsing=True`, `max_num_fields=8`, exact field set per action);
+- Produces: `server.Route = namedtuple("Route", "handler fields")`;
+  `server.ROUTES: dict[tuple[str, str], Route]` holding the GET routes (`fields=None`) and
+  the four POST routes (`fields` = required names plus, for answer, the one-of pair
+  `("choice", "other")`); `Handler.do_POST` (always through `_post`);
+  `actions.check_post(handler, route) -> dict[str, str]` (length: digits only, 0 to
+  `POST_BYTES`; token via `hmac.compare_digest`; origin: scheme `http`, host and effective
+  port equal to `Host`; `parse_qs(body, keep_blank_values=True, strict_parsing=True,
+  max_num_fields=8)`; every field exactly one value; exactly the route's fields; exactly
+  one answer mode); handlers `actions.answer`, `pause`, `resume`, `run_tick`;
   `actions.Refused(code: int, message: str)`; `DashServer.token: str`,
-  `DashServer.last_tick: float`. CSP `form-action 'self'`. Each handler returns a fixed
-  message; `_send` writes JSON or a 303 by `Accept`.
+  `DashServer.tick_lock: threading.Lock`, `DashServer.last_tick: float | None`. `/` and
+  `/fragment` send `Cache-Control: no-store` and no ETag; `/api/state` keeps its ETag.
+  CSP `form-action 'self'`. `_send` writes JSON or a 303 by `Accept`.
 
-- [ ] **Step 1: Write the failing tests** S3 server list
-  (`test_every_post_route_refuses_without_token_and_origin` to
-  `test_post_log_has_no_values`) and update `test_only_known_routes_and_methods` and
-  `test_every_response_sends_security_headers` (POST and 303 included).
+- [ ] **Step 1: Write the failing tests** `test_every_post_route_refuses_bad_token_or_origin`,
+  `test_post_body_contract`, `test_double_post_records_one_answer`,
+  `test_stale_token_after_restart_is_refused`, `test_unknown_question_key_is_refused`,
+  `test_tick_debounce`, `test_spawn_failure_reports_and_allows_retry`,
+  `test_overlapping_tick_posts_spawn_once` (two threads post at once; one spawn observed),
+  `test_get_routes_write_nothing`, `test_post_success_json_and_redirect`,
+  `test_each_write_appends_its_event`, `test_post_log_has_no_values`,
+  `test_server_env_is_not_headless`; update `test_only_known_routes_and_methods`,
+  `test_every_response_sends_security_headers` (POST and 303 included), and the ETag tests
+  (`test_etag_304_on_unchanged_poll`, `test_etag_changes_after_slice_move`) to use
+  `/api/state`.
 - [ ] **Step 2: Run** `pytest tests/devloop/dash/test_controls.py tests/devloop/test_dash_server.py
   -q`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `_post` order: method and path in `ACTIONS` (else 404), size,
-  token, origin, fields, then the handler; `NotesError` and `Refused` map to the fixed
-  messages in Exit paths; any other exception gives the fixed 500 and a class-name log.
+- [ ] **Step 3: Implement.** `_post` order: route lookup (else 404), length, token,
+  origin, fields, then the handler; `run_tick` holds `tick_lock` across the running check,
+  the debounce check and the spawn, and sets `last_tick` only after a spawn returns;
+  `NotesError`, `AnswerPending` and `Refused` map to the fixed messages in Exit paths; any
+  other exception gives the fixed 500 and a class-name log.
 - [ ] **Step 4: Run** `pytest tests/devloop -k dash -q`, `pytest tests/devloop/dash -q`.
   Expected: PASS.
 - [ ] **Step 5: Commit** `feat(devloop): let the owner act from the dashboard`, last line
@@ -1027,20 +1224,26 @@ each new call: append to entry.calls and cache.feed_log with label
 
 **Interfaces:**
 - Produces: `render_control.question_sources(v, token, copy_path) -> str` (one hidden
-  `#qs-KEY` per open owner question: question, detail, options with the recommended one
-  marked, "Go with recommended" form, one form per other option, free-text form "Your
-  answer" with Save, "Copy for Claude" button with `data-copy` text);
+  `#qs-KEY` per open owner question and per `decided` entry: question, detail, options
+  with the recommended one marked, "Go with recommended" form, one form per other option,
+  free-text form "Your answer" with Save (not for holds, which show only `approve` and
+  `keep-held`), "Copy for Claude" button with `data-copy` text; every form carries the
+  real `qkey`, `data-key` and `data-version`, and its textarea id is
+  `ta-KEY-VERSION`); `copy_path` is `str(notes.questions_path(project))`;
   `decided_list(v, token) -> str` ("Decided for you", each with Override opening the same
   drawer kind); `controls(v, token) -> str` (Pause or Resume, "Run a tick now", disabled
   with "A tick is running" while `tick_running`). `render_page` and `render_fragment` take
   `token` and `copy_path` from the server, never from the view.
 - JS: `#q=KEY` opens the question drawer; forms submit through `fetch` with `Accept:
-  application/json` and show the message in the drawer; the drawer's typed text survives
-  swaps (kept by textarea `id`); copy uses `navigator.clipboard.writeText` when
+  application/json` and show the message in the drawer; a draft survives swaps only while
+  the version is unchanged; on a new version the old form and draft stay, the changed
+  notice shows and Save is disabled until "Use my text with the new version" is clicked; copy uses `navigator.clipboard.writeText` when
   `isSecureContext`, else selects a read-only `<textarea>` and shows "Press Ctrl+C to
   copy."; a question drawer whose source is gone reads "This question was answered."
 
 - [ ] **Step 1: Write the failing tests** `test_decisions_drawer_has_actions`,
+  `test_hold_drawer_offers_only_two_choices`, `test_hold_answer_uses_hold_key` (submit the
+  rendered hold form), `test_override_form_round_trips` (submit a rendered override),
   `test_decided_for_you_list`, `test_controls_render_paused_and_tick_running`.
 - [ ] **Step 2: Run** `pytest tests/devloop/dash/test_controls.py -q -k "drawer or decided or
   controls"`. Expected: FAIL.
@@ -1055,15 +1258,19 @@ each new call: append to entry.calls and cache.feed_log with label
 **Files:**
 - Modify: `tests/devloop/mutations.sh`
 
-- [ ] **Step 1:** Add `mutate` entries for classes 3 (GET write), 4, 5 (hold key), 6 (POST
-  body), 7 (version outside the lock), 9 (pause path, `CODEX_KINDS`) and 10 (default
-  class), each with its test.
+- [ ] **Step 1:** Add `mutate` entries for classes 3 (GET write; answer commit order), 4,
+  5 (`answer_key` through `plain`), 6 (POST body: drop `keep_blank_values`), 7 (version
+  outside the lock, caught by `test_reask_between_check_and_lock_is_refused`), 9 (pause
+  path, `CODEX_KINDS`, a second digest implementation in `notes`) and 10 (missing `Class`
+  read as product), each with its test. Confirm each fails on its intended assertion, not
+  an import or setup error.
 - [ ] **Step 2: Run** `tests/devloop/mutations.sh`. Expected: every entry killed, none
   `RED-BASE`.
 - [ ] **Step 3: VERIFY in a browser** on the fixture server at 1440 px and 390 px, light
   and dark: answer a product question with "Go with recommended" (event and page update);
-  double click (one answer, "Already answered"); answer from a tab opened before the tick
-  re-asked (refused, "changed"); type an `other:` answer; override a tech decision; Pause,
+  double click (one answer, "Already answered"); type a draft, re-ask the question, wait
+  for a poll, then Save (blocked until confirmed); answer from a tab opened before the tick
+  re-asked (refused, "changed"); approve a hold answered `keep-held`; type an `other:` answer; override a tech decision; Pause,
   Resume, "Run a tick now" twice (second refused); restart the server and post from the
   old tab ("out of date"); "Copy for Claude" on loopback and on the LAN IP (fallback).
   Record steps and screenshots in the PR body.
