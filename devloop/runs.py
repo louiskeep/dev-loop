@@ -304,7 +304,17 @@ def parse_result(run_dir: Path, kind: str) -> Result:
     if status not in STATUSES:
         status = "FAILED"
     elif status in ("DONE", "BLOCKED") and ex.get("code") != 0:
-        status = "FAILED"
+        # A test that ran and failed (exit 1) is a real NO-GO, not a broken run: it must
+        # replace any earlier GO at that level and head.
+        red_test = (
+            kind == "test"
+            and status == "DONE"
+            and verdict == "NO-GO"
+            and ex.get("code") == 1
+            and ex.get("reason") == "exit"
+        )
+        if not red_test:
+            status = "FAILED"
     elif (
         status == "DONE"
         and KINDS[kind].reader not in ("claude", "exit")
@@ -532,6 +542,8 @@ def _prepare_test(project, cfg, s, req, level, select, covers, wt):
         raise Refused("no command configured for this test level")
     if not s["head"]:
         raise Refused("slice has no head")
+    if select and level in ("t2", "full"):
+        raise Refused(f"{level} runs the whole level; a selection cannot earn it")
     req.update(level=level, head=s["head"], purpose="code", select=list(select))
     req["argv_t"] = list(spec_t["argv"]) + [
         x for item in select for x in ("--select", item)

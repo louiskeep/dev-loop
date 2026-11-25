@@ -515,6 +515,44 @@ def test_infra_exit_counts_no_failure(proj, ready, brief):
     assert s["failures"] == {} and s["evidence"] == {}
 
 
+def test_red_test_rerun_replaces_an_earlier_go(proj, ready, brief):
+    key, _, head = ready("VERIFY")
+    green = go(proj, brief, "test", key, level="t1")
+    finish(proj, green, code=0, result=res("DONE", "GO", head))
+    runs.apply_run(proj, green)
+    assert slices.load(proj, key)["evidence"][head]["t1"]["verdict"] == "GO"
+    red = go(proj, brief, "test", key, level="t1")
+    finish(proj, red, code=1, result=res("DONE", "NO-GO", head))
+    runs.apply_run(proj, red)
+    s = slices.load(proj, key)
+    assert s["evidence"][head]["t1"]["verdict"] == "NO-GO"
+    assert s["failures"] == {}
+
+
+def test_red_full_run_is_no_go_for_every_covered_slice(proj, ready, brief):
+    key, h1, top, h2 = _train(proj, ready, brief)
+    r = go(proj, brief, "test", top, level="full", covers=[key])
+    finish(proj, r, code=0, result=res("DONE", "GO", h2))
+    runs.apply_run(proj, r)
+    assert slices.load(proj, key)["evidence"][h1]["full"]["verdict"] == "GO"
+    r = go(proj, brief, "test", top, level="full", covers=[key])
+    finish(proj, r, code=1, result=res("DONE", "NO-GO", h2))
+    runs.apply_run(proj, r)
+    assert slices.load(proj, key)["evidence"][h1]["full"]["verdict"] == "NO-GO"
+    assert slices.load(proj, top)["evidence"][h2]["full"]["verdict"] == "NO-GO"
+
+
+def test_selection_is_refused_for_t2_and_full_but_not_t1(proj, ready, brief, cfg_edit):
+    cfg_edit(lambda c: c["tests"].update(t2={"argv": ["x"]}, full={"argv": ["x"]}))
+    for level in ("t2", "full"):
+        key, _, _ = ready("VERIFY")
+        with pytest.raises(runs.Refused, match="whole level"):
+            go(proj, brief, "test", key, level=level, select=["a::b"])
+    key, _, _ = ready("VERIFY")
+    r = go(proj, brief, "test", key, level="t1", select=["a::b"])
+    assert runs.read_request(proj, r)["select"] == ["a::b"]
+
+
 def test_failed_twice_parks(proj, ready, brief):
     key, _, _ = ready()
     for i in range(2):

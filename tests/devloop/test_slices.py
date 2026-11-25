@@ -863,3 +863,19 @@ def test_covers_must_record_the_members_current_head(proj, ready, mk_run):
     slices.record_evidence(proj, k, "full", "GO", "full-list", head="a1")
     with pytest.raises(slices.TransitionError):
         slices.move(proj, k, "GATE", "x")
+
+
+def test_gate_rejects_full_evidence_from_a_selected_run(proj, ready, cfg_edit, give):
+    cfg_edit(lambda c: c.update(tests={"t2": {"argv": ["x"]}}))
+    k = ready("R1")
+    slices.set_fields(proj, k, full_suite_required=True)
+    give(proj, k, "t2", "t2r")
+    give(proj, k, "full", "fr")
+    d = store.run_dir(proj, "fr")
+    req = store.read_json(d / "request.json")
+    req["select"] = ["tests/test_one.py::test_a"]
+    os.chmod(d / "request.json", 0o644)
+    store.write_json(d / "request.json", req)
+    store.register_request(proj, "fr")
+    with pytest.raises(slices.TransitionError, match="selection"):
+        slices.move(proj, k, "GATE", "x")

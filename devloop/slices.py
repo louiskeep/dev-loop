@@ -834,7 +834,7 @@ def _test_item(project, s, level, label):
     e = (s["evidence"].get(s["head"]) or {}).get(level) if s["head"] else None
     if not e or e["verdict"] != "GO":
         return (label, False)
-    problem, _ = _verify_run(
+    problem, req = _verify_run(
         project,
         s,
         e,
@@ -842,6 +842,8 @@ def _test_item(project, s, level, label):
         expect={"level": level, "head": s["head"]},
         covers_ok=(level == "full"),
     )
+    if problem is None and level in ("t2", "full") and req.get("select"):
+        problem = "the run tested a selection, not the whole level"
     return _item(label, problem)
 
 

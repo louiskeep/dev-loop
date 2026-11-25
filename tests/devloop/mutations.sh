@@ -159,6 +159,12 @@ mutate "merge move re-checks the gate" devloop/slices.py \
 mutate "no-verdict resumes forever" devloop/runs.py \
   'reason == "no-verdict" and count < 3' 'reason == "no-verdict"' \
   $T/test_runs.py::test_third_no_verdict_after_a_resume_is_owner_gated
+mutate "a red test is a failed run" devloop/runs.py \
+  '        if not red_test:' '        if True:' \
+  $T/test_runs.py::test_red_test_rerun_replaces_an_earlier_go
+mutate "a selection earns t2 or full" devloop/runs.py \
+  '    if select and level in ("t2", "full"):' '    if False:' \
+  $T/test_runs.py::test_selection_is_refused_for_t2_and_full_but_not_t1
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed
