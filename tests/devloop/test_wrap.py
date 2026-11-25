@@ -160,6 +160,25 @@ def test_transcript_go_cannot_supply_verdict(proj, tmp_path, monkeypatch):
     assert result(rd)["status"] == "FAILED"
 
 
+def test_verdict_must_be_the_last_line_of_the_final_message(
+    proj, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "final")
+    monkeypatch.setenv("FAKE_CLAUDE_FINAL", "VERDICT: GO\nbut I did not finish")
+    rd = mk(proj, tmp_path, claude_argv(), kind="dennis", reader="claude-verdict")
+    wrap.run(proj, "r1")
+    assert result(rd)["status"] == "FAILED"
+
+
+def test_error_result_cannot_supply_a_verdict(proj, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_MODE", "final")
+    monkeypatch.setenv("FAKE_CLAUDE_FINAL", "VERDICT: GO")
+    monkeypatch.setenv("FAKE_CLAUDE_ERROR", "1")
+    rd = mk(proj, tmp_path, claude_argv(), kind="dennis", reader="claude-verdict")
+    wrap.run(proj, "r1")
+    assert result(rd)["status"] == "FAILED"
+
+
 def test_worker_cap_sets_cap_until_not_failure(proj, tmp_path, monkeypatch, home):
     monkeypatch.setenv("FAKE_CLAUDE_MODE", "usage-cap")
     rd = mk(proj, tmp_path, claude_argv())

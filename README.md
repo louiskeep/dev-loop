@@ -550,3 +550,24 @@ run `git push origin <branch>` on the next line. Do not combine them as
 ```bash
 uv run --python 3.11 --with pytest -- pytest -q
 ```
+
+## Headless dev loop
+
+The `dev-loop` skill runs the same phases from cron, with no live session. A tick starts
+with fresh context, reads the state files, and decides the next step. Workers run
+detached. All state changes go through `devloop-state`, `devloop-dispatch` and
+`devloop-merge`, which refuse any move the rules do not allow.
+
+Threat model: local, single user; guards prevent accidents, not attacks.
+
+Install the commands from a checkout, then start a project:
+
+```bash
+bin/devloop-install ~/bin
+# then ask Claude: "start the dev loop cron"
+```
+
+The skill folder `skills/dev-loop/` holds the tick prompt (`TICK.md`), the playbook
+(`PLAYBOOK.md`), the brief template and an example `project.json`. Project settings live
+in `~/.local/state/devloop/PROJECT/project.json`. Nothing private is stored in the plugin.
+Tests: `pytest tests/devloop`.

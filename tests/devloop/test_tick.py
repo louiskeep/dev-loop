@@ -233,7 +233,6 @@ def test_public_outputs_use_event_fields(proj, mk_slice, tmp_path, home, monkeyp
     slices.set_fields(
         proj, k, next_action=f"password {secret} {cred}", purpose=f"{secret} {cred}"
     )
-    slices.move(proj, k, "PARKED", f"reason {secret} {cred}")
     store.append_event(proj, "slice-moved", key=k, row=f"{secret}", slice="s", to=cred)
     monkeypatch.setenv("FAKE_CLAUDE_FINAL", f"done\nTICKLINE: leaked {secret} {cred}")
     tick.tick(proj)

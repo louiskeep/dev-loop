@@ -5,7 +5,7 @@ import json
 import sys
 
 from . import project as projmod
-from . import notes, runs, slices, store
+from . import check, notes, runs, slices, store
 
 REFUSALS = (
     slices.SliceError,
@@ -198,6 +198,9 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("key")
     an.add_argument("choice")
     sub.add_parser("answers-sync")
+    sub.add_parser("check")
+    sub.add_parser("pause")
+    sub.add_parser("resume")
     sub.add_parser("applied").add_argument("run")
     sub.add_parser("release").add_argument("run")
     ls = sub.add_parser("list")
@@ -217,6 +220,17 @@ def main(argv=None) -> int:
             )
         elif args.cmd in ("applied", "release", "list"):
             _runs(args)
+        elif args.cmd in ("pause", "resume"):
+            flag = store.state_dir(args.project) / "PAUSE"
+            if args.cmd == "pause":
+                flag.touch()
+            else:
+                flag.unlink(missing_ok=True)
+        elif args.cmd == "check":
+            results = check.run_checks(args.project)
+            for ok, msg in results:
+                print(f"{'ok' if ok else 'FAIL'}: {msg}")
+            return 0 if all(ok for ok, _ in results) else 3
         elif args.cmd == "event":
             _event(args)
         else:

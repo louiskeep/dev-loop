@@ -35,5 +35,5 @@ if mode == "result":
         open(os.path.join(rd, "result.md"), "w").write(body)
 final = os.environ.get("FAKE_CLAUDE_FINAL")
 if final is not None:
-    print(json.dumps({"type": "result", "result": final, "is_error": False}))
+    print(json.dumps({"type": "result", "result": final, "is_error": bool(os.environ.get("FAKE_CLAUDE_ERROR"))}))
 sys.exit(int(os.environ.get("FAKE_EXIT", "0")))

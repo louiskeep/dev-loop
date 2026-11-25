@@ -5,7 +5,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # Private values live only in a project's own config, never in shipped code.
 PRIVATE = re.compile(
-    r"/home/|/Users/|decoy|louis|ckeep|camkeep|goodneighbor|\bcam\b|192\.168\.|\.local/state/devloop/[a-z]+/project",
+    r"/home/|/Users/|decoy|louis|ckeep|camkeep|goodneighbor|\bcam\b|192\.168\.|\.116\b|\.55\b|obsidian|\.local/state/devloop/[a-z]+/project",
     re.IGNORECASE,
 )
 EM_DASH = chr(0x2014)

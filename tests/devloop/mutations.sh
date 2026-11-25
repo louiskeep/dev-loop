@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# Apply each mutation to a temp copy of the repo, run the tests that guard it, and expect
+# a failure. A mutation whose tests still pass is a survivor. Usage: tests/devloop/mutations.sh
+# The edits are exact-text replacements (a stale edit fails the script, so none can rot).
+set -uo pipefail
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PY="${PYTHON:-$ROOT/.venv/bin/python}"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+cp -r "$ROOT/devloop" "$ROOT/hooks" "$ROOT/bin" "$ROOT/skills" "$ROOT/tests" "$ROOT/conftest.py" "$ROOT/pyproject.toml" "$WORK/"
+find "$WORK" -name __pycache__ -prune -exec rm -rf {} +
+killed=0; survived=0; stale=0
+declare -a SURVIVORS
+
+# mutate NAME FILE OLD NEW TESTS...
+mutate() {
+  local name="$1" file="$2" old="$3" new="$4"; shift 4
+  cp "$WORK/$file" "$WORK/$file.orig"
+  if ! OLD="$old" NEW="$new" F="$WORK/$file" "$PY" - <<'PYEOF'
+import os, sys
+p = os.environ["F"]; t = open(p).read(); old = os.environ["OLD"]
+if old not in t:
+    sys.exit(1)
+open(p, "w").write(t.replace(old, os.environ["NEW"], 1))
+PYEOF
+  then
+    echo "STALE   $name (text not found in $file)"; stale=$((stale+1)); mv "$WORK/$file.orig" "$WORK/$file"; return
+  fi
+  if (cd "$WORK" && "$PY" -m pytest -q -x -p no:cacheprovider "$@" >/dev/null 2>&1); then
+    echo "SURVIVED $name"; survived=$((survived+1)); SURVIVORS+=("$name")
+  else
+    echo "killed   $name"; killed=$((killed+1))
+  fi
+  mv "$WORK/$file.orig" "$WORK/$file"
+}
+
+T=tests/devloop
+mutate "public text carries raw next_action" devloop/status.py \
+  'return f"{s['"'"'row'"'"']} {s['"'"'slice'"'"']} in {s['"'"'phase'"'"']}"' \
+  'return str(s["next_action"] or "")' \
+  $T/test_tick.py::test_public_outputs_use_event_fields
+mutate "wrapper drops the exit-writing finally step" devloop/wrap.py \
+  '        finish(project, rd, req, code, reason)' '        pass' \
+  $T/test_wrap.py::test_wrapper_writes_exit_on_kill
+mutate "processed run id is never recorded" devloop/slices.py \
+  '        s["processed_run_ids"] = (s["processed_run_ids"] + [run_id])[-500:]' '        pass' \
+  $T/test_runs.py::test_apply_replay_counts_once
+mutate "KINDS loses the test entry" devloop/runs.py \
+  '    "test": Kind("tester", 7200, 1200, "testexit", False, True),' '' \
+  $T/test_runs.py::test_every_kind_has_reader_and_slot
+mutate "evidence key from the slice phase at apply time" devloop/runs.py \
+  "ev_kind = f\"{req['purpose']}:{req['reviewer']}\"" \
+  "ev_kind = f\"{'plan' if s['phase'] == 'PLAN' else 'code'}:{req['reviewer']}\"" \
+  $T/test_runs.py::test_late_plan_review_grants_no_code_go
+mutate "verdict taken from anywhere in the transcript" devloop/wrap.py \
+  'm = rx.fullmatch(lines[-1]) if lines else None' \
+  'm = next((x for x in map(rx.fullmatch, lines) if x), None)' \
+  $T/test_wrap.py::test_verdict_must_be_the_last_line_of_the_final_message $T/test_wrap.py::test_go_with_fixes_is_not_go
+mutate "an error result can carry the verdict" devloop/wrap.py \
+  'final = None if event.get("is_error") else event.get("result")' \
+  'final = event.get("result")' \
+  $T/test_wrap.py::test_error_result_cannot_supply_a_verdict
+mutate "admission lets one past the cap" devloop/runs.py \
+  'if used >= cfg["capacity"][spec.slot]:' 'if used > cfg["capacity"][spec.slot]:' \
+  $T/test_runs.py::test_admission_refuses_ninth_builder $T/test_runs.py::test_admission_refuses_fifth_tester
+mutate "merge drops --match-head-commit" devloop/merge.py \
+  '        "--match-head-commit",
+        s["head"],' '' \
+  $T/test_merge.py::test_merge_success_moves_to_document
+mutate "PR head is never compared" devloop/merge.py \
+  'return (
+        isinstance(oid, str)
+        and bool(head)
+        and (oid == head or (len(head) >= 7 and oid.startswith(head)))
+    )' 'return True' \
+  $T/test_merge.py::test_merge_refuses_head_mismatch
+mutate "an unknown merge state is retried" devloop/merge.py \
+  'if attempt or s["merge_unknown"]:' 'if attempt:' \
+  $T/test_merge.py::test_merge_unknown_state_no_retry
+mutate "merge guard forgets the merge word" hooks/headless_merge_guard.py \
+  '_GH_WORDS = re.compile(r"\b(merge|alias|extension)\b")' '_GH_WORDS = re.compile(r"\b(alias|extension)\b")' \
+  $T/test_merge.py::test_merge_guard_denies_in_headless_mode
+mutate "request ledger always matches" devloop/store.py \
+  'return want is not None and want == request_digest(run_dir(project, run_id))' 'return True' \
+  $T/test_runs.py::test_payload_that_rewrites_request_gets_no_evidence
+mutate "repaired copy is not re-hashed" devloop/runs.py \
+  'if _sha_file(copy) != data.get("output_sha"):' 'if False:' \
+  $T/test_runs.py::test_tampered_repaired_copy_is_caught_before_install
+mutate "a lost test run frees its slot" devloop/runs.py \
+  '    return (rd / "released").is_file() or (' '    return True or (' \
+  $T/test_runs.py::test_lost_test_holds_slot
+mutate "a reused pid reads alive" devloop/runs.py \
+  'return _proc_start(pid) == str(start)' 'return _proc_start(pid) is not None' \
+  $T/test_runs.py::test_reused_pid_reads_dead
+mutate "zero exit without a result reads DONE" devloop/runs.py \
+  'if status not in STATUSES:
+        status = "FAILED"' 'if status not in STATUSES:
+        status = status or "DONE"' \
+  $T/test_runs.py::test_zero_exit_without_result_is_failed
+mutate "skip check ignores the unchanged hash" devloop/tick.py \
+  'if digest == state.get("last_hash") and fresh:' 'if False:' \
+  $T/test_tick.py::test_skip_unchanged_snapshot_until_two_hours
+mutate "skip never expires" devloop/tick.py \
+  '        < SKIP_WINDOW_S
+    )' '        < SKIP_WINDOW_S * 1000
+    )' \
+  $T/test_tick.py::test_skip_unchanged_snapshot_until_two_hours
+mutate "a timeout counts as a cap" devloop/tick.py \
+  '    if rc == 124:
+        return None' '    if False:
+        return None' \
+  $T/test_tick.py::test_detect_cap_shapes
+mutate "tick line skips scrub" devloop/status.py \
+  '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
+  $T/test_tick.py::test_tick_slack_line_is_scrubbed
+mutate "cron add keeps the old tagged line" devloop/cron.py \
+  'if not line.rstrip().endswith(_tag(project))' 'if True' \
+  $T/test_cron.py::test_cron_add_is_idempotent_and_keeps_others
+mutate "cron read error counts as empty" devloop/cron.py \
+  '        if "no crontab for" in r.stderr:
+            return ""' '        if True:
+            return ""' \
+  $T/test_cron.py::test_cron_read_error_is_not_empty
+mutate "hex runs are not scrubbed" devloop/scrub.py \
+  '        (_HEX, "[ref]"),' '' \
+  $T/test_snapshot_status.py::test_scrub_removes_sha_and_path
+mutate "snapshot hash includes digits" devloop/snapshot.py \
+  '"outputs": [(n, DIGITS.sub("", t)) for n, t in outputs],' '"outputs": [(n, t) for n, t in outputs],' \
+  $T/test_snapshot_status.py::test_hash_ignores_ages_and_digits
+mutate "stacked member need not be an ancestor" devloop/runs.py \
+  '        if not stacked:' '        if False:' \
+  $T/test_runs.py::test_train_member_must_be_ancestor
+mutate "codex review needs no earlier reviewer" devloop/runs.py \
+  '    if i == 0:
+        return None' '    if True:
+        return None' \
+  $T/test_runs.py::test_codex_code_review_refused_before_dennis_go
+mutate "a duplicate failing check name passes" devloop/merge.py \
+  '        if not entries or any(state(e) != "SUCCESS" for e in entries):' '        if not entries or state(entries[0]) != "SUCCESS":' \
+  $T/test_merge.py::test_merge_refuses_duplicate_name_with_one_failure
+mutate "hold released by any choice" devloop/notes.py \
+  'return s["hold_question"] == key and s["hold_release_option"] == choice' 'return True' \
+  $T/test_notes.py::test_agent_question_never_lifts_a_hold
+
+echo
+echo "killed: $killed  survived: $survived  stale: $stale"
+[ "$survived" -eq 0 ] && [ "$stale" -eq 0 ]

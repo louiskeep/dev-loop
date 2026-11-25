@@ -1,0 +1,72 @@
+"""`devloop-install BIN_DIR`: copy the package and launchers so cron needs no checkout.
+
+Each swap is one `os.replace`, so a tick that starts mid-install sees the old files or
+the new ones, never a half-written set.
+"""
+
+import os
+import shutil
+import sys
+import time
+from pathlib import Path
+
+from . import store
+
+
+def share_root() -> Path:
+    return Path.home() / ".local" / "share" / "devloop"
+
+
+def _swap_link(link: Path, target: Path) -> None:
+    tmp = link.with_name(link.name + ".new")
+    tmp.unlink(missing_ok=True)
+    tmp.symlink_to(target)
+    os.replace(tmp, link)
+
+
+def install_package(repo: Path) -> Path:
+    root = share_root()
+    version = root / "versions" / str(time.time_ns())
+    shutil.copytree(
+        repo / "devloop",
+        version / "devloop",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    _swap_link(root / "lib", version)
+    return version
+
+
+def install_bins(repo: Path, bin_dir: Path) -> list:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    done = []
+    for src in sorted((repo / "bin").glob("devloop-*")):
+        tmp = bin_dir / f".{src.name}.tmp"
+        shutil.copyfile(src, tmp)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, bin_dir / src.name)
+        done.append(src.name)
+    return done
+
+
+def link_skill(repo: Path) -> str:
+    link = Path.home() / ".claude" / "skills" / "dev-loop"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if link.exists() and not link.is_symlink():
+        return "skill folder exists and is not a link; left alone"
+    _swap_link(link, repo / "skills" / "dev-loop")
+    return "skill linked"
+
+
+def main(argv=None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) != 1:
+        print("usage: devloop-install BIN_DIR", file=sys.stderr)
+        return 2
+    repo = store.package_root()
+    if not (repo / "devloop" / "__init__.py").is_file() or not (repo / "bin").is_dir():
+        print("REFUSED: run devloop-install from a plugin checkout", file=sys.stderr)
+        return 3
+    install_package(repo)
+    names = install_bins(repo, Path(args[0]))
+    print(f"installed {len(names)} commands to {args[0]}; {link_skill(repo)}")
+    return 0

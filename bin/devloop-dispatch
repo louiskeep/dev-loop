@@ -12,6 +12,8 @@ lib = os.environ.get("DEVLOOP_LIB") or (
     else str(Path.home() / ".local" / "share" / "devloop" / "lib")
 )
 sys.path.insert(0, lib)
+# The wrapper and the tick start each other by this directory.
+os.environ.setdefault("DEVLOOP_BIN_DIR", str(Path(__file__).resolve().parent))
 
 from devloop.dispatch_cli import main  # noqa: E402
 
