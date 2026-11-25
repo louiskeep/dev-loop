@@ -19,6 +19,7 @@ WORKER_ALLOWED = [
     "FOO=1 rg devloop-merge .",
     "timeout 30 rg devloop-merge .",
     "git push origin feat/x",
+    "cat > f.txt <<'EOF'\nit's not run: devloop-merge x; git push origin main\nEOF",
 ]
 WORKER_DENIED = [
     "devloop-merge proj ROW--S1",

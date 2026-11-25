@@ -129,8 +129,28 @@ class _Unparseable(Exception):
     pass
 
 
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
+
+
+def _strip_heredocs(command: str) -> str:
+    """Drop here-document bodies: they are input text, never commands."""
+    lines, out, end = command.split("\n"), [], None
+    for line in lines:
+        if end is not None:
+            if line.strip() == end:
+                end = None
+                out.append(line)
+            continue
+        out.append(line)
+        m = _HEREDOC.search(line)
+        if m:
+            end = m.group(2)
+    return "\n".join(out)
+
+
 def _segments(command: str) -> list[str]:
     """Split on shell command separators and `$(` that are outside quotes."""
+    command = _strip_heredocs(command)
     out, cur, quote, i = [], [], None, 0
     while i < len(command):
         c = command[i]

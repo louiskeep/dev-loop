@@ -35,12 +35,20 @@ def check_name(value, what: str = "name") -> str:
     return value
 
 
+def state_root() -> Path:
+    base = os.environ.get("DEVLOOP_HOME")
+    return Path(base) if base else Path.home() / ".local" / "state" / "devloop"
+
+
+def host_admit_path() -> Path:
+    """Lock base for decisions that share one host's memory across every project."""
+    return state_root() / "host-admit"
+
+
 def state_path(project: str) -> Path:
     """Where a project's state lives. Creates nothing, so a reader can ask first."""
     check_name(project, "project name")
-    base = os.environ.get("DEVLOOP_HOME")
-    root = Path(base) if base else Path.home() / ".local" / "state" / "devloop"
-    return root / project
+    return state_root() / project
 
 
 def state_dir(project: str) -> Path:

@@ -657,7 +657,7 @@ def _memory(ctx):
         pgid = r["pgid"] if type(r["pgid"]) is int else None
         workers.append((r["role"], r["key"], pgid))
     floor_mb = int(ctx.cfg.get("min_free_gb", 2.5) * 1024)
-    reserved = runs.reserved_mb(ctx.project, ctx.cfg, ctx.now)
+    reserved = runs.reserved_mb(ctx.cfg, ctx.now)
     return memory.read_memory(ctx.proc, workers, reserved, floor_mb)
 
 

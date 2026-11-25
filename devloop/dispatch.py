@@ -321,7 +321,7 @@ def _check_memory(project, cfg, kind):
     kind's own estimate, would drop below the floor."""
     free_mb = mem_available_kb() / 1024
     floor_mb = cfg.get("min_free_gb", 2.5) * 1024
-    held = runs.reserved_mb(project, cfg) + projmod.memory_mb(cfg, kind)
+    held = runs.reserved_mb(cfg) + projmod.memory_mb(cfg, kind)
     if free_mb - held < floor_mb:
         raise runs.Refused("memory is below the floor")
 
@@ -396,12 +396,17 @@ def dispatch(
     spec = runs.KINDS[kind]
     body = brief.read_text(encoding="utf-8")
 
-    with store.locked(store.state_dir(project) / "admit"):
+    # The host lock comes first: memory is one pool for every project on the box.
+    with (
+        store.locked(store.host_admit_path()),
+        store.locked(store.state_dir(project) / "admit"),
+    ):
         _pause_or_cap(project)
         _check_memory(project, cfg, kind)
         _check_tick_limit(project, cfg)
         req["root"] = worktree_root(req["worktree"]) if spec.writes_worktree else None
         _check_admission(project, cfg, req, req["root"])
+        req["memory_mb"] = projmod.memory_mb(cfg, kind)  # frozen for the reservation
         req["seq"] = store.next_seq(project)
         req["tick_id"] = _tick_id()
         run_id = "{}.{}.{}".format(

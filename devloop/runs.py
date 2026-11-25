@@ -80,7 +80,7 @@ def is_done(rd) -> bool:
 
 def _runs_dir(project):
     # Readers never create it: the dashboard reads a project that may not have run yet.
-    return store.state_dir(project) / "runs"
+    return store.state_path(project) / "runs"
 
 
 # Process facts change after dispatch, so they live beside the frozen request.
@@ -255,22 +255,39 @@ def slot_usage(project) -> dict:
 RESERVE_WINDOW_S = 300
 
 
-def reserved_mb(project, cfg, now=None) -> int:
-    """Memory that runs started in the last five minutes may still claim.
+def _project_names():
+    root = store.state_root()
+    return sorted(
+        d.name
+        for d in (root.iterdir() if root.is_dir() else [])
+        if d.is_dir() and store.NAME.fullmatch(d.name)
+    )
 
-    A worker's memory is not in MemAvailable until it has grown, so admission and the
-    dashboard both subtract these reservations. A run that has ended holds nothing.
+
+def reserved_mb(cfg, now=None) -> int:
+    """Memory that runs started in the last five minutes may still claim, on this host.
+
+    MemAvailable is host-wide, so every project under the state root counts. A worker's
+    memory is not in MemAvailable until it has grown, so admission and the dashboard both
+    subtract these reservations. A run that has ended holds nothing. The amount is the one
+    frozen into the run at dispatch; a run from before that field falls back to `cfg`.
     """
     now = now or datetime.datetime.now(datetime.timezone.utc)
     cutoff = now - datetime.timedelta(seconds=RESERVE_WINDOW_S)
     total = 0
-    for rd, req in iter_runs(project):
-        try:
-            started = datetime.datetime.fromisoformat(req["started_at"])
-        except (KeyError, ValueError, TypeError):
-            continue
-        if started >= cutoff and not (rd / "exit").is_file():
-            total += projmod.memory_mb(cfg, req.get("kind"))
+    for name in _project_names():
+        for rd, req in iter_runs(name):
+            try:
+                started = datetime.datetime.fromisoformat(req["started_at"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            if started >= cutoff and not (rd / "exit").is_file():
+                frozen = req.get("memory_mb")
+                total += (
+                    frozen
+                    if type(frozen) is int and frozen >= 0
+                    else projmod.memory_mb(cfg, req.get("kind"))
+                )
     return total
 
 

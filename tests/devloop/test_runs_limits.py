@@ -92,7 +92,7 @@ def test_burst_of_dispatches_stops_at_the_reservation(proj, ready, brief, monkey
 def test_reservation_is_per_kind_and_configurable(
     proj, ready, brief, monkeypatch, cfg_edit
 ):
-    _avail(monkeypatch, 2560 + 650)
+    _avail(monkeypatch, 2560 + 660)
     go(proj, brief, "builder", ready()[0])
     # A 50 MB test still fits after one 600 MB builder; a second builder does not.
     go(proj, brief, "test", ready("VERIFY")[0], level="t1")
@@ -135,3 +135,42 @@ def test_tick_limit_defaults_to_four_and_needs_a_tick(proj, ready, brief, monkey
         go(proj, brief, "builder", ready()[0])
     monkeypatch.delenv("DEVLOOP_TICK_ID")
     go(proj, brief, "builder", ready()[0])  # an operator shell is not limited
+
+
+def _second_project(proj, home, mk_slice, tmp_path):
+    (home / "q").mkdir()
+    cfg = json.loads((home / proj / "project.json").read_text())
+    (home / "q" / "project.json").write_text(json.dumps({**cfg, "name": "q"}))
+    wt = tmp_path / "qwt"
+    head = make_repo(wt)
+    return mk_slice(
+        "q",
+        phase="DEVELOP",
+        risk="R1",
+        rulebooks=["a.md"],
+        worktree=str(wt),
+        branch="b",
+        head=head,
+        plan_path="plan.md",
+    )
+
+
+def test_two_projects_share_the_memory_headroom(
+    proj, ready, brief, monkeypatch, home, mk_slice, tmp_path
+):
+    _avail(monkeypatch, 2560 + 700)
+    go(proj, brief, "builder", ready()[0])
+    other = _second_project(proj, home, mk_slice, tmp_path)
+    with pytest.raises(runs.Refused, match="memory"):
+        go("q", brief, "builder", other)
+    assert (home / "host-admit.lock").is_file()
+
+
+def test_dispatch_freezes_the_reservation_amount(
+    proj, ready, brief, monkeypatch, cfg_edit
+):
+    _avail(monkeypatch, 2560 + 700)
+    first = go(proj, brief, "builder", ready()[0])
+    assert runs.read_request(proj, first)["memory_mb"] == 600
+    cfg_edit(lambda c: c.update(memory_mb={"builder": 1}))  # cannot shrink a live hold
+    assert runs.reserved_mb(projmod.load_project(proj)) == 600
