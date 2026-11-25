@@ -467,6 +467,26 @@ def ensure_hold_question(project, key):
         _save_questions(path, before, ordered, after, had)
 
 
+def reconcile_hold_questions(project) -> list:
+    """Recreate a hold question lost to a crash between the slice write and the question
+    write. An existing question, answered or not, is left exactly as it is."""
+    from . import slices
+
+    path = questions_path(project)
+    fixed = []
+    for s in slices.list_slices(project):
+        if not s["hold_question"]:
+            continue
+        with store.locked(_lock_for(project)):
+            _, qs, _, _ = (
+                load_questions(path) if path.is_file() else (None, {}, None, False)
+            )
+        if s["hold_question"] not in qs:
+            ensure_hold_question(project, s["key"])
+            fixed.append(s["key"])
+    return fixed
+
+
 def _lifts_hold(s, key, choice):
     return s["hold_question"] == key and s["hold_release_option"] == choice
 

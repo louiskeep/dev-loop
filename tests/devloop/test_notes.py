@@ -412,3 +412,27 @@ def test_headless_ask_refused_for_a_held_slice(proj, mk_slice, monkeypatch):
         notes.ask(
             proj, k, question="Spend?", options=["yes"], recommended="yes", wait=False
         )
+
+
+def test_tick_recreates_a_hold_question_lost_to_a_crash(proj, mk_slice):
+    from devloop import tick
+
+    k = mk_slice(proj, phase="REMEDIATE", round=2)
+    slices.move(proj, k, "PARKED", "round-3")
+    page = store.state_dir(proj) / "questions.md"
+    page.unlink()  # the crash: slice committed, question never written
+    with pytest.raises(notes.NotesError):
+        notes.answer(proj, f"hold:{k}", "approve")
+    tick.tick(proj)
+    assert f"### hold:{k}" in page.read_text()
+    notes.answer(proj, f"hold:{k}", "approve")
+    assert slices.load(proj, k)["owner_answered"] is True
+
+
+def test_reconcile_keeps_an_existing_answer(proj, mk_slice):
+    k = mk_slice(proj, phase="REMEDIATE", round=2)
+    slices.move(proj, k, "PARKED", "round-3")
+    notes.answer(proj, f"hold:{k}", "keep-held")
+    before = (store.state_dir(proj) / "questions.md").read_text()
+    assert notes.reconcile_hold_questions(proj) == []
+    assert (store.state_dir(proj) / "questions.md").read_text() == before

@@ -158,6 +158,7 @@ def _pass(project) -> str:
     cfg = projmod.load_project(project)
     state = store.read_json(_state_file(project))
     runs.collect(project)
+    notes.reconcile_hold_questions(project)
     d = store.state_dir(project)
     if (d / "PAUSE").exists():
         status.write_status(project)
