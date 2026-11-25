@@ -52,6 +52,18 @@ two owner additions on 2026-11-25 recorded below (node directory, rules parity).
   package path; Slack lines built from events, not model text; one gate validator shared
   by transition and merge; the guard hook reuses `gate_guard.classify`; S3 gets Dennis then
   Codex before cron starts. Codex round 2 reviews this version.
+- Codex round 2 (head 41742b4): NO-GO, 12 findings, all on evidence and run contracts, none
+  asking to undo the owner call. Folded: reviewer, kind and purpose bound in config and
+  checked at admission and apply; `codex-fix` is plan-only; engine merge runs the engine's
+  own required-checks verifier and needs the gate dispatch to start after the final Codex
+  GO; the tick's self-check record is validated as its own evidence type; planner, review
+  and repair inputs and outputs named explicitly; plan reviews follow the predecessor rule
+  and plan rounds are keyed by plan path; merge trains take an explicit batch head; wrapper
+  and payload liveness are tracked apart and an unconfirmed test keeps its slot; writer
+  reservations last until the run is applied; repair install is crash-safe; import can
+  carry plan approval and resumes merged PRs in DOCUMENT; the board merge text is fixed
+  words only. Round 3 is the last plan round (review-rounds cap); anything left after it
+  is fixed in the build and checked at code review.
 
 ## Owner additions (2026-11-25, after the spec)
 
@@ -69,7 +81,13 @@ two owner additions on 2026-11-25 recorded below (node directory, rules parity).
    A model tick posts what it did (applied, moved, dispatched, merged, questions defaulted)
    and what is next. A skipped tick posts "no change since HH:MM CST, N running". The tick's
    own post replaces the global Stop hook post, which headless runs skip.
-4. **Target:** first live tick today (2026-11-25). Slices 1 and 2 are the minimum to run;
+4. **Playbook (owner, 2026-11-25).** The orchestrator gets a dev loop playbook it reads on
+   every tick: a done-state checklist per phase, a scenario table (what happened, what to
+   do), the key parts of each worker brief, and the testing required per phase and risk.
+   Code backs it: the snapshot prints each slice's checklist for its current phase with
+   each item marked met or missing, from the same functions `move` uses. Workers get the
+   playbook section for their role in their brief. See Task 9 and Task 10.
+5. **Target:** first live tick today (2026-11-25). Slices 1 and 2 are the minimum to run;
    Slice 3 is the cutover.
 
 ## Global Constraints
@@ -359,8 +377,12 @@ def test_bad_project_config_is_refused(tmp_path, monkeypatch):
   refuses while another slice of the same row is not DONE (one open slice per row; PARKED
   and HELD still hold the row). `import_slice(project, row, slice_id, *, repo, risk,
   rulebooks, worktree, branch, pr, head, plan_path, purpose, phase) -> dict` for cutover
-  only: refused when `DEVLOOP_HEADLESS=1`; `phase` is capped at REVIEW (anything later lands
-  in REVIEW so the gates run again under this loop); same row rule. `row_close(project, row) -> None` calls
+  only: refused when `DEVLOOP_HEADLESS=1`; same row rule. Options: `--plan-approved`
+  stores the plan file's current sha as `approved_plan_sha` (those plans passed their gates
+  under `/loop`; the import runs in the owner's interactive session, never headless).
+  Without it the slice lands in PLAN with its PR and worktree kept. An open PR at GATE or
+  later lands in REVIEW, so its gates run again here. A PR that `gh` shows MERGED into the
+  configured base at the recorded head lands in DOCUMENT. `row_close(project, row) -> None` calls
   `board.cmd + ["close", row]` and appends a `row-closed` event; the tick calls it when the
   row's last roadmap slice is DONE.
 - Transition table:
@@ -387,24 +409,33 @@ def test_bad_project_config_is_refused(tmp_path, monkeypatch):
   - PLAN to DEVELOP: `plan_path` exists and contains `Rules consulted:`, and the plan review
     list `reviews[risk].plan` is met. Each entry is a reviewer name, optionally with a round
     cap (`{"name": "dennis", "cap": 2}`). A capped reviewer is met by a GO on any earlier
-    sha of the same `plan_path`, or by `plan_rounds[name] >= cap` (the standing flow: at
+    sha of the same `plan_path`, or by `plan_rounds[plan_path][name] >= cap` (the standing flow: at
     most 2 Dennis rounds, then Codex fixes). The LAST reviewer must have GO on the current
-    `plan_sha`, recorded after the capped reviewer's last round. For Codex, a `codex-review`
-    GO or a `codex-fix` GO both count; a `codex-fix` GO is credited to the sha of the
-    repaired file and only once that file is installed (Task 4). On PLAN exit the slice
+    `plan_sha`, from a run whose `predecessor_run` is the capped reviewer's satisfying run
+    (its GO, or its round that reached the cap); dispatch refuses the last reviewer before
+    that run is applied. For Codex, a `codex-review` GO or a `codex-fix` GO both count; a
+    `codex-fix` GO is credited to the repaired file's sha only once that file is installed
+    (Task 4). On PLAN exit the slice
     stores `approved_plan_sha`; `validate_gate` refuses if the plan file no longer has it.
   - DEVELOP to SELF_CHECK: `branch`, `head` set.
-  - SELF_CHECK to VERIFY: `selfcheck` GO on head.
+  - SELF_CHECK to VERIFY: `selfcheck` GO on head. This is the tick's own record (evidence
+    `source: tick`, written by `devloop-state selfcheck KEY GO --head SHA`, refused unless
+    SHA equals the slice head); it has no run dir and is validated as its own type.
   - VERIFY to REVIEW: `t1` GO on head.
   - REVIEW to GATE: `validate_gate(project, key) -> list[str]` returns no problems. It is
     the one evidence check, used here and by `devloop-merge`: on the current head,
     `selfcheck` GO, `t1` GO, `t2` GO when configured, `full` GO when `full_suite_required`,
     every reviewer in `reviews[risk].code` GO in roster order (each run's
-    `predecessor_run` is the previous reviewer's GO run), each evidence entry re-read from
-    its run dir, and `approved_plan_sha` still matching.
+    `predecessor_run` is the previous reviewer's GO run), each review and test evidence
+    entry re-read from its run dir (the tick's `selfcheck` record is checked by its own
+    head field), and `approved_plan_sha` still matching. `exit_checklist(project, key) ->
+    list[tuple[str, bool]]` returns the named items for the current phase's exit, met or
+    missing, built from the same checks; `move` and `validate_gate` call it, and the
+    snapshot prints it.
   - REVIEW to REMEDIATE only: `round += 1`; at round 3 the move goes to PARKED with
     reason `round-3` instead. SELF_CHECK, VERIFY and GATE moves to REMEDIATE do not count.
-    Plan review rounds are counted per reviewer in `plan_rounds`, separate from `round`.
+    Plan review rounds are counted in `plan_rounds[plan_path][reviewer]`, separate from
+    `round`; a new plan path starts at zero.
   - DOCUMENT to DONE: `docs` GO on head.
 - Every successful move: sets `last_moved_at`, appends to `history`, appends an event, calls
   the board mirror (`board.cmd + [ "slice", row, slice, phase_map[phase] ]`); a mirror failure
@@ -448,7 +479,8 @@ def test_new_slice_refused_while_row_open(proj): ...  # also while PARKED
 
 def test_board_mirror_calls_cli_only(proj, fakebin): ...  # fake board records argv; no rows.json touched
 
-def test_concurrent_set_no_lost_update(proj): ...  # 20 processes set different fields; all present
+def test_concurrent_set_no_lost_update(proj): ...  # two processes, synced start, set next_action and waiting_on; both survive; repeat 50 times
+def test_exit_checklist_matches_move(proj): ...  # every missing item named by the checklist is the reason move refuses
 ```
 
 - [ ] **Step 2: Run, expect FAIL**
@@ -500,47 +532,61 @@ def test_concurrent_set_no_lost_update(proj): ...  # 20 processes set different 
 - Produces:
   - `KINDS: dict[str, Kind]` where `Kind(slot: str|None, deadline_s: int, idle_s: int,
     reader: str, writes_worktree: bool, pinned: bool)`: planner(planner, 7200, 1200, claude,
-    False, False), builder(builder, 14400, 1200, claude, True, False), dennis(reviewer, 5400,
+    True, False), builder(builder, 14400, 1200, claude, True, False), dennis(reviewer, 5400,
     1200, claude-verdict, False, True), codex-review(reviewer, 3600, 3600, verdict, False,
     True), codex-fix(planner, 3600, 3600, selfverdict, True, False), test(tester, per level
     from `tests[level].deadline_s`, 1200, testexit, False, True), docs(None, 3600, 1200,
-    claude, False, False). No `slice-runner` kind: a runner that calls Codex itself makes
+    claude, False, False). `codex-fix` is plan-only: refused unless the slice is in PLAN.
+    `reviewers[name].kinds` binds each reviewer to its allowed kinds (Decoy: dennis
+    `[dennis]`, codex `[codex-review, codex-fix]`); dispatch refuses any other pairing, and
+    `apply_run` checks the same binding again. No `slice-runner` kind: a runner that calls Codex itself makes
     evidence nobody can check and spends Codex twice.
   - The argv is built by dispatch from config, never passed by the caller:
     `models[role]` for Claude kinds (planner and docs use `models.planner`, which must be an
     Opus model: guides and plans never run on Sonnet); `reviewers[name].argv` for review
     kinds; `tests[level].argv` for tests, plus `--select` items appended for `t1`. Templates
-    may use `{brief} {worktree} {out} {head} {run_dir}`.
+    may use `{brief} {worktree} {out} {head} {run_dir} {plan} {last_msg}`. Inputs and
+    outputs are explicit: a planner writes `plan_path` (set before dispatch, in its reserved
+    worktree); a plan review reads `{plan}`, the frozen copy in the run dir; a repair runs
+    `codex-fix <run_id> <brief> {plan}` with env `CODEX_LAST_MSG={last_msg}`, and its
+    repaired output is `~/.cache/codex-fix/<run_id>/<plan basename>` (named in
+    `reviewers.codex.repair_out`); its brief asks for a final `SELF-VERDICT:` line. Code
+    reviews read the private checkout.
   - `dispatch(project, kind, key, *, brief: Path, worktree: Path|None, reviewer: str|None,
     level: str|None, select: list[str]=(), covers: list[str]=(), retry_of: str|None=None)
     -> str` returns run ID or raises `Refused(reason)`. The request is frozen at admission
-    and never edited: `purpose` is `plan` while the slice is in PLAN, else `code`; plan
-    runs store `plan_sha` and a copy of the plan in the run dir; code runs store `head` and
+    and never edited: `purpose` is `author` for a planner, `plan` for plan reviews and
+    repairs, else `code`; plan reviews and repairs store `plan_sha` and a copy of the plan
+    in the run dir; code runs store `head` and
     `predecessor_run`. Admission under `admit.lock`: PAUSE or `cap-until` future; slot
     count of live or slot-holding runs `>= capacity[slot]`; a live writer reserving the
     same worktree (builders, and codex-fix on the plan's directory); `MemAvailable <
-    min_free_gb`; a code review whose roster predecessor has no GO on this head (so Codex
-    never starts before Dennis GO on R2). Pinned kinds (code reviews and tests) run in a
+    min_free_gb`; a review whose roster predecessor has no applied satisfying run (code:
+    GO on this head; plan: GO or the round cap on this plan path), so Codex never starts
+    before Dennis is done. A writer's reservation (builder, planner, codex-fix) lasts until
+    its run is applied, not only while its process lives. Pinned kinds (code reviews and tests) run in a
     private detached checkout made with `git worktree add --detach <run_dir>/tree <head>`
     and removed after exit, so a builder's uncommitted files can never reach a test or
     review. Every payload gets an explicit `cwd` (the reserved worktree, the private
-    checkout, or the run dir). `covers` (merge trains) lists slice keys; dispatch refuses
-    a member whose head is not an ancestor of the tested head (`git merge-base
-    --is-ancestor`), and stores each member's head. Launch:
+    checkout, or the run dir). Merge trains: a `full` test may take `batch_repo` and
+    `batch_sha` (the trial merge head the tick built) plus `covers` (slice keys); dispatch
+    refuses a member from another repo or whose head is not an ancestor of `batch_sha`
+    (`git merge-base --is-ancestor`), and freezes each `(slice, head)` pair. Launch:
     `subprocess.Popen([devloop-wrap, project, run_id], start_new_session=True,
     stdin=DEVNULL, stdout=<run_dir>/wrap.log, stderr=STDOUT, close_fds=True)` (no inherited
     pipes, so the dispatching shell returns at once); records `pid`, `pid_start` (field 22 of
     `/proc/<pid>/stat`) and `boot_id` (`/proc/sys/kernel/random/boot_id`). The wrapper adds
     `payload_pgid` and `payload_start` when it starts the payload. Sets slice `run`.
-  - `is_alive(req: dict) -> bool`: same `boot_id`, and the wrapper pid with matching start
-    time OR the payload group leader with matching start time is alive.
-  - `collect(project) -> list[str]`: for a run with no `exit` that is not alive, check
-    `exit` again, then kill the payload group if any member lives, then create `exit`
-    with reason `lost` using `O_CREAT|O_EXCL` (a wrapper that wrote first wins); returns
-    finished, unapplied run IDs. A lost `test` run keeps its tester slot until its deadline
-    (the remote job may still run: vm-run kill leaves the remote tree); the tick may free it
-    earlier with `devloop-state release RUN` after checking the node with the node
-    directory's command.
+  - `wrapper_alive(req) -> bool` and `payload_alive(req) -> bool`, each by pid or pgid plus
+    start time and the same `boot_id`.
+  - `collect(project) -> list[str]`: for a run with no `exit` whose wrapper is dead, check
+    `exit` again, kill the payload group if it lives (no unsupervised writer), then create
+    `exit` with reason `lost` using `O_CREAT|O_EXCL` (a wrapper that wrote first wins);
+    returns finished, unapplied run IDs. A `test` run that ended without a remote result
+    (`lost`, `hung` or `deadline`) keeps its tester slot (the remote job may still run:
+    vm-run kill leaves the remote tree) until `devloop-state release RUN`, which the tick
+    calls after checking the node with the node directory's command, or until twice the
+    deadline has passed.
   - `parse_result(run_dir: Path, kind: str) -> Result(status, head, pr, verdict, tests, next,
     summary)`: `result.md` header lines `key: value` until a `---` line. Missing file, missing
     status, `status: DONE` with non-zero exit, or `status: FAILED` with exit 0 and no reason
@@ -552,10 +598,14 @@ def test_concurrent_set_no_lost_update(proj): ...  # 20 processes set different 
     for `plan` runs its `plan_sha` differs from the plan file now (event `apply-mismatch`,
     outcome `stale`). Evidence key comes from the frozen request only: `<purpose>:<reviewer>`
     for reviews, `t1`/`t2`/`full` for tests. A `full` test with `covers` records `full` on
-    each member whose head still equals the stored member head. A `codex-fix` GO: if the
-    live plan file's sha still equals the request's `plan_sha`, install the repaired file
-    with `os.replace` and credit GO to the repaired sha; otherwise record `repair-conflict`,
-    install nothing, credit nothing. Failure counts are keyed by head (or plan sha), so a
+    each member whose head still equals its frozen head; each member update is its own
+    locked replace with the run ID in that member's `processed_run_ids`, and `applied` is
+    written only after every member is done, so a replay finishes the rest. A `codex-fix`
+    GO: first write `repair.json` with `input_sha` and `output_sha` in the run dir; then if
+    the live plan's sha equals `input_sha`, install with `os.replace`; credit GO to
+    `output_sha`. On replay: live sha equals `output_sha` -> finish the credit; equals
+    `input_sha` -> install, then credit; anything else -> `repair-conflict`, install and
+    credit nothing. Failure counts are keyed by head (or plan sha), so a
     new head starts with a fresh retry. Plan reviews add one to
     `plan_rounds[reviewer]`. Exit reasons `capped` and `infra` (test exit codes in
     `tests[level].infra_codes`, Decoy 124, 255, 75) count no failure and no round; the slice
@@ -568,7 +618,8 @@ def test_concurrent_set_no_lost_update(proj): ...  # 20 processes set different 
     For review kinds it appends: "End with one line: `VERDICT: GO`, `VERDICT:
     GO-WITH-FIXES` or `VERDICT: NO-GO`." Only `GO` counts as GO.
 - CLI: `devloop-dispatch <project> KIND KEY --brief FILE [--worktree DIR] [--reviewer NAME]
-  [--level t1|t2|full] [--select ID ...] [--covers KEY=HEAD ...] [--retry-of RUN]`; no argv
+  [--level t1|t2|full] [--select ID ...] [--batch-repo R --batch-sha SHA --covers KEY ...]
+  [--retry-of RUN]`; no argv
   passthrough; prints run ID or `REFUSED: <reason>` exit 3. `devloop-state <p> applied RUN`.
 
 - [ ] **Step 1: Failing tests:** the admission four, `test_dead_run_without_exit_is_failed`,
@@ -584,7 +635,11 @@ def test_concurrent_set_no_lost_update(proj): ...  # 20 processes set different 
   `test_codex_code_review_refused_before_dennis_go`, `test_pinned_run_ignores_uncommitted_files`,
   `test_dispatch_from_unrelated_cwd`, `test_apply_replay_counts_once`,
   `test_repair_installed_only_if_plan_unchanged`, `test_lost_test_holds_slot`,
-  `test_dispatch_closes_capture_pipes`.
+  `test_dispatch_closes_capture_pipes`, `test_repair_refused_outside_plan`,
+  `test_reviewer_kind_binding_enforced`, `test_simultaneous_plan_reviews_refused`,
+  `test_plan_rounds_reset_on_new_plan_path`, `test_train_two_siblings_and_crash_after_first`,
+  `test_repair_replay_after_install`, `test_writer_reserved_until_applied`,
+  `test_planner_creates_absent_plan`.
 - [ ] **Step 2: Run, expect FAIL**
 - [ ] **Step 3: Implement.** Memory read from `/proc/meminfo`, overridable by
   `DEVLOOP_FAKE_MEMAVAIL_KB` for tests only.
@@ -607,8 +662,8 @@ def test_concurrent_set_no_lost_update(proj): ...  # 20 processes set different 
   exit, sets `cap-until` and reason `capped`. In `finally`, build `result.md` when the
   reader is not `claude`:
   - `verdict` and `claude-verdict`: take the reviewer's FINAL message only (Codex: the
-    file written by `codex exec -o`, passed through the new optional last argument of
-    `codex-review` and `codex-fix`; Claude: the `result` field of the last
+    file written by `codex exec -o`, which `codex-review` and `codex-fix` add when env
+    `CODEX_LAST_MSG` names a file; Claude: the `result` field of the last
     `{"type":"result"}` stream-json event). The process must exit 0, and the last
     non-blank line, stripped, must `re.fullmatch(r"VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")`;
     anything else -> FAILED. A GO quoted earlier in a transcript can never count, and a
@@ -648,15 +703,20 @@ def test_concurrent_set_no_lost_update(proj): ...  # 20 processes set different 
      baseRefName,headRefOid,statusCheckRollup,mergeStateStatus,files`: `baseRefName` equals
      `merge.repos[repo].base` (a stacked PR into a parent branch is refused); head equals
      slice head; every name in `merge.repos[repo].required_checks` is present with
-     SUCCESS (missing, pending, skipped or failed refuses; Decoy engine lists the
-     gate-selfhosted verdict); no other check failed; `mergeStateStatus` not BEHIND or
-     DIRTY when `merge.require_up_to_date`; a file matching `merge.changelog_glob` is in
+     SUCCESS (missing, pending, skipped or failed refuses); no other check is failed or
+     pending; when `merge.repos[repo].verify_cmd` is set (Decoy engine:
+     `scripts/dev/required_checks.py verify --tier merge --sha {head}`, run from a fresh
+     `origin/main` checkout so a newly required job is never missed) it must exit 0; when
+     `merge.repos[repo].dispatch_workflow` is set, the newest run of that workflow on the
+     head must be SUCCESS and created after the final Codex GO; `mergeStateStatus` must be
+     CLEAN (or HAS_HOOKS) when `merge.require_up_to_date` (UNKNOWN refuses); a file matching `merge.changelog_glob` is in
      `files` when set. The later steps use this same repo and PR number.
   4. Notify "merging ROW SLICE PR". Run `gh pr merge <pr> -R <repo> --squash
      --match-head-commit <head>`.
   5. Whatever its exit code, `gh pr view --json state,headRefOid`: MERGED with the head ->
-     evidence `merged`, move to DOCUMENT, board `merged ROW SLICE PR <purpose>` with the
-     scrubbed `purpose` field, event, `merged`. OPEN with the same head -> nothing merged,
+     evidence `merged`, move to DOCUMENT, board `merged ROW SLICE PR "<ROW> <SLICE>"`
+     (fixed words, no model text: the board helper posts this argument to Slack), event,
+     `merged`. OPEN with the same head -> nothing merged,
      `refused` with the gh error (scrubbed), flag stays clear. gh itself errors -> set
      `merge_unknown`, problem `merge-state-unknown`, `unknown`.
   6. With `merge_unknown` set, a later call runs step 5's check only; OPEN clears the flag.
@@ -672,7 +732,9 @@ def test_concurrent_set_no_lost_update(proj): ...  # 20 processes set different 
   `test_merge_success_moves_to_document`, `test_merge_refuses_red_or_pending_check`,
   `test_merge_refuses_evidence_without_run_dir`, `test_merge_open_after_error_clears_flag`,
   `test_merge_guard_denies_gh_merge_when_headless` (also `gh -R o/r pr merge 5`),
-  `test_merge_refuses_wrong_base`, `test_merge_refuses_missing_required_check`.
+  `test_merge_refuses_wrong_base`, `test_merge_refuses_missing_required_check`,
+  `test_merge_refuses_gate_dispatch_before_codex_go`, `test_merge_runs_verify_cmd`,
+  `test_merge_refuses_unknown_merge_state`, `test_merge_with_public_selfcheck_succeeds`.
 - [ ] **Step 2 to 4:** red, implement, green.
 - [ ] **Step 5: Commit** `feat(devloop): merge only on the exact gated head`
 
@@ -754,8 +816,8 @@ def test_concurrent_set_no_lost_update(proj): ...  # 20 processes set different 
   `test_cap_detection_sets_cap_until_and_blocks_model`, `test_pause_collects_only`,
   `test_cron_add_is_idempotent_and_keeps_others`, `test_cron_remove_keeps_others`,
   `test_cron_read_error_is_not_empty`, `test_failed_tick_still_posts`, `test_public_outputs_use_event_fields` (a short password
-  and `https://user:pw@host` planted in next_action, TICKLINE and an error reach neither
-  Slack nor either STATUS copy),
+  and `https://user:pw@host` planted in next_action, purpose, TICKLINE and an error reach
+  neither Slack, either STATUS copy, nor the board helper's argv),
   `test_notify_gets_env_file_vars`.
 - [ ] **Step 2 to 4:** red, implement, green.
 - [ ] **Step 5: Commit** `feat(devloop): add cron tick with lock, skip and cap detection`
@@ -763,7 +825,7 @@ def test_concurrent_set_no_lost_update(proj): ...  # 20 processes set different 
 ## Task 9: Skill, TICK.md, brief template, install, shareability
 
 **Files:**
-- Create: `skills/dev-loop/SKILL.md`, `skills/dev-loop/TICK.md`,
+- Create: `skills/dev-loop/PLAYBOOK.md`, `skills/dev-loop/SKILL.md`, `skills/dev-loop/TICK.md`,
   `skills/dev-loop/brief-template.md`, `skills/dev-loop/project.example.json`,
   `bin/devloop-install`; Modify: `README.md` (one section), `pyproject.toml` if needed
 - Test: `tests/devloop/test_shipped.py`
@@ -793,6 +855,30 @@ def test_concurrent_set_no_lost_update(proj): ...  # 20 processes set different 
   to call `devloop-merge` (double gate green). Limits: state
   only through the commands; dispatch long work, never do it in the tick; never take an R3
   action; finish within 30 minutes.
+- `PLAYBOOK.md` (generic, read by the tick every invocation; the project's
+  `playbook_doc` is appended after it and may add or tighten, never loosen):
+  - **Done state per phase:** one checklist per phase, each item tagged `[code]` (checked by
+    `exit_checklist`, shown met or missing in the snapshot) or `[judgment]` (the tick
+    decides and writes the reason in `next_action`). Example DEVELOP: builder hand-back
+    DONE `[code]`, commits on branch with head recorded `[code]`, tests written before code
+    `[judgment]`, lint and format clean `[judgment]`, CHANGELOG entry when the repo keeps
+    one `[judgment]`. GATE: the `validate_gate` items `[code]`, full suite needed per
+    testing triggers `[judgment]`, double gate green on this head `[code]`.
+  - **Scenarios:** a table of situation, what to do, command. At least: worker FAILED once
+    or twice, hung, capped, infra exit; Dennis or Codex NO-GO, GO-WITH-FIXES, round cap;
+    plan round cap; red main; PR behind main or conflicting; merge refused (each reason);
+    merge unknown; stale slice; idle node with queued work; memory low; R3 question; owner
+    overrule; repair conflict; flaky test suspected; import mismatch.
+  - **Worker briefs:** the required parts per role (builder, planner, Dennis, Codex review,
+    Codex repair, tester, docs): goal and row, risk and rulebooks, plan path and the
+    acceptance tests it defines, files in scope, test depth to run, where to run tests,
+    recurring-defects check, standing rules, lessons, what not to do, hand-back contract.
+  - **Testing:** what each phase must show per risk tier (T0 per edit, T1 at VERIFY, T2 at
+    GATE, full suite only on triggers), with `{tests}` pointing at the project's test
+    policy.
+  - **Close-out:** the DOCUMENT checklist.
+  `build_brief` inserts the role's brief section from the playbook; the tick's stdin
+  carries the whole playbook every invocation (it is the per-tick "hook").
 - `brief-template.md` placeholders: `{risk} {rulebooks} {recurring_defects} {standing_rules}
   {node_directory} {lessons} {body} {contract}`.
 - `devloop-install <bin_dir>`: copies the `devloop/` package to
@@ -805,7 +891,9 @@ def test_concurrent_set_no_lost_update(proj): ...  # 20 processes set different 
 - [ ] **Step 1: Failing tests:** `test_no_private_strings_in_shipped_files` (patterns
   `/home/`, `decoy`, `192\.168\.`, `\.116\b`, `\.55\b`, `obsidian`, `cam\b` over `devloop/`,
   `bin/devloop-*`, `skills/dev-loop/`), `test_example_project_validates`,
-  `test_install_replaces_atomically`, `test_installed_start_stop_start` (from an unrelated
+  `test_install_replaces_atomically`, `test_playbook_covers_every_phase_and_kind` (a
+  done-state section per PHASE and a brief section per KINDS role), `test_tick_stdin_has_playbook`,
+  `test_brief_has_role_section`, `test_installed_start_stop_start` (from an unrelated
   cwd under `env -i` with install HOME and PATH and a fake crontab holding another job:
   install, start, stop, start; the launcher imports the package; the other job survives;
   PAUSE clears; exactly one tagged line).
@@ -848,9 +936,17 @@ Local and vault files only; nothing here goes in the plugin repo.
 - Create: `~/bin/decoy-t3-wait` (runs `decoy-vm-t3`, polls the node log over ssh every 60 s
   printing a heartbeat line, exits with the remote `EXIT n`, prints the `FAILING TEST IDS`
   block, exits 1 when BRANCH-ONLY is non-empty).
-- Modify: `~/bin/codex-review` and `~/bin/codex-fix`: an optional trailing argument
-  `LAST_MSG_FILE` passed to `codex exec -o`; without it they behave exactly as today (edit
+- Modify: `~/bin/codex-review` and `~/bin/codex-fix`: when env `CODEX_LAST_MSG` is set,
+  add `-o "$CODEX_LAST_MSG"` to `codex exec`; without it they behave exactly as today (edit
   a copy then `mv`).
+- Create: `~/obsidian-vault/10_Projects/decoy/PLAYBOOK-decoy.md` (`playbook_doc`): the Decoy
+  done-state items on top of the generic ones (close-out every merge: Slack explainer,
+  graph update, CHANGELOG before merge, `decoy-rows close`; engine gate dispatch after
+  Codex GO; T3 baseline rewrite after a CLI main merge; coverage and mutation on changed
+  units), the Decoy scenarios (Dell mirror empty objects, gate venv lacks companion, vm-run
+  kill leaves remote, stacked PR base strands work, red main first), the builder brief
+  parts from `LOCAL-BUILDER-BRIEF.md`, and the Decoy test policy (where each tier runs,
+  per the node directory).
 - Modify: `~/.claude/settings.json` PreToolUse Bash: add the plugin's
   `headless_merge_guard.py` (back up first; owner told in the cutover ping).
 
@@ -900,7 +996,7 @@ that retired it.
 - [ ] **Step 1:** Write `project.json`; run `devloop-state decoy check`; expect OK.
 - [ ] **Step 2:** Done 2026-11-25 12:04 CST: `NODE-DIRECTORY.md` written from a live check,
   `dev-nodes` now points to it.
-- [ ] **Step 3:** Write `TICK-decoy.md` with priority order, closing set, plan buffer, duties
+- [ ] **Step 3:** Write `PLAYBOOK-decoy.md`, then `TICK-decoy.md` with priority order, closing set, plan buffer, duties
   (morning repin, evening scorecard, daily roadmap PR, hourly row post is cron), and the
   parity table.
 - [ ] **Step 4:** Add the `DEVLOOP_HEADLESS` early exits; check with `DEVLOOP_HEADLESS=1
@@ -908,7 +1004,7 @@ that retired it.
   `DEVLOOP_HEADLESS=1 env -i HOME=$HOME PATH=/usr/bin:/bin` running the devloop notify path
   with a fake curl first on PATH: the fake must be called.
 - [ ] **Step 5:** Gate S3 before cron starts: Dennis, then Codex, on `project.json`,
-  `TICK-decoy.md` with the parity table, `decoy-t3-wait`, the two helper edits, the hook
+  `PLAYBOOK-decoy.md`, `TICK-decoy.md` with the parity table, `decoy-t3-wait`, the two helper edits, the hook
   wiring and the slack-notify guard. Codex reviews after Dennis GO.
 - [ ] **Step 6:** No commit: the vault is not a git repo and syncs to `.116` by Syncthing.
   Run `qmd-refresh` so the new pages are searchable at once.
@@ -923,8 +1019,9 @@ that retired it.
   cannot be checked).
 - [ ] **Step 3:** Backfill from this interactive session (not headless): for each
   in-flight slice in `decoy-rows show`, open PRs and worktrees, `devloop-state decoy import`
-  with phase, head, PR, risk, rulebooks, purpose. Slices at GATE or later land in REVIEW and
-  earn their gates again here. Wait for every `/loop` writer on a worktree to finish before
+  with phase, head, PR, risk, rulebooks, purpose, and `--plan-approved` for plans that
+  passed their plan gate under `/loop`. Open PRs at GATE or later land in REVIEW and earn
+  their gates again here; merged PRs land in DOCUMENT. Wait for every `/loop` writer on a worktree to finish before
   importing that slice. Compare the slice list with the board; every row with an active slice has a
   file.
 - [ ] **Step 4:** `devloop-install ~/bin`; invoke the skill: "start the dev loop cron" for
@@ -933,6 +1030,7 @@ that retired it.
 - [ ] **Step 5:** First gated merge checked by hand against the slice evidence.
 - [ ] **Step 6:** Mark revision 4 `Status: record`; close HO-1 to HO-5 as superseded with the
   defaults applied; ping Slack with the status page link.
-- [ ] **Rollback:** "stop the dev loop" (PAUSE plus cron removal), wait until no headless
-  builder is live (`devloop-state list --live`), then restart `/loop` with STATUS.md as its
+- [ ] **Rollback:** "stop the dev loop" (PAUSE plus cron removal), wait until no writer run
+  (builder, planner, codex-fix) is live or unapplied (`devloop-state list --writers`;
+  apply or settle each), then restart `/loop` with STATUS.md as its
   handoff.

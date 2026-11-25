@@ -484,6 +484,11 @@ About 12 focused tests with fakes for `claude`, `gh`, `codex-review` and `vm-run
 - **Rules parity.** Every standing rule the live loop follows today maps to where the
   headless loop enforces it (code), carries it (TICK or brief) or configures it
   (`project.json`). The table lives in the project's tick doc and is a gate item.
+- **Playbook.** A generic `PLAYBOOK.md` plus a project `playbook_doc`, read by the tick on
+  every invocation: done-state checklist per phase (items tagged code-checked or
+  judgment), a scenario table, the required parts of each worker brief, and the testing
+  required per phase and risk. The snapshot prints each slice's checklist with each
+  code-checked item met or missing; each brief carries its role's section.
 - **Slack on every tick.** Each tick run, including skipped, paused and capped ones, posts
   one plain-language line: what it did, what is running, what is next.
 
