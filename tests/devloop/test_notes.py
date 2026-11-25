@@ -223,10 +223,10 @@ def test_answer_is_refused_headless(proj, mk_slice, monkeypatch):
     slices.move(proj, k, "HELD", "R3 waits")
     monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
     with pytest.raises(store.HeadlessRefused):
-        notes.answer(proj, k, "no")
+        notes.answer(proj, f"hold:{k}", "approve")
     assert slices.load(proj, k)["phase"] == "HELD"
     monkeypatch.delenv("DEVLOOP_HEADLESS")
-    notes.answer(proj, k, "approve")
+    notes.answer(proj, f"hold:{k}", "approve")
     s = slices.load(proj, k)
     assert (s["phase"], s["risk"], s["waiting_on"]) == ("FRAME", "R2", None)
 
@@ -238,12 +238,16 @@ def test_owner_edit_of_the_answer_line_is_read_back(proj, mk_slice, home, monkey
     )
     slices.move(proj, k, "HELD", "R3 waits")
     page = home / "p" / "questions.md"
-    page.write_text(page.read_text().replace("- Answer:", "- Answer: approve"))
+    text = page.read_text()
+    cut = text.index(f"### hold:{k}")
+    page.write_text(
+        text[:cut] + text[cut:].replace("- Answer:", "- Answer: approve", 1)
+    )
     monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
     assert notes.read_answers(proj) == []
     assert slices.load(proj, k)["phase"] == "HELD"
     monkeypatch.delenv("DEVLOOP_HEADLESS")
-    assert notes.read_answers(proj) == [k]
+    assert notes.read_answers(proj) == [f"hold:{k}"]
     assert slices.load(proj, k)["phase"] == "FRAME"
     assert notes.read_answers(proj) == []
 
@@ -323,58 +327,80 @@ def test_cli_notes_commands(proj, home):
     assert run_cli(home, "p", "answer", "q1", "C").returncode == 3
 
 
-def test_wrong_choice_keeps_a_held_slice_held(proj, mk_slice):
+def _held(proj, mk_slice, options=("yes", "no")):
     k = mk_slice(proj, phase="FRAME", risk="R3", rulebooks=["a.md"])
-    notes.ask(
-        proj, k, question="Spend?", options=["yes", "no"], recommended="no", wait=True
-    )
-    slices.move(proj, k, "HELD", "R3 waits")
-    s = slices.load(proj, k)
-    assert (s["hold_question"], s["hold_release_option"]) == (k, "approve")
-    notes.answer(proj, k, "no")
-    assert slices.load(proj, k)["phase"] == "HELD"
-    assert "- Answer: no" in (store.state_dir(proj) / "questions.md").read_text()
-    s["hold_question"] = "OTHER--S1"
-    slices._save(proj, s)
-    notes.answer(proj, k, "approve")
-    assert slices.load(proj, k)["phase"] == "HELD"
-
-
-def test_first_option_that_is_not_approve_does_not_release(proj, mk_slice):
-    k = mk_slice(proj, phase="FRAME", risk="R3", rulebooks=["a.md"])
-    notes.ask(
-        proj, k, question="Spend?", options=["yes", "no"], recommended="no", wait=True
-    )
-    slices.move(proj, k, "HELD", "R3 waits")
-    notes.answer(proj, k, "yes")
-    assert slices.load(proj, k)["phase"] == "HELD"
-    q = (store.state_dir(proj) / "questions.md").read_text()
-    assert "- Options: yes | no | approve" in q
-
-
-def test_system_creates_the_hold_question_with_approve(proj, mk_slice):
-    k = mk_slice(proj, phase="REMEDIATE", round=2)
-    slices.move(proj, k, "PARKED", "round-3")
-    q = (store.state_dir(proj) / "questions.md").read_text()
-    assert "- Options: approve | keep-held" in q
-
-
-def test_owner_park_needs_its_release_option(proj, mk_slice):
-    k = mk_slice(proj, phase="REMEDIATE", round=2)
-    slices.move(proj, k, "PARKED", "round-3")
-    assert slices.load(proj, k)["hold_release_option"] == "approve"
     notes.ask(
         proj,
         k,
-        question="Go on?",
-        options=["approve", "reject"],
-        recommended="reject",
-        wait=False,
+        question="Spend?",
+        options=list(options),
+        recommended=options[-1],
+        wait=True,
     )
-    notes.answer(proj, k, "reject")
-    assert slices.load(proj, k)["owner_answered"] is False
+    slices.move(proj, k, "HELD", "R3 waits")
+    return k
+
+
+def test_hold_question_is_written_by_the_system(proj, mk_slice):
+    k = _held(proj, mk_slice)
+    s = slices.load(proj, k)
+    assert (s["hold_question"], s["hold_release_option"]) == (f"hold:{k}", "approve")
+    page = (store.state_dir(proj) / "questions.md").read_text()
+    hold = page[page.index(f"### hold:{k}") :]
+    assert "- Question: Release the hold on ROW" in hold
+    assert "(reason: owner-hold)?" in hold
+    assert "- Context: Spend?" in hold
+    assert "- Options: approve | keep-held" in hold
+    assert "- Recommended: keep-held" in hold
+    # The agent's own question stays a separate entry, shown just before it.
+    assert page.index(f"### {k}\n") < page.index(f"### hold:{k}")
+
+
+def test_agent_question_never_lifts_a_hold(proj, mk_slice):
+    k = _held(proj, mk_slice)
+    notes.answer(proj, k, "yes")
+    assert slices.load(proj, k)["phase"] == "HELD"
+    notes.answer(proj, f"hold:{k}", "keep-held")
+    assert slices.load(proj, k)["phase"] == "HELD"
+    s = slices.load(proj, k)
+    s["hold_question"] = "hold:OTHER--S1"
+    slices._save(proj, s)
+    notes.answer(proj, f"hold:{k}", "approve")
+    assert slices.load(proj, k)["phase"] == "HELD"
+
+
+def test_agent_option_called_approve_does_not_release(proj, mk_slice):
+    k = _held(proj, mk_slice, options=("approve", "no"))
     notes.answer(proj, k, "approve")
+    assert slices.load(proj, k)["phase"] == "HELD"
+    notes.answer(proj, f"hold:{k}", "approve")
+    assert slices.load(proj, k)["phase"] == "FRAME"
+
+
+def test_owner_park_needs_the_hold_question(proj, mk_slice):
+    k = mk_slice(proj, phase="REMEDIATE", round=2)
+    slices.move(proj, k, "PARKED", "round-3")
+    page = (store.state_dir(proj) / "questions.md").read_text()
+    assert "(reason: round-3)?" in page and "- Options: approve | keep-held" in page
+    notes.answer(proj, f"hold:{k}", "keep-held")
+    assert slices.load(proj, k)["owner_answered"] is False
+    notes.answer(proj, f"hold:{k}", "approve")
     assert slices.load(proj, k)["owner_answered"] is True
+
+
+def test_ask_refuses_reserved_hold_keys(proj, mk_slice, monkeypatch):
+    for headless in (False, True):
+        if headless:
+            monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
+        with pytest.raises(notes.NotesError, match="system"):
+            notes.ask(
+                proj,
+                "hold:ROW--S1",
+                question="x",
+                options=["approve"],
+                recommended="approve",
+                wait=False,
+            )
 
 
 def test_headless_ask_refused_for_a_held_slice(proj, mk_slice, monkeypatch):

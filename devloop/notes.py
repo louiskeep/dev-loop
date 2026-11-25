@@ -18,6 +18,7 @@ BLOCK_END = "<!-- /devloop:questions -->"
 _TICK = re.compile(r"<!-- tick (\S+) -->")
 _MONTH = re.compile(r"\d{4}-\d{2}")
 _OPTION_SEP = " | "
+HOLD_PREFIX = "hold:"
 
 
 class NotesError(Exception):
@@ -200,7 +201,7 @@ def _render_lessons(project, table):
 # --- questions ---------------------------------------------------------------
 
 _FIELD = re.compile(
-    r"- (Question|Options|Recommended|Wait|Asked|Applied|Answer):[ ]?(.*)"
+    r"- (Question|Context|Options|Recommended|Wait|Asked|Applied|Answer):[ ]?(.*)"
 )
 
 
@@ -248,6 +249,7 @@ def _parse_questions(body):
         result[key] = {
             "key": key,
             "question": raw.get("question", ""),
+            "context": raw.get("context") or None,
             "options": options,
             "recommended": raw.get("recommended", ""),
             "wait": raw.get("wait") == "yes",
@@ -268,6 +270,7 @@ def _render_questions(qs):
             "",
             f"### {q['key']}",
             f"- Question: {q['question']}",
+            *([f"- Context: {q['context']}"] if q.get("context") else []),
             f"- Options: {_OPTION_SEP.join(q['options'])}",
             f"- Recommended: {q['recommended']}",
             f"- Wait: {'yes' if q['wait'] else 'no'}",
@@ -323,6 +326,7 @@ def _slice_for(project, key):
     # Imported here because slices imports this module to record board failures.
     from . import slices
 
+    key = key.removeprefix(HOLD_PREFIX)
     try:
         path = slices.slice_path(project, key)
     except slices.SliceError:
@@ -343,6 +347,8 @@ def ask(
     from . import slices
 
     _key(key)
+    if key.startswith(HOLD_PREFIX):
+        raise NotesError("hold questions are written by the system only")
     text = _line(question, 500, "question")
     if not isinstance(options, list) or not options:
         raise NotesError("a question needs options")
@@ -392,10 +398,11 @@ def ask(
 
 
 def ensure_hold_question(project, key):
-    """Make the hold's question offer `approve` and one other option.
+    """Write the system's own question for a hold, under the reserved key `hold:<slice>`.
 
-    The release option is the fixed word `approve`, never text an agent wrote, and the
-    check that the slice is really held happens under the same lock as the edit.
+    Text, options and recommendation are fixed, so nothing an agent wrote can pick the
+    release word. The agent's own question, if any, stays a separate entry and is shown
+    next to this one as context. The slice is re-read under the same lock as the edit.
     """
     from . import slices
 
@@ -409,26 +416,27 @@ def ensure_hold_question(project, key):
         if not held:
             return
         before, qs, after, had = _load_questions(path)
-        q = qs.get(key)
-        if q is None:
-            q = qs[key] = {
-                "key": key,
-                "question": "Release the hold on this slice?",
-                "options": [slices.HOLD_RELEASE_OPTION, "keep-held"],
-                "recommended": "keep-held",
-                "wait": True,
-                "asked_at": store.now_iso(),
-                "applied": None,
-                "answer": None,
-            }
-        else:
-            if slices.HOLD_RELEASE_OPTION not in q["options"]:
-                q["options"] = q["options"] + [slices.HOLD_RELEASE_OPTION]
-            if len(q["options"]) < 2:
-                q["options"] = q["options"] + ["keep-held"]
-            # A new hold needs a fresh answer.
-            q["answer"] = q["applied"] = None
-        _save_questions(path, before, qs, after, had)
+        code = "owner-hold" if s["phase"] == "HELD" else s["park_reason"]
+        own = qs.get(key)
+        hold = {
+            "key": HOLD_PREFIX + key,
+            "question": f"Release the hold on {s['row']} {s['slice']} (reason: {code})?",
+            "context": own["question"] if own else None,
+            "options": [slices.HOLD_RELEASE_OPTION, "keep-held"],
+            "recommended": "keep-held",
+            "wait": True,
+            "asked_at": store.now_iso(),
+            "applied": None,
+            "answer": None,
+        }
+        ordered = {}
+        for k, q in qs.items():
+            if k != hold["key"]:
+                ordered[k] = q
+            if k == key:
+                ordered[hold["key"]] = hold
+        ordered.setdefault(hold["key"], hold)
+        _save_questions(path, before, ordered, after, had)
 
 
 def _lifts_hold(s, key, choice):
@@ -450,16 +458,20 @@ def _apply_answer(project, key, choice):
         _save_questions(path, before, qs, after, had)
     store.append_event(project, "question-answered", key=key)
     s = _slice_for(project, key)
-    if s and s["waiting_on"] == f"question {key}":
+    sk = key.removeprefix(HOLD_PREFIX)
+    if s and _lifts_hold(s, key, choice):
         if s["phase"] == "HELD":
-            # Any other choice is recorded above but keeps the slice held.
-            if _lifts_hold(s, key, choice):
-                slices.release_hold(project, key)
-        elif s["phase"] != "DONE":
-            slices.set_fields(project, key, waiting_on=None)
-    if s and s["phase"] == "PARKED" and s["park_reason"] in slices.OWNER_PARKS:
-        if _lifts_hold(s, key, choice):
-            slices.owner_answer(project, key)
+            slices.release_hold(project, sk)
+        elif s["phase"] == "PARKED" and s["park_reason"] in slices.OWNER_PARKS:
+            slices.owner_answer(project, sk)
+    elif (
+        s
+        and key == sk
+        and s["waiting_on"] == f"question {key}"
+        and s["phase"] not in ("HELD", "DONE")
+    ):
+        # The agent's own question never lifts a hold; only `hold:<slice>` can.
+        slices.set_fields(project, sk, waiting_on=None)
 
 
 def answer(project: str, key: str, choice: str) -> None:

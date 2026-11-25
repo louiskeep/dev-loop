@@ -929,7 +929,7 @@ def _move(project, key, to, reason, via_merge=False):
             s["parked_from"], s["park_reason"] = parked_from, reason
             if to == "HELD" or reason in OWNER_PARKS:
                 # Only this question and this option may lift the hold.
-                s["hold_question"] = key
+                s["hold_question"] = "hold:" + key
                 s["hold_release_option"] = HOLD_RELEASE_OPTION
         elif frm in ("PARKED", "HELD"):
             s["parked_from"] = s["park_reason"] = None
