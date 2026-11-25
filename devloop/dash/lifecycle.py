@@ -19,6 +19,9 @@ from .. import project as projmod
 from .. import runs, store
 from . import server
 
+# Loopback unless the project (dash.host) or the flag says otherwise, so a shared
+# plugin never opens a port to the network by default.
+DEFAULT_HOST = "127.0.0.1"
 PORT_BASE = 8791
 PORT_SPAN = 20
 DETACH_WAIT_S = 5.0
@@ -30,6 +33,11 @@ def default_port(project) -> int:
     """A stable port per project, so two projects rarely contend for the same one."""
     n = int(hashlib.sha256(project.encode()).hexdigest()[:8], 16)
     return PORT_BASE + n % PORT_SPAN
+
+
+def pick_host(flag, cfg) -> str:
+    """The bind address: --host, then dash.host, then loopback."""
+    return flag or (cfg.get("dash") or {}).get("host") or DEFAULT_HOST
 
 
 def lan_ip(host) -> str:
@@ -84,7 +92,7 @@ def dash_status(project):
     """(state, url, port) for `devloop-state check`. Reads only; creates nothing."""
     rec = _running_record(project)
     if rec:
-        return "running", _url(rec.get("host", "0.0.0.0"), rec["port"]), rec["port"]
+        return "running", _url(rec.get("host", DEFAULT_HOST), rec["port"]), rec["port"]
     return "not running", None, _saved_port(project) or default_port(project)
 
 
@@ -173,7 +181,7 @@ def _already(project):
     rec = _running_record(project)
     if rec:
         print(
-            f"Dashboard: {_url(rec.get('host', '0.0.0.0'), rec['port'])} (already running)"
+            f"Dashboard: {_url(rec.get('host', DEFAULT_HOST), rec['port'])} (already running)"
         )
     else:
         print("Dashboard is already starting", file=sys.stderr)
@@ -204,7 +212,7 @@ def _detach(project, args):
     while time.monotonic() < deadline:
         rec = _running_record(project)
         if rec:
-            print(f"Dashboard: {_url(rec.get('host', '0.0.0.0'), rec['port'])}")
+            print(f"Dashboard: {_url(rec.get('host', DEFAULT_HOST), rec['port'])}")
             return 0
         time.sleep(0.1)
     print("dashboard did not start; see dash.log in the state dir", file=sys.stderr)
@@ -260,7 +268,7 @@ def main(argv=None) -> int:
     except projmod.ConfigError as exc:
         print(f"config: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    host = args.host or (cfg.get("dash") or {}).get("host") or "0.0.0.0"
+    host = pick_host(args.host, cfg)
     if args.stop:
         return _stop(args.project)
     if args.detach:

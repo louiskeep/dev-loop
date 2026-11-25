@@ -31,7 +31,9 @@ use it.
 6. Add the schedule: `devloop-cron add PROJECT --bin-dir BIN_DIR`. It keeps every other
    cron line and checks the result.
 7. Start the dashboard: `devloop-dash PROJECT --detach`. Give the user the Network URL
-   it prints (the project keeps one stable port; run it again to read the URL).
+   it prints (the project keeps one stable port; run it again to read the URL). It
+   binds 127.0.0.1 unless `dash.host` in `project.json` (or `--host`) says otherwise; set
+   `"dash": {"host": "0.0.0.0"}` to open it to the local network.
 8. Tell the user it started, when the next tick runs, and the dashboard URL.
 
 ## stop

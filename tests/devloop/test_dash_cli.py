@@ -297,3 +297,25 @@ def test_install_ships_dash_assets(tmp_path, monkeypatch):
     assert (lib / "devloop" / "dash" / "web" / "dash.js").is_file()
     assert (lib / "devloop" / "dash" / "web" / "dash.css").is_file()
     assert version.is_dir() and os.access(bins / "devloop-dash", os.X_OK)
+
+
+def test_default_host_is_loopback_and_dash_host_overrides(proj, cfg_edit, home):
+    cfg = {}
+    assert lifecycle.DEFAULT_HOST == "127.0.0.1"
+    assert lifecycle.pick_host(None, cfg) == "127.0.0.1"
+    assert lifecycle.pick_host(None, {"dash": {"host": "0.0.0.0"}}) == "0.0.0.0"
+    assert lifecycle.pick_host("10.0.0.5", {"dash": {"host": "0.0.0.0"}}) == "10.0.0.5"
+    # End to end: with no flag the server binds loopback, and the saved host says so.
+    out = run_cli(home, "p", "--detach", "--port", "0")
+    try:
+        assert out.returncode == 0 and "http://127.0.0.1:" in out.stdout
+        assert json.loads((home / "p" / "dash.json").read_text())["host"] == "127.0.0.1"
+    finally:
+        run_cli(home, "p", "--stop")
+    cfg_edit(lambda c: c.update(dash={"host": "0.0.0.0"}))
+    out = run_cli(home, "p", "--detach", "--port", "0")
+    try:
+        assert out.returncode == 0
+        assert json.loads((home / "p" / "dash.json").read_text())["host"] == "0.0.0.0"
+    finally:
+        run_cli(home, "p", "--stop")
