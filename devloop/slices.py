@@ -233,9 +233,8 @@ def slice_key(row: str, slice_id: str) -> str:
 
 
 def _slices_dir(project: str) -> Path:
-    d = store.state_dir(project) / "slices"
-    d.mkdir(exist_ok=True)
-    return d
+    # Writers create it through store.locked; readers must not.
+    return store.state_dir(project) / "slices"
 
 
 def slice_path(project: str, key: str) -> Path:
@@ -740,7 +739,7 @@ def _move(project, key, to, reason, via_merge=False, ident=None):
         missing = (
             []
             if via_merge
-            else [name for name, ok in evidence.checks(project, s, cfg, to) if not ok]
+            else [i.label for i in evidence.checks(project, s, cfg, to) if not i.ok]
         )
         if missing:
             raise TransitionError("; ".join(missing))
@@ -861,6 +860,7 @@ def owner_answer(project: str, key: str) -> None:
 _MOVED = {
     "validate_gate": evidence,
     "exit_checklist": evidence,
+    "exit_items": evidence,
     "board_merged": board,
     "deliver_board": board,
     "merge_records": board,

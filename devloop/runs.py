@@ -77,9 +77,8 @@ def is_done(rd) -> bool:
 
 
 def _runs_dir(project):
-    d = store.state_dir(project) / "runs"
-    d.mkdir(exist_ok=True)
-    return d
+    # Readers never create it: the dashboard reads a project that may not have run yet.
+    return store.state_dir(project) / "runs"
 
 
 # Process facts change after dispatch, so they live beside the frozen request.
@@ -110,7 +109,8 @@ def update_request(project, run_id, **fields) -> None:
 
 
 def iter_runs(project):
-    for rd in sorted(_runs_dir(project).iterdir()):
+    root = _runs_dir(project)
+    for rd in sorted(root.iterdir()) if root.is_dir() else []:
         if not rd.is_dir():
             continue
         unreadable = False
@@ -225,6 +225,29 @@ def holds_slot(rd, req) -> bool:
     if req["kind"] == "test":
         return not (ended and _test_confirmed(rd))
     return not ended and (wrapper_alive(req) or payload_alive(req))
+
+
+def run_state(rd, req):
+    """What a slot-holding run is doing: executing, awaiting-apply, awaiting-release.
+
+    None when it holds no slot. Only an executing run owns a card; the other two are
+    finished or lost work that still reserves capacity until someone acts.
+    """
+    if not holds_slot(rd, req):
+        return None
+    if not (rd / "exit").is_file() and (wrapper_alive(req) or payload_alive(req)):
+        return "executing"
+    return "awaiting-release" if req["kind"] == "test" else "awaiting-apply"
+
+
+def slot_usage(project) -> dict:
+    """Slots held per pool name (`other` for kinds with no pool)."""
+    used = {}
+    for rd, req in iter_runs(project):
+        if holds_slot(rd, req):
+            slot = KINDS[req["kind"]].slot or "other"
+            used[slot] = used.get(slot, 0) + 1
+    return used
 
 
 def live_runs(project) -> list:

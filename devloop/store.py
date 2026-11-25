@@ -46,6 +46,21 @@ def state_dir(project: str) -> Path:
     return d
 
 
+def cap_active(project: str, now=None) -> bool:
+    """True while the usage-cap file says to wait. A damaged file counts as active:
+    better a pause than a burst at a capped service."""
+    cap = state_dir(project) / "cap-until"
+    if not cap.is_file():
+        return False
+    try:
+        until = datetime.datetime.fromisoformat(cap.read_text().strip())
+    except ValueError:
+        return True
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=datetime.timezone.utc)
+    return until > (now or datetime.datetime.now(datetime.timezone.utc))
+
+
 def run_dir(project: str, run_id: str) -> Path:
     if not isinstance(run_id, str) or TOKEN.fullmatch(run_id) is None:
         raise StoreError("bad run id")

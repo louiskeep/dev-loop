@@ -1,9 +1,63 @@
 """Gate and exit evidence: re-reads run dirs to decide what a slice has earned."""
 
+import collections
 import hashlib
 
 from . import project as projmod
 from . import runs, slices, store
+
+
+# One checklist entry. `code` and `reason` come from fixed tables (CODES, REASONS), so a
+# reader can show them without any run id, reviewer name or free text; `reviewer` is the
+# configured reviewer name, which readers turn into a role label.
+Item = collections.namedtuple(
+    "Item", "code label ok reviewer reason", defaults=(None, None)
+)
+
+CODES = (
+    "risk",
+    "rulebooks",
+    "question-open",
+    "plan-file",
+    "plan-outstanding",
+    "plan-rules",
+    "plan-review",
+    "branch",
+    "head",
+    "builder-run",
+    "selfcheck",
+    "t1",
+    "t2",
+    "full",
+    "no-outstanding",
+    "no-row-in-document",
+    "plan-unchanged",
+    "code-review",
+    "docs",
+)
+# First matching fragment of a problem text wins; the fragment never reaches a reader.
+REASONS = (
+    ("no run recorded", "no-run"),
+    ("no readable request", "unreadable"),
+    ("belongs to another slice", "other-slice"),
+    ("froze a different head", "other-head"),
+    ("does not match the ledger", "ledger"),
+    ("is not applied", "not-applied"),
+    ("kind is not allowed", "wrong-kind"),
+    ("result differs", "verdict-differs"),
+    ("does not match", "mismatch"),
+    ("selection, not the whole level", "selection"),
+    ("predecessor run", "order"),
+    ("recorded before", "order"),
+)
+REASON_WORDS = tuple(sorted({w for _, w in REASONS}))
+
+
+def _reason(problem):
+    for fragment, word in REASONS:
+        if fragment in problem:
+            return word
+    return "invalid"
 
 
 def _tick_ok(s, kind):
@@ -63,8 +117,14 @@ def _verify_run(project, s, entry, *, kinds, expect, covers_ok=False):
     return None, req
 
 
-def _item(label, problem):
-    return (label if problem is None else f"{label} ({problem})", problem is None)
+def _item(code, label, problem, reviewer=None):
+    return Item(
+        code,
+        label if problem is None else f"{label} ({problem})",
+        problem is None,
+        reviewer,
+        None if problem is None else _reason(problem),
+    )
 
 
 def _reviewer_kinds(cfg, name):
@@ -75,7 +135,7 @@ def _reviewer_kinds(cfg, name):
 def _test_item(project, s, level, label):
     e = (s["evidence"].get(s["head"]) or {}).get(level) if s["head"] else None
     if not e or e["verdict"] != "GO":
-        return (label, False)
+        return Item(level, label, False)
     problem, req = _verify_run(
         project,
         s,
@@ -86,24 +146,28 @@ def _test_item(project, s, level, label):
     )
     if problem is None and level in ("t2", "full") and req.get("select"):
         problem = "the run tested a selection, not the whole level"
-    return _item(label, problem)
+    return _item(level, label, problem)
 
 
 def _plan_items(project, s, cfg):
     f = slices.plan_file(s)
     cur = slices.plan_sha_or_none(s)
     items = [
-        ("plan file exists", cur is not None),
-        ("no plan review or repair outstanding", not _plan_outstanding(project, s)),
+        Item("plan-file", "plan file exists", cur is not None),
+        Item(
+            "plan-outstanding",
+            "no plan review or repair outstanding",
+            not _plan_outstanding(project, s),
+        ),
     ]
     has_rules = False
     if f is not None and cur is not None:
         has_rules = "Rules consulted:" in f.read_text(
             encoding="utf-8", errors="replace"
         )
-    items.append(("plan names the Rules consulted", has_rules))
+    items.append(Item("plan-rules", "plan names the Rules consulted", has_rules))
     if s["risk"] not in slices.TIERS:
-        return items + [("risk is R0, R1 or R2", False)]
+        return items + [Item("risk", "risk is R0, R1 or R2", False)]
     roster = [projmod.reviewer_entry(e) for e in cfg["reviews"][s["risk"]]["plan"]]
     prev_run = None
     for i, (name, cap) in enumerate(roster):
@@ -125,7 +189,14 @@ def _plan_items(project, s, cfg):
             gos = [p for p in mine if p[1]["verdict"] == "GO"]
             pick = gos[-1] if gos else (mine[-1] if mine and rounds >= cap else None)
             if pick is None:
-                items.append((f"{label} (needs a GO or {cap} rounds)", False))
+                items.append(
+                    Item(
+                        "plan-review",
+                        f"{label} (needs a GO or {cap} rounds)",
+                        False,
+                        name,
+                    )
+                )
                 prev_run = None
                 continue
             problem, _ = _verify_run(
@@ -135,7 +206,7 @@ def _plan_items(project, s, cfg):
                 kinds=kinds,
                 expect={"purpose": "plan", "reviewer": name, "plan_sha": pick[0]},
             )
-            items.append(_item(label, problem))
+            items.append(_item("plan-review", label, problem, name))
             sat = pick[1]["run"] if problem is None else None
         else:
             e = (s["evidence"].get(cur) or {}).get(f"plan:{name}") if cur else None
@@ -144,7 +215,9 @@ def _plan_items(project, s, cfg):
                 or e["verdict"] != "GO"
                 or e.get("plan_lineage", 0) != s["plan_lineage"]
             ):
-                items.append((f"{label} GO on the current plan", False))
+                items.append(
+                    Item("plan-review", f"{label} GO on the current plan", False, name)
+                )
                 prev_run = None
                 continue
             problem, req = _verify_run(
@@ -156,7 +229,9 @@ def _plan_items(project, s, cfg):
             )
             if problem is None and i > 0 and req.get("predecessor_run") != prev_run:
                 problem = "predecessor run does not match the previous reviewer"
-            items.append(_item(f"{label} GO on the current plan", problem))
+            items.append(
+                _item("plan-review", f"{label} GO on the current plan", problem, name)
+            )
             sat = e["run"] if problem is None else None
         prev_run = sat
     return items
@@ -234,34 +309,43 @@ _EVIDENCE_KINDS = ("test", "dennis", "codex-review", "codex-fix")
 
 def _gate_items(project, s, cfg):
     if not s["head"]:
-        return [("head set", False)]
+        return [Item("head", "head set", False)]
     items = [
-        ("no test or review outstanding on head", not _outstanding(project, s)),
+        Item(
+            "no-outstanding",
+            "no test or review outstanding on head",
+            not _outstanding(project, s),
+        ),
         # A row's docs finish before its next slice merges.
-        ("no other slice of this row is in DOCUMENT", not _row_in_document(project, s)),
+        Item(
+            "no-row-in-document",
+            "no other slice of this row is in DOCUMENT",
+            not _row_in_document(project, s),
+        ),
     ]
     sha = slices.plan_sha_or_none(s)
     items.append(
-        (
+        Item(
+            "plan-unchanged",
             "approved plan unchanged",
             bool(s["approved_plan_sha"]) and sha == s["approved_plan_sha"],
         )
     )
-    items.append(("selfcheck GO on head", _tick_ok(s, "selfcheck")))
+    items.append(Item("selfcheck", "selfcheck GO on head", _tick_ok(s, "selfcheck")))
     items.append(_test_item(project, s, "t1", "t1 GO on head"))
     if (cfg.get("tests") or {}).get("t2"):
         items.append(_test_item(project, s, "t2", "t2 GO on head"))
     if s["full_suite_required"]:
         items.append(_test_item(project, s, "full", "full suite GO on head"))
     if s["risk"] not in slices.TIERS:
-        return items + [("risk is R0, R1 or R2", False)]
+        return items + [Item("risk", "risk is R0, R1 or R2", False)]
     prev_run, prev_at = None, None
     for i, entry in enumerate(cfg["reviews"][s["risk"]]["code"]):
         name, _cap = projmod.reviewer_entry(entry)
         label = f"code review {name} GO on head"
         e = (s["evidence"].get(s["head"]) or {}).get(f"code:{name}")
         if not e or e["verdict"] != "GO":
-            items.append((label, False))
+            items.append(Item("code-review", label, False, name))
             prev_run = prev_at = None
             continue
         problem, req = _verify_run(
@@ -276,7 +360,7 @@ def _gate_items(project, s, cfg):
                 problem = "predecessor run does not match the previous reviewer"
             elif prev_at is None or e["at"] < prev_at:
                 problem = "recorded before the previous reviewer"
-        items.append(_item(label, problem))
+        items.append(_item("code-review", label, problem, name))
         prev_run, prev_at = (e["run"], e["at"]) if problem is None else (None, None)
     return items
 
@@ -285,48 +369,69 @@ def checks(project, s, cfg, to):
     frm = s["phase"]
     if (frm, to) == ("FRAME", "PLAN"):
         return [
-            (
+            Item(
+                "risk",
                 "risk is R0, R1 or R2 (R3 waits for the owner)",
                 s["risk"] in slices.TIERS,
             ),
-            ("rulebooks listed", bool(s["rulebooks"])),
+            Item("rulebooks", "rulebooks listed", bool(s["rulebooks"])),
         ]
     if (frm, to) == ("FRAME", "HELD") and s["risk"] == "R3":
-        return [("a question for the owner is open", bool(s["waiting_on"]))]
+        return [
+            Item(
+                "question-open",
+                "a question for the owner is open",
+                bool(s["waiting_on"]),
+            )
+        ]
     if (frm, to) == ("PLAN", "DEVELOP"):
         return _plan_items(project, s, cfg)
     if (frm, to) == ("DEVELOP", "SELF_CHECK"):
         return [
-            ("branch set", bool(s["branch"])),
-            ("head set", bool(s["head"])),
-            (
+            Item("branch", "branch set", bool(s["branch"])),
+            Item("head", "head set", bool(s["head"])),
+            Item(
+                "builder-run",
                 "applied builder run DONE on head",
                 bool(s["head"]) and _builder_run_ok(project, s),
             ),
         ]
     if (frm, to) == ("SELF_CHECK", "VERIFY"):
-        return [("selfcheck GO on head", bool(s["head"]) and _tick_ok(s, "selfcheck"))]
+        return [
+            Item(
+                "selfcheck",
+                "selfcheck GO on head",
+                bool(s["head"]) and _tick_ok(s, "selfcheck"),
+            )
+        ]
     if (frm, to) == ("VERIFY", "REVIEW"):
         if not s["head"]:
-            return [("head set", False)]
+            return [Item("head", "head set", False)]
         return [_test_item(project, s, "t1", "t1 GO on head")]
     if (frm, to) in (("REVIEW", "GATE"), ("GATE", "DOCUMENT")):
         return _gate_items(project, s, cfg)
     if (frm, to) == ("DOCUMENT", "DONE"):
-        return [("docs GO on head", bool(s["head"]) and _tick_ok(s, "docs"))]
+        return [
+            Item("docs", "docs GO on head", bool(s["head"]) and _tick_ok(s, "docs"))
+        ]
     return []
 
 
-def exit_checklist(project: str, key: str, to_phase=None) -> list:
-    """Named exit items for a transition, met or missing; `move` refuses on the same list."""
+def exit_items(project: str, key: str, to_phase=None) -> list:
+    """Exit items for a transition, met or missing; `move` refuses on the same list."""
     s = slices.load(project, key)
     cfg = projmod.load_project(project)
     to = to_phase or slices.FORWARD.get(s["phase"])
     return [] if to is None else checks(project, s, cfg, to)
 
 
+def exit_checklist(project: str, key: str, to_phase=None) -> list:
+    """`[(label, ok)]` for the same items; the labels are pinned by tests and the playbook."""
+    return [(i.label, i.ok) for i in exit_items(project, key, to_phase)]
+
+
 def validate_gate(project: str, key: str) -> list:
     """The one evidence check, shared by REVIEW to GATE and the merge command."""
     s = slices.load(project, key)
     cfg = projmod.load_project(project)
-    return [name for name, ok in _gate_items(project, s, cfg) if not ok]
+    return [i.label for i in _gate_items(project, s, cfg) if not i.ok]

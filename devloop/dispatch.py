@@ -49,18 +49,8 @@ def _pause_or_cap(project):
     d = store.state_dir(project)
     if (d / "PAUSE").exists():
         raise runs.Refused("paused")
-    cap = d / "cap-until"
-    if cap.is_file():
-        until = None
-        try:
-            until = datetime.datetime.fromisoformat(cap.read_text().strip())
-        except ValueError:
-            pass
-        if until is not None and until.tzinfo is None:
-            until = until.replace(tzinfo=datetime.timezone.utc)
-        # An unreadable cap file blocks: better a pause than a burst at a capped service.
-        if until is None or until > datetime.datetime.now(datetime.timezone.utc):
-            raise runs.Refused("usage cap active")
+    if store.cap_active(project):
+        raise runs.Refused("usage cap active")
 
 
 def _applied(project, run_id) -> bool:

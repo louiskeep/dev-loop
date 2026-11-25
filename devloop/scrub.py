@@ -2,6 +2,8 @@
 
 import re
 
+from .store import TOKEN
+
 _TOKEN = re.compile(r"(?:ghp_|gho_|github_pat_|sk-|xox[abp]-|AKIA)[A-Za-z0-9_\-]{8,}")
 # user:password@host in any URL, however short the password is.
 _URL_CRED = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s/@]*@\S*")
@@ -41,3 +43,23 @@ def scrub_lines(text, limit: int = 1500, keep=()) -> str:
     for mark, path in marks.items():
         out = out.replace(mark, path)
     return out[:limit]
+
+
+_HEX_RUN = re.compile(r"[0-9a-f]{7,}")
+
+
+def plain(value) -> str:
+    """One ID rule for every public surface: a plain token, or `?`.
+
+    Event and config values can come from a shell (`devloop-state event`), so an ID
+    that looks like a secret or a commit id is refused, not trusted.
+    """
+    text = str(value)
+    if (
+        TOKEN.fullmatch(text) is None
+        or _TOKEN.search(text)
+        or _HEX_RUN.search(text)
+        or _LONG.search(text)
+    ):
+        return "?"
+    return text

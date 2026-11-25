@@ -65,19 +65,6 @@ def _alert(project, reason, text):
     notes.notify(project, text)
 
 
-def _cap_active(project) -> bool:
-    cap = store.state_dir(project) / "cap-until"
-    if not cap.is_file():
-        return False
-    try:
-        until = datetime.datetime.fromisoformat(cap.read_text().strip())
-    except ValueError:
-        return True
-    if until.tzinfo is None:
-        until = until.replace(tzinfo=datetime.timezone.utc)
-    return until > utc_now()
-
-
 def _model_call(project, cfg, prompt):
     argv = [
         "timeout",
@@ -164,7 +151,7 @@ def _pass(project) -> str:
     if (d / "PAUSE").exists():
         status.write_status(project)
         return "paused"
-    if _cap_active(project):
+    if store.cap_active(project):
         status.write_status(project)
         return "capped"
     md, digest = snapshot.build_snapshot(project)

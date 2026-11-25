@@ -125,10 +125,11 @@ def _slice_block(project, s, running):
     return lines
 
 
-def _command_outputs(project, cfg):
+def command_outputs(project, cfg):
+    """Run the configured snapshot commands: [(name, text, ok)]. Only the tick calls this."""
     out = []
     for spec in cfg.get("snapshot_cmds") or []:
-        text = ""
+        text, ok = "", False
         try:
             r = subprocess.run(
                 spec["argv"],
@@ -138,12 +139,23 @@ def _command_outputs(project, cfg):
                 timeout=60,
                 check=False,
             )
-            text = (r.stdout or "") + (r.stderr or "")
+            text, ok = (r.stdout or "") + (r.stderr or ""), r.returncode == 0
         except (OSError, subprocess.SubprocessError):
             text = "(command did not run)"
         limit = spec.get("max_chars", DEFAULT_CMD_CHARS)
-        out.append((spec.get("name") or spec["argv"][0], text[:limit]))
+        name = spec.get("name") or Path(spec["argv"][0]).name
+        out.append((name, text[:limit], ok))
     return out
+
+
+def record_node_status(project, outputs) -> None:
+    """Keep name, exit status and time only, so the dashboard can show node health
+    without ever running a command or reading output text."""
+    at = store.now_iso()
+    store.write_json(
+        store.state_dir(project) / "node-status.json",
+        {name: {"ok": ok, "at": at} for name, _text, ok in outputs},
+    )
 
 
 def _questions(project):
@@ -186,13 +198,10 @@ def build_snapshot(project) -> tuple:
     ]
     ticks = notes.read_ticklog(sd / "tick-log.md")[-5:]
     areas = sorted({s["row"] for s in active})
-    outputs = _command_outputs(project, cfg)
+    outputs = command_outputs(project, cfg)
+    record_node_status(project, outputs)
 
-    used = {}
-    for _, req in runs.live_runs(project):
-        slot = runs.KINDS[req["kind"]].slot
-        if slot:
-            used[slot] = used.get(slot, 0) + 1
+    used = runs.slot_usage(project)
     free = {k: cfg["capacity"][k] - used.get(k, 0) for k in cfg["capacity"]}
     mem_gb = runs.mem_available_kb() / 1024 / 1024
 
@@ -296,7 +305,7 @@ def build_snapshot(project) -> tuple:
     # Command outputs go last so the cap trims the last-listed first.
     keep = list(outputs)
     while True:
-        tail = "".join(f"\n\n## {name}\n{text}" for name, text in keep)
+        tail = "".join(f"\n\n## {name}\n{text}" for name, text, _ok in keep)
         md = head + tail
         if len(md) <= CAP or not keep:
             break
@@ -316,7 +325,7 @@ def build_snapshot(project) -> tuple:
         "held_tests": sorted((h["id"], h["reason"], h["code"]) for h in held),
         "questions": sorted(q["key"] for q in qs),
         "problems": sorted((e["key"], e["count"]) for e in problems),
-        "outputs": [(n, DIGITS.sub("", t)) for n, t in outputs],
+        "outputs": [(n, DIGITS.sub("", t)) for n, t, _ok in outputs],
     }
     digest = hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest()
     return md, digest

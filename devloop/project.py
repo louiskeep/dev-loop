@@ -12,6 +12,36 @@ TIERS = ("R0", "R1", "R2")
 SLOTS = ("builder", "tester", "reviewer", "planner")
 SLUG = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 ROLES = ("tick", "planner", "builder", "reviewer")
+# What people read for each run kind, never an agent or persona name. Kind names stay the
+# internal contract; the owner can rename a label in project.json under `roles`.
+ROLE_DEFAULTS = {
+    "planner": "Architect",
+    "builder": "Developer",
+    "codex-builder": "Developer",
+    "dennis": "Senior reviewer",
+    "codex-review": "Outside reviewer",
+    "codex-fix": "Outside reviewer",
+    "test": "QA",
+    "docs": "Tech writer",
+    "duty": "Duty",
+    "tick": "Tech lead",
+    "owner": "Product owner (you)",
+}
+POOL_DEFAULTS = {
+    "builder": "Developers",
+    "tester": "QA",
+    "reviewer": "Reviewers",
+    "planner": "Architects",
+}
+
+
+def role_label(cfg, kind) -> str:
+    custom = (cfg.get("roles") or {}).get(kind)
+    return custom or ROLE_DEFAULTS.get(kind, "Worker")
+
+
+def pool_label(cfg, slot) -> str:
+    return POOL_DEFAULTS.get(slot, "Other")
 
 
 class ConfigError(Exception):
@@ -216,6 +246,23 @@ def _validate(cfg: dict, project: str) -> dict:
             _fail(f"snapshot_cmds[{i}].argv", "must be a list of str")
     for k in ("process_doc", "tick_doc", "playbook_doc", "status_copy", "brief_extra"):
         _opt(cfg, k, str)
+    roles = _opt(cfg, "roles", dict)
+    for key, label in (roles or {}).items():
+        if key not in ROLE_DEFAULTS:
+            _fail(f"roles.{key}", "unknown role")
+        if (
+            not isinstance(label, str)
+            or not 1 <= len(label) <= 40
+            or label != " ".join(label.split())
+        ):
+            _fail(f"roles.{key}", "must be one line of 1 to 40 characters")
+    dash = _opt(cfg, "dash", dict)
+    if dash is not None:
+        port = dash.get("port")
+        if port is not None and (not _int(port) or not 1024 <= port <= 65535):
+            _fail("dash.port", "must be an integer from 1024 to 65535")
+        if "host" in dash and not isinstance(dash["host"], str):
+            _fail("dash.host", "must be str")
     free = cfg.get("min_free_gb")
     if free is not None and (
         isinstance(free, bool) or not isinstance(free, (int, float))

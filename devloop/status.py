@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from . import runs, slices, store
 from . import project as projmod
-from .scrub import scrub
+from .scrub import plain, scrub
 
 CHICAGO = ZoneInfo("America/Chicago")
 LINE_LIMIT = 300
@@ -46,35 +46,33 @@ def _events(project):
 def _when(ev):
     try:
         return datetime.datetime.fromisoformat(ev["at"])
-    except ValueError:
+    except (ValueError, TypeError, KeyError):
         return None
 
 
-def counts(project, now=None) -> dict:
+def counts_from(merges, closures, now=None) -> dict:
+    """Merge and closure counts from the two ledgers; None for a ledger that is None
+    (unreadable), so a damaged file reads as unknown rather than zero."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     today = now.astimezone(CHICAGO).date()
     week = now - datetime.timedelta(days=7)
-    merged = list(slices.merge_records(project).values())
-    stamps = [_when(e) for e in merged]
-    return {
-        "merged_today": sum(
+    out = dict.fromkeys(("merged_today", "merged_week", "merged_total", "rows_closed"))
+    if merges is not None:
+        stamps = [_when(e) for e in merges.values()]
+        out["merged_today"] = sum(
             1 for t in stamps if t and t.astimezone(CHICAGO).date() == today
-        ),
-        "merged_week": sum(1 for t in stamps if t and t >= week),
-        "merged_total": len(merged),
-        "rows_closed": sum(
-            1 for r in slices.closure_records(project).values() if r.get("closed")
-        ),
-    }
+        )
+        out["merged_week"] = sum(1 for t in stamps if t and t >= week)
+        out["merged_total"] = len(merges)
+    if closures is not None:
+        out["rows_closed"] = sum(1 for r in closures.values() if r.get("closed"))
+    return out
 
 
-def _running(project) -> dict:
-    live = runs.live_runs(project)
-    by_slot = {}
-    for _, req in live:
-        slot = runs.KINDS[req["kind"]].slot or "other"
-        by_slot[slot] = by_slot.get(slot, 0) + 1
-    return by_slot
+def counts(project, now=None) -> dict:
+    return counts_from(
+        slices.merge_records(project), slices.closure_records(project), now
+    )
 
 
 def _next_item(project) -> str:
@@ -94,7 +92,7 @@ def render_status(project) -> str:
     for s in all_slices:
         phases[s["phase"]] = phases.get(s["phase"], 0) + 1
         rows.setdefault(s["row"], []).append(f"{s['slice']} {s['phase']}")
-    running = _running(project)
+    running = runs.slot_usage(project)
     lines = [
         f"# Dev loop status, {clock()}",
         "",
@@ -112,7 +110,11 @@ def render_status(project) -> str:
         f"- {row}: {', '.join(parts)}" for row, parts in sorted(rows.items())
     ] or ["- none"]
     lines += ["", "## Running"]
-    lines += [f"- {slot}: {n}" for slot, n in sorted(running.items())] or ["- nothing"]
+    cfg = projmod.load_project(project)
+    lines += [
+        f"- {projmod.pool_label(cfg, slot)}: {n}"
+        for slot, n in sorted(running.items())
+    ] or ["- nothing"]
     held = [s["key"] for s in all_slices if s["phase"] in ("HELD", "PARKED")]
     lines += ["", "## Held or parked"] + ([f"- {k}" for k in held] or ["- none"])
     problems = [
@@ -149,30 +151,44 @@ def write_status(project) -> None:
 # --- the tick line ------------------------------------------------------------
 
 _WORDS = {
-    "slice-moved": lambda e: f"moved {e.get('row')} {e.get('slice')} to {e.get('to')}",
-    "merged": lambda e: f"merged {e.get('row')} {e.get('slice')}",
-    "run-dispatched": lambda e: f"started {e.get('run_kind')} on {e.get('key')}",
-    "run-applied": lambda e: f"applied a run on {e.get('key')}",
-    "question-defaulted": lambda e: f"used the default for question {e.get('key')}",
-    "question-waiting": lambda e: f"waiting on your answer to {e.get('key')}",
-    "row-closed": lambda e: f"closed row {e.get('row')}",
-    "apply-mismatch": lambda e: f"dropped a stale result on {e.get('key')}",
+    "slice-moved": lambda e, cfg: f"moved {e.get('row')} {e.get('slice')} to {e.get('to')}",
+    "merged": lambda e, cfg: f"merged {e.get('row')} {e.get('slice')}",
+    "run-dispatched": lambda e, cfg: (
+        f"started {projmod.role_label(cfg, e.get('run_kind'))} on {e.get('key')}"
+    ),
+    "run-applied": lambda e, cfg: f"applied a run on {e.get('key')}",
+    "question-defaulted": lambda e, cfg: (
+        f"used the default for question {e.get('key')}"
+    ),
+    "question-waiting": lambda e, cfg: f"waiting on your answer to {e.get('key')}",
+    "row-closed": lambda e, cfg: f"closed row {e.get('row')}",
+    "apply-mismatch": lambda e, cfg: f"dropped a stale result on {e.get('key')}",
 }
+EVENT_KINDS = tuple(_WORDS)
 
 
-def _plain(value) -> str:
-    """Event values come from `devloop-state event` too, so only plain IDs pass."""
-    text = str(value)
-    return text if store.TOKEN.fullmatch(text) else "?"
+def event_words(ev, cfg):
+    """One fixed-wording line for an event, or None for a kind with no wording.
+
+    Event values come from `devloop-state event` too, so only plain IDs pass. The run
+    kind is looked up in the role table, never printed.
+    """
+    make = _WORDS.get(ev.get("kind"))
+    if make is None:
+        return None
+    safe = {k: plain(v) for k, v in ev.items() if k != "run_kind"}
+    safe["run_kind"] = ev.get("run_kind")
+    return make(safe, cfg)
 
 
 def summarize(project, since: str, limit=6) -> str:
     """Fixed words per event kind, from events after `since`; counts when there are many."""
+    cfg = projmod.load_project(project)
     parts = []
     for ev in _events(project):
-        if ev["at"] > since and ev["kind"] in _WORDS:
-            plain = {k: _plain(v) for k, v in ev.items()}
-            parts.append(_WORDS[ev["kind"]](plain))
+        words = event_words(ev, cfg) if ev["at"] > since else None
+        if words:
+            parts.append(words)
     if len(parts) > limit:
         extra = len(parts) - limit
         parts = parts[:limit] + [f"{extra} more changes"]
@@ -180,12 +196,13 @@ def summarize(project, since: str, limit=6) -> str:
 
 
 def tick_line(project, outcome: str, summary: str = "", *, last_model_at=None) -> str:
-    running = _running(project)
-    tail = (
-        f" Running: {running.get('builder', 0)} builders, "
-        f"{running.get('tester', 0)} tests, {running.get('reviewer', 0)} reviews."
-        f" Next: {_next_item(project)}."
+    running = runs.slot_usage(project)
+    cfg = projmod.load_project(project)
+    pools = ", ".join(
+        f"{projmod.pool_label(cfg, s)} {running.get(s, 0)}/{cfg['capacity'][s]}"
+        for s in ("builder", "tester", "reviewer", "planner")
     )
+    tail = f" Running: {pools}. Next: {_next_item(project)}."
     head = f"Dev loop {clock()}: "
     if outcome == "skipped":
         since = clock(last_model_at) if last_model_at else "the last tick"
