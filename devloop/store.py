@@ -180,6 +180,19 @@ def read_header(path) -> dict:
     return out
 
 
+def rewrite_header(path, **fields) -> None:
+    """Rewrite a result file's header from its parsed fields plus `fields`, keeping the body.
+
+    The reader takes the last value of a repeated key and ignores spaces around the key, so
+    one canonical line per key is the only form every reader agrees on.
+    """
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    header = {**read_header(path), **fields}
+    _, _, body = text.partition("\n---\n")
+    lines = "".join(f"{k}: {v}\n" for k, v in header.items())
+    write_text(path, f"{lines}---\n{body}")
+
+
 def append_event(project: str, kind: str, **fields) -> None:
     if TOKEN.fullmatch(kind) is None:
         raise StoreError("bad event kind")

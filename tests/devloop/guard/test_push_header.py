@@ -1,0 +1,68 @@
+"""The pushed SHA reaches the result header however the worker wrote it."""
+
+import pytest
+
+from devloop import runs, store, wrap
+from test_push import commit, remote_head
+from test_wrap import mk
+
+
+def run_with_header(proj, tmp_path, wt, header_lines):
+    """A writer whose result.md has exactly these header lines."""
+    text = "\\n".join(header_lines)
+    rd = mk(
+        proj,
+        tmp_path,
+        [
+            "sh",
+            "-c",
+            f"printf '{text}\\n---\\nok\\n' > $DEVLOOP_RUN_DIR/result.md",
+        ],
+        kind="builder",
+        worktree=str(wt),
+        branch="feat/s",
+        bases="main,master",
+    )
+    wrap.run(proj, "r1")
+    return rd
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ["status: DONE", "head : STALE"],
+        ["status: DONE", "head: STALE", "head: OLDER"],
+        ["status: DONE"],
+        ["status: DONE", "head:STALE", "tests: green"],
+    ],
+    ids=["spaced-key", "duplicate", "absent", "no-space"],
+)
+def test_confirmed_sha_is_the_only_head_the_reader_sees(proj, tmp_path, repo, lines):
+    wt, remote = repo
+    sha = commit(wt)
+    rd = run_with_header(proj, tmp_path, wt, lines)
+    assert remote_head(remote) == sha
+    res = runs.parse_result(rd, "builder")
+    assert (res.status, res.head) == ("DONE", sha)
+    text = (store.out_dir(rd) / "result.md").read_text()
+    assert text.count("head") == 1 and "STALE" not in text and "OLDER" not in text
+    assert text.endswith("---\nok\n")
+
+
+def test_result_publication_failure_sets_a_failed_exit(
+    proj, tmp_path, repo, monkeypatch
+):
+    wt, remote = repo
+    sha = commit(wt)
+    real = store.write_text
+
+    def flaky(path, text):
+        if str(path).endswith("result.md") and f"head: {sha}" in text:
+            raise OSError("disk full")
+        return real(path, text)
+
+    monkeypatch.setattr(store, "write_text", flaky)
+    rd = run_with_header(proj, tmp_path, wt, ["status: DONE", f"head: {'0' * 40}"])
+    ex = store.read_json(rd / "exit")
+    assert ex["code"] != 0
+    assert runs.parse_result(rd, "builder").status == "FAILED"

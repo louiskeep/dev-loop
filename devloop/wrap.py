@@ -189,10 +189,7 @@ def _push_writer(rd, req):
         pushed, why = None, f"push confirmation failed: {type(exc).__name__}"
     if why is None:
         if hdr.get("head") != pushed:  # report the commit the remote confirmed
-            old = path.read_text(encoding="utf-8", errors="replace")
-            store.write_text(
-                path, re.sub(r"(?m)^head:.*$", f"head: {pushed}", old, count=1)
-            )
+            store.rewrite_header(path, head=pushed)
         return
     body = path.read_text(encoding="utf-8", errors="replace").partition("\n---")[2]
     text = f"status: FAILED\nhead: \nverdict: \ntests: {hdr.get('tests', '')}\n"
@@ -344,6 +341,8 @@ def finish(project, rd, req, code, reason):
     except Exception as exc:  # noqa: BLE001 - the exit file must still be written
         with open(store.out_dir(rd) / "log", "a") as log:
             log.write(f"wrapper error: {type(exc).__name__}\n")
+        if code == 0:  # a result that could not be published is not a success
+            code, reason = 1, "wrapper-error"
     finally:
         runs.create_exit(rd, code=code, reason=reason)
         runs.remove_tree(project, rd.name, req)
