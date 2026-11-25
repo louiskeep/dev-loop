@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Fake codex-fix <name> <prompt> <file>...: leaves an edited copy in $FAKE_FIX_CACHE/<name>/.
+name="$1"; shift 2
+dir="${FAKE_FIX_CACHE:?}/$name"
+mkdir -p "$dir"
+for f in "$@"; do cp "$f" "$dir/"; printf '\nrepaired\n' >> "$dir/$(basename "$f")"; done
+if [ -n "${CODEX_LAST_MSG:-}" ] && [ -z "${FAKE_NO_LAST:-}" ]; then
+  printf '%s\n' "${FAKE_CODEX_LAST:-SELF-VERDICT: GO}" > "$CODEX_LAST_MSG"
+fi
+exit "${FAKE_EXIT:-0}"

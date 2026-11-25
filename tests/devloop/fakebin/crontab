@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Fake crontab backed by the file $FAKE_CRONTAB.
+if [ -n "${FAKE_CRONTAB_ERR:-}" ]; then echo "$FAKE_CRONTAB_ERR" >&2; exit 1; fi
+case "$1" in
+  -l) if [ -f "$FAKE_CRONTAB" ]; then cat "$FAKE_CRONTAB"; else echo "no crontab for tester" >&2; exit 1; fi ;;
+  -) cat > "$FAKE_CRONTAB" ;;
+esac

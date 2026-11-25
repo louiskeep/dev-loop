@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fake vm-run: prints FAILED lines when asked, exits with FAKE_VM_EXIT.
+echo "vm-run $*" >> "${FAKE_ARGV_LOG:-/dev/null}"
+[ -n "${FAKE_VM_FAILED:-}" ] && printf 'FAILED %s\n' $FAKE_VM_FAILED
+exit "${FAKE_VM_EXIT:-0}"

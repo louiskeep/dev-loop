@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Fake codex-review <workdir> <prompt> <out> [label]: writes out, and CODEX_LAST_MSG like the real one.
+echo "codex-review $*" >> "${FAKE_ARGV_LOG:-/dev/null}"
+echo "workdir=$(pwd) arg=$1" > "$3"
+if [ -n "${CODEX_LAST_MSG:-}" ] && [ -z "${FAKE_NO_LAST:-}" ]; then
+  printf '%s\n' "${FAKE_CODEX_LAST:-VERDICT: GO}" > "$CODEX_LAST_MSG"
+fi
+exit "${FAKE_EXIT:-0}"

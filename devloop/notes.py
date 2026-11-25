@@ -5,12 +5,14 @@ after each write. Questions live in one Markdown block so the owner can answer b
 editing a line in a page they already keep.
 """
 
+import os
 import re
 import subprocess
 from pathlib import Path
 
 from . import project as projmod
 from . import store
+from .scrub import scrub
 
 TICKLOG_KEEP = 200
 BLOCK_START = "<!-- devloop:questions -->"
@@ -301,25 +303,48 @@ def _save_questions(path, before, qs, after, had_block):
     store.write_text(path, text)
 
 
-def _notify(project, text):
+def _env_file(path):
+    """KEY=VALUE lines from the notify env file (holds the webhook; never the crontab)."""
+    env = {}
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return env
+    for line in lines:
+        name, sep, value = line.partition("=")
+        if sep and name.strip() and not line.lstrip().startswith("#"):
+            env[name.strip()] = value.strip().strip("\"'")
+    return env
+
+
+def notify(project, text, limit=300):
+    """One public message. Text is scrubbed here so no caller can skip it."""
     cfg = projmod.load_project(project)
-    cmd = (cfg.get("notify") or {}).get("cmd")
+    spec = cfg.get("notify") or {}
+    cmd = spec.get("cmd")
     if not cmd:
         return
+    env = dict(os.environ)
+    if spec.get("env_file"):
+        env.update(_env_file(spec["env_file"]))
     ok = False
     try:
         r = subprocess.run(
-            cmd + [text],
+            cmd + [scrub(text, limit)],
             capture_output=True,
             stdin=subprocess.DEVNULL,
             timeout=30,
             check=False,
+            env=env,
         )
         ok = r.returncode == 0
     except (OSError, subprocess.SubprocessError):
         pass
     if not ok:
         store.append_event(project, "notify-failed")
+
+
+_notify = notify
 
 
 def _slice_for(project, key):

@@ -1,14 +1,42 @@
 #!/usr/bin/env python3
-"""Fake `gh pr view`: state comes from the FAKE_GH_* environment."""
+"""Fake gh. Every call is logged to $FAKE_GH_LOG. `pr view` reads $FAKE_GH_JSON when set
+(a JSON file of fields), else the FAKE_GH_* variables. A zero-exit `pr merge` applies the
+file's "on_merge" fields."""
 import json
 import os
+import sys
 
-print(
-    json.dumps(
-        {
-            "state": os.environ.get("FAKE_GH_STATE", "OPEN"),
-            "baseRefName": os.environ.get("FAKE_GH_BASE", "main"),
-            "headRefOid": os.environ.get("FAKE_GH_HEAD", "a" * 40),
-        }
-    )
-)
+args = sys.argv[1:]
+log = os.environ.get("FAKE_GH_LOG")
+if log:
+    with open(log, "a") as fh:
+        fh.write(json.dumps(args) + "\n")
+path = os.environ.get("FAKE_GH_JSON")
+doc = json.load(open(path)) if path and os.path.exists(path) else {}
+
+if args[:2] == ["auth", "status"]:
+    sys.exit(int(os.environ.get("FAKE_GH_AUTH_EXIT", "0")))
+if args[:2] == ["pr", "merge"]:
+    code = int(os.environ.get("FAKE_GH_MERGE_EXIT", "0"))
+    if code:
+        print("merge failed: secret-token-123", file=sys.stderr)
+        sys.exit(code)
+    if path:
+        doc.update(doc.get("on_merge", {}))
+        json.dump(doc, open(path, "w"))
+    sys.exit(0)
+if args[:2] == ["run", "view"] or args[:1] == ["api"]:
+    print(json.dumps(doc.get("run", {})))
+    sys.exit(0)
+if int(os.environ.get("FAKE_GH_VIEW_EXIT", "0")) and not doc.get("view_ok"):
+    sys.exit(int(os.environ["FAKE_GH_VIEW_EXIT"]))
+out = {
+    "state": os.environ.get("FAKE_GH_STATE", "OPEN"),
+    "baseRefName": os.environ.get("FAKE_GH_BASE", "main"),
+    "headRefOid": os.environ.get("FAKE_GH_HEAD", "a" * 40),
+    "statusCheckRollup": [],
+    "mergeStateStatus": "CLEAN",
+    "files": [],
+}
+out.update({k: v for k, v in doc.items() if k not in ("on_merge", "run", "view_ok")})
+print(json.dumps(out))

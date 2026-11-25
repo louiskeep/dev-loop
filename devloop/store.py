@@ -162,3 +162,28 @@ def append_event(project: str, kind: str, **fields) -> None:
             fh.write(line + "\n")
             fh.flush()
             os.fsync(fh.fileno())
+
+
+def package_root() -> Path:
+    """Directory that holds the `devloop` package (the repo checkout or the installed lib)."""
+    return Path(__file__).resolve().parent.parent
+
+
+def skill_dir() -> Path:
+    """Where TICK.md, PLAYBOOK.md and the brief template live."""
+    env = os.environ.get("DEVLOOP_SKILL_DIR")
+    if env:
+        return Path(env)
+    beside = package_root() / "skills" / "dev-loop"
+    if beside.is_dir():
+        return beside
+    return Path.home() / ".claude" / "skills" / "dev-loop"
+
+
+def bin_dir() -> Path:
+    """Where the `devloop-*` launchers are, for the wrapper and the tick to start each other."""
+    env = os.environ.get("DEVLOOP_BIN_DIR")
+    if env:
+        return Path(env)
+    beside = package_root() / "bin"
+    return beside if (beside / "devloop-wrap").is_file() else Path.home() / "bin"

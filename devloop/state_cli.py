@@ -5,11 +5,12 @@ import json
 import sys
 
 from . import project as projmod
-from . import notes, slices, store
+from . import notes, runs, slices, store
 
 REFUSALS = (
     slices.SliceError,
     notes.NotesError,
+    runs.RunError,
     projmod.ConfigError,
     store.StoreError,
     store.HeadlessRefused,
@@ -114,6 +115,21 @@ def _notes(args):
             print(key)
 
 
+def _runs(args):
+    p = args.project
+    if args.cmd == "applied":
+        print(runs.apply_run(p, args.run))
+    elif args.cmd == "release":
+        runs.release(p, args.run)
+    elif args.cmd == "list":
+        if args.live:
+            for run_id, req in runs.live_runs(p):
+                print(run_id, req["kind"], req["key"])
+        if args.writers:
+            for run_id, req in runs.writer_runs(p):
+                print(run_id, req["kind"], req.get("root"))
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="devloop-state")
     ap.add_argument("project")
@@ -182,6 +198,11 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("key")
     an.add_argument("choice")
     sub.add_parser("answers-sync")
+    sub.add_parser("applied").add_argument("run")
+    sub.add_parser("release").add_argument("run")
+    ls = sub.add_parser("list")
+    ls.add_argument("--live", action="store_true")
+    ls.add_argument("--writers", action="store_true")
     return ap
 
 
@@ -194,6 +215,8 @@ def main(argv=None) -> int:
             getattr(slices, args.cmd)(
                 args.project, args.key, args.verdict, head=args.head
             )
+        elif args.cmd in ("applied", "release", "list"):
+            _runs(args)
         elif args.cmd == "event":
             _event(args)
         else:

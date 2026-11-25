@@ -552,6 +552,54 @@ def set_fields(project: str, key: str, **fields) -> dict:
     return s
 
 
+plan_file = _plan_file
+
+
+def set_run(project: str, key: str, run_id) -> None:
+    """Dispatch records the slice's current run; apply clears it."""
+    with _edit(project, key) as s:
+        s["run"] = run_id
+
+
+def apply_effects(
+    project: str,
+    key: str,
+    run_id: str,
+    *,
+    kind=None,
+    verdict=None,
+    head=None,
+    plan_sha_=None,
+    failure=None,
+    want_head=None,
+    want_plan_sha=None,
+) -> str:
+    """Everything a run changes on a slice, plus its ID, in ONE locked replace.
+
+    Returns "replay" when the ID was already processed, "stale" when the slice moved
+    on (new head or edited plan) and the result must not count, else "applied".
+    """
+    with _edit(project, key) as s:
+        if run_id in s["processed_run_ids"]:
+            return "replay"
+        outcome = "applied"
+        if want_head is not None and want_head != s["head"]:
+            outcome = "stale"
+        if want_plan_sha is not None and want_plan_sha != _plan_sha_or_none(s):
+            outcome = "stale"
+        if outcome == "applied":
+            if kind:
+                if kind in TICK_KINDS or verdict not in VERDICTS:
+                    raise SliceError("bad evidence")
+                _put_evidence(s, kind, verdict, run_id, sha=head or plan_sha_)
+            if failure:
+                s["failures"][failure] = s["failures"].get(failure, 0) + 1
+        s["processed_run_ids"] = (s["processed_run_ids"] + [run_id])[-500:]
+        if s["run"] == run_id:
+            s["run"] = None
+        return outcome
+
+
 def mark_plan_started(project: str, key: str) -> None:
     """Called by dispatch under admission when the first plan run is created."""
     with _edit(project, key) as s:
@@ -674,7 +722,12 @@ def _verify_run(project, s, entry, *, kinds, expect, covers_ok=False):
     for field, want in expect.items():
         if field == "head" and not own:
             continue
-        if req.get(field) != want:
+        got = req.get(field)
+        if field == "plan_sha" and req.get("kind") == "codex-fix":
+            # A repair is credited to the file it produced, not the one it read.
+            repair = store.read_json(rd / "repair.json")
+            got = repair.get("output_sha") or got
+        if got != want:
             return f"run {run_id} {field} does not match", None
     if store.read_header(rd / "result.md").get("verdict") != entry["verdict"]:
         return f"run {run_id} result differs from the recorded verdict", None

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Fake wake-up: proves the wrapper started a tick.
+touch "${FAKE_TICK_MARK:?}"

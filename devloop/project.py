@@ -102,6 +102,15 @@ def _validate(cfg: dict, project: str) -> dict:
             _fail(f"reviewers.{name}.kind", "must be str")
         if "kinds" in spec and not _str_list(spec["kinds"]):
             _fail(f"reviewers.{name}.kinds", "must be a list of str")
+        # One command per allowed (reviewer, kind) pair.
+        argv = spec.get("argv", {})
+        allowed = spec.get("kinds") or [spec["kind"]]
+        if not isinstance(argv, dict) or not all(
+            k in allowed and _str_list(v) for k, v in argv.items()
+        ):
+            _fail(f"reviewers.{name}.argv", "must map an allowed kind to a list of str")
+        if "repair_out" in spec and not isinstance(spec["repair_out"], str):
+            _fail(f"reviewers.{name}.repair_out", "must be str")
     for tier in TIERS:
         for which in ("plan", "code"):
             path = f"reviews.{tier}.{which}"
@@ -126,6 +135,12 @@ def _validate(cfg: dict, project: str) -> dict:
             _fail(f"tests.{level}.argv", "must be a list of str")
         if "deadline_s" in spec and not _int(spec["deadline_s"]):
             _fail(f"tests.{level}.deadline_s", "must be int")
+        codes = spec.get("infra_codes", [])
+        if not isinstance(codes, list) or not all(_int(c) for c in codes):
+            _fail(f"tests.{level}.infra_codes", "must be a list of int")
+        for k in ("host", "label"):
+            if k in spec and not isinstance(spec[k], str):
+                _fail(f"tests.{level}.{k}", "must be str")
     if _opt(cfg, "board", dict) is not None:
         if not _str_list(cfg["board"].get("cmd")):
             _fail("board.cmd", "must be a list of str")
@@ -134,19 +149,46 @@ def _validate(cfg: dict, project: str) -> dict:
             isinstance(k, str) and isinstance(v, str) for k, v in pm.items()
         ):
             _fail("board.phase_map", "must map phase names to str")
-    if _opt(cfg, "notify", dict) is not None and not _str_list(
-        cfg["notify"].get("cmd")
-    ):
-        _fail("notify.cmd", "must be a list of str")
-    if _opt(cfg, "merge", dict) is not None and not isinstance(
-        cfg["merge"].get("allowed"), bool
-    ):
-        _fail("merge.allowed", "must be bool")
+    if _opt(cfg, "notify", dict) is not None:
+        if not _str_list(cfg["notify"].get("cmd")):
+            _fail("notify.cmd", "must be a list of str")
+        if "env_file" in cfg["notify"] and not isinstance(
+            cfg["notify"]["env_file"], str
+        ):
+            _fail("notify.env_file", "must be str")
+    if _opt(cfg, "merge", dict) is not None:
+        merge = cfg["merge"]
+        if not isinstance(merge.get("allowed"), bool):
+            _fail("merge.allowed", "must be bool")
+        if "require_up_to_date" in merge and not isinstance(
+            merge["require_up_to_date"], bool
+        ):
+            _fail("merge.require_up_to_date", "must be bool")
+        for rname, spec in (merge.get("repos") or {}).items():
+            where = f"merge.repos.{rname}"
+            if rname not in seen or not isinstance(spec, dict):
+                _fail(where, "must name a configured repo and be an object")
+            for k in ("base", "dispatch_workflow", "gate_status", "changelog_glob"):
+                if k in spec and not isinstance(spec[k], str):
+                    _fail(f"{where}.{k}", "must be str")
+            for k in ("required_checks", "verify_cmd"):
+                if k in spec and not _str_list(spec[k]):
+                    _fail(f"{where}.{k}", "must be a list of str")
+    duties = _opt(cfg, "duties", dict)
+    for dname, spec in (duties or {}).items():
+        if store.NAME.fullmatch(dname) is None or not isinstance(spec, dict):
+            _fail(f"duties.{dname}", "must be an object with a plain name")
+        if not _str_list(spec.get("argv")):
+            _fail(f"duties.{dname}.argv", "must be a list of str")
+        if "deadline_s" in spec and not _int(spec["deadline_s"]):
+            _fail(f"duties.{dname}.deadline_s", "must be int")
     if _opt(cfg, "nodes", dict) is not None:
         if "directory" in cfg["nodes"] and not isinstance(
             cfg["nodes"]["directory"], str
         ):
             _fail("nodes.directory", "must be str")
+        if "hosts" in cfg["nodes"] and not _str_list(cfg["nodes"]["hosts"]):
+            _fail("nodes.hosts", "must be a list of str")
     if _opt(cfg, "questions", dict) is not None and not isinstance(
         cfg["questions"].get("path"), str
     ):
@@ -155,7 +197,7 @@ def _validate(cfg: dict, project: str) -> dict:
     for i, spec in enumerate(snaps or []):
         if not isinstance(spec, dict) or not _str_list(spec.get("argv")):
             _fail(f"snapshot_cmds[{i}].argv", "must be a list of str")
-    for k in ("process_doc", "tick_doc", "status_copy", "brief_extra"):
+    for k in ("process_doc", "tick_doc", "playbook_doc", "status_copy", "brief_extra"):
         _opt(cfg, k, str)
     free = cfg.get("min_free_gb")
     if free is not None and (
