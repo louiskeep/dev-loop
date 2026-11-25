@@ -21,7 +21,6 @@ SCHEMA = 1
 SHIPPED_LIMIT = 20
 ACTIVITY_LIMIT = 20
 CHIPS = slices.PHASES[:10]
-POOLS = ("builder", "tester", "reviewer", "planner")
 NEEDS = ("question", "hold")
 PROBLEMS = ("stuck", "problem", "unreadable")
 RUN_STATES = ("executing", "awaiting-apply", "awaiting-release")
@@ -248,7 +247,7 @@ def _labels(cfg) -> set:
     kinds = list(projmod.ROLE_DEFAULTS) + list(runs.KINDS)
     return (
         {projmod.role_label(cfg, k) for k in kinds}
-        | {projmod.pool_label(cfg, p) for p in POOLS}
+        | {projmod.pool_label(cfg, p) for p in projmod.SLOTS}
         | {projmod.role_label(cfg, None)}
     )
 
@@ -458,8 +457,17 @@ def _need(kind, owner, key=None, count=None, since=None, **extra):
 
 def _plain_line(text, limit=300):
     """Loop-written text, scrubbed like every other public line; None when empty."""
-    out = scrub(text, limit) if isinstance(text, str) else ""
-    return out or None
+    if not isinstance(text, str):
+        return None
+    out = scrub(text, limit)
+    # The cut can end on a space or inside a pattern; settle on text that scrubs to itself,
+    # the form the sealed schema accepts.
+    for _ in range(4):
+        again = scrub(out, limit)
+        if again == out:
+            return out or None
+        out = again
+    return None
 
 
 def _owner_item(kind, owner, key=None, since=None, **extra):
@@ -530,7 +538,7 @@ def _problems(ctx):
                 out.append(_problem_item("stuck", ctx.tick, c["key"], since=c["since"]))
 
     def problems():
-        data = store.read_json(store.state_dir(ctx.project) / "problems.json")
+        data = store.read_json(store.state_path(ctx.project) / "problems.json")
         return data.get("problems", {}).values()
 
     for e in _try(problems, ctx.bad, "problems", []):
@@ -561,7 +569,7 @@ def _unreadable(ctx):
 
 def _nodes(ctx):
     data = _try(
-        lambda: store.read_json(store.state_dir(ctx.project) / "node-status.json"),
+        lambda: store.read_json(store.state_path(ctx.project) / "node-status.json"),
         ctx.bad,
         "nodes",
         {},
@@ -582,7 +590,7 @@ def _slots(ctx):
             "cap": ctx.cfg["capacity"][pool],
             "used": used.get(pool, 0),
         }
-        for pool in POOLS
+        for pool in projmod.SLOTS
     ]
 
 
@@ -630,7 +638,7 @@ def _activity(ctx):
 
 
 def _tick_facts(ctx):
-    d = store.state_dir(ctx.project)
+    d = store.state_path(ctx.project)
     try:
         mtime = (d / "STATUS.md").stat().st_mtime
         last_pass = datetime.datetime.fromtimestamp(

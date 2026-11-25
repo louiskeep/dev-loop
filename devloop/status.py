@@ -27,7 +27,7 @@ def clock(dt=None) -> str:
 
 
 def events(project):
-    path = store.state_dir(project) / "events.jsonl"
+    path = store.state_path(project) / "events.jsonl"
     out = []
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -45,9 +45,10 @@ def events(project):
 
 def _when(ev):
     try:
-        return datetime.datetime.fromisoformat(ev["at"])
+        t = datetime.datetime.fromisoformat(ev["at"])
     except (ValueError, TypeError, KeyError):
         return None
+    return t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)  # naive is UTC
 
 
 def counts_from(merges, closures, now=None) -> dict:
@@ -57,6 +58,15 @@ def counts_from(merges, closures, now=None) -> dict:
     today = now.astimezone(CHICAGO).date()
     week = now - datetime.timedelta(days=7)
     out = dict.fromkeys(("merged_today", "merged_week", "merged_total", "rows_closed"))
+    # One malformed entry makes that whole ledger unreadable; the other one still counts.
+    if not isinstance(merges, dict) or not all(
+        isinstance(e, dict) for e in merges.values()
+    ):
+        merges = None
+    if not isinstance(closures, dict) or not all(
+        isinstance(e, dict) for e in closures.values()
+    ):
+        closures = None
     if merges is not None:
         stamps = [_when(e) for e in merges.values()]
         out["merged_today"] = sum(
@@ -201,7 +211,7 @@ def tick_line(project, outcome: str, summary: str = "", *, last_model_at=None) -
     cfg = projmod.load_project(project)
     pools = ", ".join(
         f"{projmod.pool_label(cfg, s)} {running.get(s, 0)}/{cfg['capacity'][s]}"
-        for s in ("builder", "tester", "reviewer", "planner")
+        for s in projmod.SLOTS
     )
     tail = f" Running: {pools}. Next: {_next_item(project)}."
     head = f"Dev loop {clock()}: "

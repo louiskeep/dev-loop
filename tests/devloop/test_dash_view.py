@@ -1,5 +1,6 @@
 """The dashboard read model: what it holds, what it leaves out, and how it degrades."""
 
+import datetime
 import json
 import os
 
@@ -432,3 +433,61 @@ def test_memory_thresholds(proj, dash, tmp_path, avail_kb, state):
     make_proc(proc, avail_kb=avail_kb)
     got = view.build_view(proj, proc=str(proc))["memory"]
     assert got["state"] == state
+
+
+def test_a_question_cut_on_a_space_still_seals(proj):
+    long_q = "word " * 80  # the 300 character cut lands just after a space
+    assert long_q[299] == " "
+    notes.ask(
+        proj, "q1", question=long_q, options=["a", "b"], recommended="a", wait=True
+    )
+    q = build(proj)["needs_you"][0]
+    assert q["question"] == q["question"].strip() and len(q["question"]) <= 300
+
+
+@pytest.mark.parametrize("n", [118, 119, 120, 121, 122])
+def test_option_length_boundaries_seal(proj, n):
+    opt = "x" * (n - 1) + " y"
+    notes.ask(proj, "q1", question="Which?", options=[opt], recommended=opt, wait=True)
+    assert build(proj)["needs_you"][0]["options"]
+
+
+def test_a_null_ledger_entry_marks_only_that_ledger_unreadable(proj):
+    from devloop import status
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    got = status.counts_from({"a": {"at": now.isoformat()}}, {"x": None}, now)
+    assert got["rows_closed"] is None and got["merged_total"] == 1
+
+
+def test_a_naive_merge_timestamp_counts_as_utc(proj):
+    from devloop import status
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    naive = now.replace(tzinfo=None).isoformat()
+    got = status.counts_from({"a": {"at": naive}}, {}, now)
+    assert got["merged_week"] == 1
+
+
+def test_displayed_pools_equal_the_configured_slots(proj):
+    from devloop import project as projmod
+
+    assert [s["pool"] for s in build(proj)["slots"]] == list(projmod.SLOTS)
+
+
+def test_a_dashboard_read_never_creates_the_project_dir(proj, home):
+    import shutil
+
+    shutil.move(str(home / proj), str(home / "moved"))
+    with pytest.raises(Exception, match="project.json"):
+        build(proj)
+    assert not (home / proj).exists()
+
+
+def test_tick_line_shows_every_configured_slot(proj):
+    from devloop import project as projmod
+    from devloop import status
+
+    cfg = projmod.load_project(proj)
+    line = status.tick_line(proj, "model", "x")
+    assert all(f"{projmod.pool_label(cfg, s)} 0/" in line for s in projmod.SLOTS)

@@ -86,7 +86,7 @@ class ConfigError(Exception):
 
 
 def project_path(project: str):
-    return store.state_dir(project) / "project.json"
+    return store.state_path(project) / "project.json"
 
 
 def _int(v) -> bool:
