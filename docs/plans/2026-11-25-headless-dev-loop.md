@@ -72,6 +72,23 @@ two owner additions on 2026-11-25 recorded below (node directory, rules parity).
   (Task 4). The 4 FIX-IN-BUILD items are listed under "Build notes" for the builder and
   are checked at code review.
 
+## Parity gaps closed (2026-11-25, from the Decoy parity sweep)
+
+- **Duties** (morning repin, evening scorecard, daily roadmap PR, the Codex docs batch per
+  tick): new run kind `duty` (no slot, no slice evidence, deadline from config). Argv comes
+  from `duties[name].argv`; the key is `DUTY-<NAME>--<date>`. The tick dispatches due duties
+  per the project tick doc. Owner 11-23 "owner handles Codex" covers Codex as builder; the
+  docs batch is the owner-approved docs lane and runs as a duty.
+- **Slack explainer per merge:** written by the DOCUMENT docs run, plain language, passed
+  through `scrub`, posted by `notify`. This is the one public text that is model-written,
+  by design (owner close-out rule); the docs brief forbids SHAs, paths and data values.
+- **Codex batching of tiny PRs:** not in v1; one Codex review per slice. Recorded as a
+  deviation (more Codex use); revisit after cutover.
+- **CHANGELOG check per repo:** `merge.repos[repo].changelog_glob` (Decoy CLI
+  `CHANGELOG.md`, engine `changelog.d/*`), with test `test_merge_changelog_glob_per_repo`.
+- **Capacity:** owner reconfirmed 8 builders and 4 reviewers on 11-23 and 8 builders and 4
+  testers on 11-22. Decoy caps: builder 8, tester 4, reviewer 4, planner 3.
+
 ## Build notes (Codex round 3 FIX-IN-BUILD)
 
 1. Config has one command per allowed (reviewer, kind) pair; both Codex commands get
@@ -131,7 +148,7 @@ two owner additions on 2026-11-25 recorded below (node directory, rules parity).
   PARKED, HELD`.
 - Deadlines: planner 2h, builder 4h, dennis 90m, codex-review 1h, codex-fix
   1h, test 2h, docs 1h. Idle kill: 20 minutes with no log growth.
-- Caps from `project.json`; Decoy builder 8, tester 4, reviewer 2, planner 3. Memory floor
+- Caps from `project.json`; Decoy builder 8, tester 4, reviewer 4, planner 3. Memory floor
   2.5 GB `MemAvailable`.
 - Tick: cron every 30 minutes, plus one on every wrapper exit. At most 3 back-to-back runs per
   lock holder. Skip the model when the stable snapshot hash is unchanged and the last model
@@ -565,7 +582,8 @@ def test_exit_checklist_matches_move(proj): ...  # every missing item named by t
     1200, claude-verdict, False, True), codex-review(reviewer, 3600, 3600, verdict, False,
     True), codex-fix(planner, 3600, 3600, selfverdict, True, False), test(tester, per level
     from `tests[level].deadline_s`, 1200, testexit, False, True), docs(None, 3600, 1200,
-    claude, False, False). `codex-fix` is plan-only: refused unless the slice is in PLAN.
+    claude, False, False), duty(None, from `duties[name].deadline_s`, 1200, exit, False,
+    False). `codex-fix` is plan-only: refused unless the slice is in PLAN.
     `reviewers[name].kinds` binds each reviewer to its allowed kinds (Decoy: dennis
     `[dennis]`, codex `[codex-review, codex-fix]`); dispatch refuses any other pairing, and
     `apply_run` checks the same binding again. No `slice-runner` kind: a runner that calls Codex itself makes
