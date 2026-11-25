@@ -102,6 +102,8 @@ the fixer as a root-cause fix through that registry.
 - the PR is rebased on the base branch when the project requires it [judgment]
 
 Merge only with `devloop-merge PROJECT KEY`. A direct `gh pr merge` is blocked.
+Only the orchestrator merges or pushes to a base branch. Workers and subagents may push feature
+branches, and a hook denies them any merge or base-branch push.
 
 A row may have many slices open at once. They each go through the phases on their own. The
 one ordering rule: a slice may not enter GATE, and `devloop-merge` refuses it, while another

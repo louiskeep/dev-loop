@@ -1,4 +1,8 @@
-"""PreToolUse hook: in a headless dev-loop session, merges and base-branch pushes go through devloop-merge.
+"""PreToolUse hook: only the orchestrator merges or pushes to a base branch.
+
+Workers (DEVLOOP_RUN set) and subagents (stdin `agent_id`) may push feature branches only.
+The headless tick merges through devloop-merge and may push to base; interactive top-level
+sessions are not restricted.
 
 Threat model: this stops a headless model from merging or pushing to the base branch by
 accident; it does not stop a hostile one.
@@ -28,6 +32,7 @@ except ImportError:  # run standalone: python hooks/headless_merge_guard.py
     import gate_guard
 
 REASON = "devloop: merge only through devloop-merge, which checks the gate first"
+WORKER_REASON = "devloop: only the orchestrator pushes to main or merges; push your feature branch instead"
 
 _OPT = r"(?:\s+(?:-R|--repo|--hostname)(?:\s+|=)\S+|\s+-\S+)*"
 _GH_PR_MERGE = re.compile(rf"\bgh\b{_OPT}\s+pr{_OPT}\s+merge\b", re.IGNORECASE)
@@ -35,6 +40,7 @@ _ANYWHERE = re.compile(
     r"mergepullrequest|enablepullrequestautomerge|/merges|git/refs|pulls/\d+/merge\b"
 )
 _GIT_PUSH = re.compile(r"\bgit\b(?:\s+-\S+(?:\s+[^\s-]\S*)?)*?\s+push\b([^;&|`\n)]*)")
+_DEVLOOP_MERGE = re.compile(r"(?:^|[\s;&|/(`'\"])devloop-merge\b")
 _METACHARS = re.compile(r"[;&|`<>\n]|\$\(")
 _ONLY_MERGE_CMD = re.compile(r"\s*(?:/[^\s]*/)?devloop-merge(?:\s+[^\s]+)*\s*")
 
@@ -91,12 +97,23 @@ def _push_targets_base(args: str, cwd) -> bool:
     return False
 
 
-def blocked(command: str, cwd=None) -> bool:
-    if _ONLY_MERGE_CMD.fullmatch(command) and not _METACHARS.search(command):
-        return False
+def blocked(command: str, cwd=None, *, worker=False, check_base_pushes=True) -> bool:
+    """True when the command must be denied.
+
+    A worker (loop worker or subagent) may not merge at all, devloop-merge included. The
+    headless tick may merge only through a lone devloop-merge call and, with check_base_pushes
+    False, may push to a base branch (docs commits in DOCUMENT).
+    """
     text = command.lower()
+    if worker:
+        if _DEVLOOP_MERGE.search(text):
+            return True
+    elif _ONLY_MERGE_CMD.fullmatch(command) and not _METACHARS.search(command):
+        return False
     if _ANYWHERE.search(text) or _GH_PR_MERGE.search(text):
         return True
+    if not check_base_pushes:
+        return False
     return any(
         _push_targets_base(
             command[m.start(1) : m.end(1)],
@@ -106,30 +123,48 @@ def blocked(command: str, cwd=None) -> bool:
     )
 
 
-def main() -> int:
-    if os.environ.get("DEVLOOP_HEADLESS") != "1":
-        return 0
-    try:
-        event = json.load(sys.stdin)
-    except Exception:  # noqa: BLE001 - fail open on a malformed event, as gate_guard does
-        return 0
-    if event.get("tool_name") != "Bash":
-        return 0
-    if not blocked(event.get("tool_input", {}).get("command", ""), event.get("cwd")):
-        return 0
+def _deny(reason) -> int:
     print(
         json.dumps(
             {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
-                    "permissionDecisionReason": REASON,
+                    "permissionDecisionReason": reason,
                 }
             }
         )
     )
-    print(REASON, file=sys.stderr)
+    print(reason, file=sys.stderr)
     return 2
+
+
+def main() -> int:
+    """Roles: a loop worker (DEVLOOP_RUN) or a subagent (agent_id) is never the orchestrator.
+    The headless tick is the orchestrator under the lone-devloop-merge rule; an interactive
+    top-level session is not restricted here."""
+    in_run = bool(os.environ.get("DEVLOOP_RUN"))
+    try:
+        event = json.load(sys.stdin)
+        if not isinstance(event, dict):
+            raise ValueError("event is not an object")
+    except Exception:  # noqa: BLE001 - only a worker fails closed on a bad event
+        return _deny(WORKER_REASON) if in_run else 0
+    worker = in_run or bool(event.get("agent_id"))
+    if not worker and os.environ.get("DEVLOOP_HEADLESS") != "1":
+        return 0
+    if event.get("tool_name") != "Bash":
+        return 0
+    try:
+        command = event.get("tool_input", {}).get("command", "")
+        deny = blocked(
+            command, event.get("cwd"), worker=worker, check_base_pushes=worker
+        )
+    except Exception:  # noqa: BLE001
+        return _deny(WORKER_REASON) if worker else 0
+    if not deny:
+        return 0
+    return _deny(WORKER_REASON if worker else REASON)
 
 
 if __name__ == "__main__":

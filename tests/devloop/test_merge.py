@@ -433,23 +433,83 @@ def test_bare_push_is_denied_only_on_the_base_branch(tmp_path):
     assert headless_merge_guard.blocked("git push origin feat/x", main) is False
 
 
-def run_guard(command, headless):
+def run_guard(command, headless=False, run=False, agent_id=None, raw=None, cwd=None):
     env = {**os.environ}
     env.pop("DEVLOOP_HEADLESS", None)
+    env.pop("DEVLOOP_RUN", None)
+    env.pop("DEVLOOP_BASE_BRANCHES", None)
     if headless:
         env["DEVLOOP_HEADLESS"] = "1"
+    if run:
+        env["DEVLOOP_RUN"] = "r1"
+    event = {"tool_name": "Bash", "tool_input": {"command": command}}
+    if agent_id:
+        event["agent_id"] = agent_id
+    if cwd:
+        event["cwd"] = str(cwd)
     return subprocess.run(
         [sys.executable, str(ROOT / "hooks" / "headless_merge_guard.py")],
-        input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}),
+        input=raw if raw is not None else json.dumps(event),
         capture_output=True,
         text=True,
         env=env,
     )
 
 
+WORKER_MSG = "only the orchestrator pushes to main or merges"
+
+
+def test_worker_env_base_push_denied_feature_push_allowed(tmp_path):
+    r = run_guard("git push origin main", headless=True, run=True)
+    assert r.returncode == 2 and WORKER_MSG in r.stderr
+    assert (
+        run_guard("git push origin HEAD:feat/x", headless=True, run=True).returncode
+        == 0
+    )
+    assert (
+        run_guard("git push", run=True, cwd=_repo_on(tmp_path, "feat/x")).returncode
+        == 0
+    )
+    assert (
+        run_guard("git push", run=True, cwd=_repo_on(tmp_path / "m", "main")).returncode
+        == 2
+    )
+
+
+def test_worker_cannot_run_devloop_merge_or_gh_merge():
+    assert (
+        run_guard("devloop-merge proj ROW--S1", headless=True, run=True).returncode == 2
+    )
+    assert run_guard("gh pr merge 5", headless=True, run=True).returncode == 2
+
+
+def test_subagent_is_not_the_orchestrator():
+    assert run_guard("gh pr merge 5", agent_id="a1").returncode == 2
+    assert run_guard("devloop-merge p K", agent_id="a1").returncode == 2
+    assert run_guard("git push origin main", agent_id="a1").returncode == 2
+    assert run_guard("git push origin feat/x", agent_id="a1").returncode == 0
+    assert run_guard("git push origin feat/x", agent_id="").returncode == 0
+
+
+def test_interactive_top_level_is_not_restricted():
+    assert run_guard("git push origin main").returncode == 0
+    assert run_guard("gh pr merge 5").returncode == 0
+
+
+def test_headless_tick_merges_only_through_devloop_merge_and_may_push_base():
+    assert run_guard("gh pr merge 5", headless=True).returncode == 2
+    assert run_guard("devloop-merge proj ROW--S1", headless=True).returncode == 0
+    assert run_guard("git push origin main", headless=True).returncode == 0
+
+
+def test_worker_fails_closed_on_an_unreadable_event_but_the_orchestrator_does_not():
+    assert run_guard("", run=True, raw="not json").returncode == 2
+    assert run_guard("", headless=True, raw="not json").returncode == 0
+    assert run_guard("", raw="not json").returncode == 0
+
+
 def test_merge_guard_only_acts_in_headless_sessions():
     assert run_guard("gh pr merge 5", True).returncode == 2
-    assert run_guard("git push origin main", True).returncode == 2
     assert run_guard("gh pr merge 5", False).returncode == 0
     assert run_guard("gh pr view 5", True).returncode == 0
 

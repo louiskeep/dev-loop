@@ -84,6 +84,9 @@ mutate "an unknown merge state is retried" devloop/merge.py \
 mutate "merge guard forgets gh pr merge" hooks/headless_merge_guard.py \
   'if _ANYWHERE.search(text) or _GH_PR_MERGE.search(text):' 'if _ANYWHERE.search(text):' \
   $T/test_merge.py::test_merge_guard_denies_in_headless_mode
+mutate "merge guard ignores a subagent id" hooks/headless_merge_guard.py \
+  'worker = in_run or bool(event.get("agent_id"))' 'worker = in_run' \
+  $T/test_merge.py::test_subagent_is_not_the_orchestrator
 mutate "merge guard blocks every git push" hooks/headless_merge_guard.py \
   '    return any(
         _push_targets_base(' '    return bool(_GIT_PUSH.search(text)) or any(
