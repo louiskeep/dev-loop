@@ -236,6 +236,9 @@ mutate "a row mate in DOCUMENT does not block the merge" devloop/evidence.py \
 mutate "an old lineage builder run still counts" devloop/evidence.py \
   '        if req.get("plan_lineage", 0) != s["plan_lineage"]:' '        if False:' \
   $T/test_runs_rounds.py::test_redesign_with_an_unchanged_head_needs_a_new_builder_run
+mutate "a failed close is read as not closed" devloop/board.py \
+  '        elif state == "unstarted":' '        else:' \
+  $T/test_slices.py::test_a_close_that_started_and_failed_or_timed_out_is_ambiguous
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

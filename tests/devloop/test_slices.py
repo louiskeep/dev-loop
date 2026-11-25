@@ -892,13 +892,15 @@ def test_failed_board_close_is_not_a_closure_and_a_retry_counts_once(
     from devloop import status
 
     ok = tmp_path / "board-up"
+    board_cmd = tmp_path / "absent-board"  # the command never starts
+    cfg_edit(lambda c: c.update(board={"cmd": [str(board_cmd)], "phase_map": {}}))
+    assert slices.row_close(proj, "ROW1") is False
+    assert status.counts(proj)["rows_closed"] == 0
     cfg_edit(
         lambda c: c.update(
             board={"cmd": [str(_close_board(tmp_path, ok))], "phase_map": {}}
         )
     )
-    assert slices.row_close(proj, "ROW1") is False
-    assert status.counts(proj)["rows_closed"] == 0
     ok.write_text("")
     assert slices.row_close(proj, "ROW1") is True
     assert slices.row_close(proj, "ROW1") is True  # a repeat is not a second closure
@@ -934,3 +936,29 @@ def test_close_attempt_without_a_saved_closure_is_ambiguous_and_never_retried(
     assert status.counts(proj)["rows_closed"] == 0
     problems = store.read_json(store.state_dir(proj) / "problems.json")["problems"]
     assert list(problems) == ["close-ambiguous-ROW1"]
+
+
+@pytest.mark.parametrize(
+    "body", ["raise SystemExit(1)\n", "import time\ntime.sleep(60)\n"]
+)
+def test_a_close_that_started_and_failed_or_timed_out_is_ambiguous(
+    proj, cfg_edit, tmp_path, monkeypatch, body
+):
+    import subprocess as sp
+
+    from devloop import board
+
+    script = _board(tmp_path, body)
+    cfg_edit(lambda c: c.update(board={"cmd": [str(script)], "phase_map": {}}))
+    if "sleep" in body:
+        real = sp.run
+
+        def quick(*a, **kw):
+            kw["timeout"] = 1
+            return real(*a, **kw)
+
+        monkeypatch.setattr(board.subprocess, "run", quick)
+    assert slices.row_close(proj, "ROW1") is False
+    assert slices.closure_records(proj)["ROW1"]["attempted"] is True
+    assert slices.row_close(proj, "ROW1") is False  # the next call marks it ambiguous
+    assert slices.closure_records(proj)["ROW1"]["close_ambiguous"] is True

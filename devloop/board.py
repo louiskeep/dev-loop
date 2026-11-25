@@ -10,11 +10,12 @@ from . import notes, slices, store
 # --- board mirror -------------------------------------------------------------
 
 
-def _board_call(project, cfg, args, **fields):
+def _run_board(cfg, args):
+    """Run the board command. Returns "ok", "error" (it started and failed or timed out)
+    or "unstarted" (it never ran)."""
     board = cfg.get("board")
     if not board:
-        return True
-    ok = False
+        return "ok"
     try:
         r = subprocess.run(
             board["cmd"] + args,
@@ -23,10 +24,20 @@ def _board_call(project, cfg, args, **fields):
             timeout=30,
             check=False,
         )
-        ok = r.returncode == 0
+    except subprocess.TimeoutExpired:
+        return "error"
     except (OSError, subprocess.SubprocessError):
-        pass
-    if not ok:
+        return "unstarted"
+    return "ok" if r.returncode == 0 else "error"
+
+
+def _board_call(project, cfg, args, **fields):
+    return _board_call_state(project, cfg, args, **fields) == "ok"
+
+
+def _board_call_state(project, cfg, args, **fields):
+    state = _run_board(cfg, args)
+    if state != "ok":
         # Output is dropped on purpose: a failing tool may echo row text.
         store.append_event(project, "board-mirror-failed", **fields)
         notes.problem(
@@ -35,7 +46,7 @@ def _board_call(project, cfg, args, **fields):
             impact="the board shows an older phase than the loop",
             fix="check the board command in project.json",
         )
-    return ok
+    return state
 
 
 def mirror(project, cfg, s):
@@ -107,7 +118,8 @@ def row_close(project: str, row: str) -> bool:
             return False
         doc["closures"][row] = {"attempted": True, "closed": False}
         store.write_json(path, doc)
-        ok = _board_call(project, cfg, ["close", row], row=row)
+        state = _board_call_state(project, cfg, ["close", row], row=row)
+        ok = state == "ok"
         if ok:
             doc["closures"][row] = {
                 "attempted": True,
@@ -116,10 +128,12 @@ def row_close(project: str, row: str) -> bool:
             }
             store.write_json(path, doc)
             store.append_event(project, "row-closed", row=row)
-        else:
-            # The call returned a failure, so it is known not to have closed the row.
+        elif state == "unstarted":
+            # The command never ran, so the row is known not to be closed.
             doc["closures"][row] = {"attempted": False, "closed": False}
             store.write_json(path, doc)
+        # A call that started and then failed or timed out may still have posted. The
+        # attempt stays, and the next call marks it ambiguous.
         return ok
 
 
