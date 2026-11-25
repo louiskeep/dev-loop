@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import project as projmod
 from . import store
-from .scrub import scrub
+from .scrub import scrub, scrub_lines
 
 TICKLOG_KEEP = 200
 BLOCK_START = "<!-- devloop:questions -->"
@@ -318,8 +318,14 @@ def read_env_file(path):
     return env
 
 
-def notify(project, text, limit=300):
-    """One public message. Text is scrubbed here so no caller can skip it."""
+MULTILINE_LIMIT = 1500
+
+
+def notify(project, text, limit=300, *, multiline=False, keep=()):
+    """One public message. Text is scrubbed here so no caller can skip it.
+
+    `multiline` keeps line breaks (owner messages); `keep` names pages that may appear.
+    """
     cfg = projmod.load_project(project)
     spec = cfg.get("notify") or {}
     cmd = spec.get("cmd")
@@ -331,7 +337,7 @@ def notify(project, text, limit=300):
     ok = False
     try:
         r = subprocess.run(
-            cmd + [scrub(text, limit)],
+            cmd + [scrub_lines(text, limit, keep) if multiline else scrub(text, limit)],
             capture_output=True,
             stdin=subprocess.DEVNULL,
             timeout=30,
@@ -413,16 +419,33 @@ def ask(
         if _slice_for(project, key):
             slices.set_fields(project, key, waiting_on=f"question {key}")
         store.append_event(project, "question-waiting", key=key)
-        _notify(
-            project, f"Question {key} needs your answer. The work is waiting on it."
-        )
     else:
         store.append_event(project, "question-defaulted", key=key)
-        _notify(
-            project,
-            f"Question {key}: the recommended answer is in use. You can overrule it on the questions page.",
-        )
+    _post_question(project, q, key)
     return q
+
+
+def _post_question(project, q, key):
+    """Tell the owner about a question: what, the options, what happens next, where to look."""
+    cfg = projmod.load_project(project)
+    pages = [str(questions_path(project)), cfg.get("status_copy") or ""]
+    if q["wait"]:
+        nxt = (
+            "Waiting on you: answer with `devloop-state "
+            f"{project} answer {key} <option>`, or write it under the question on the page."
+        )
+    else:
+        nxt = f"Going with {q['recommended']} now; answer to change it."
+    lines = [
+        f"Question {key}: {q['question']}",
+        "Options: " + " | ".join(q["options"]),
+        f"Recommended: {q['recommended']}",
+        nxt,
+        "Read more: " + " and ".join(p for p in pages if p),
+    ]
+    _notify(
+        project, "\n".join(lines), limit=MULTILINE_LIMIT, multiline=True, keep=pages
+    )
 
 
 def ensure_hold_question(project, key):

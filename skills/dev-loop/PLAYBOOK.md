@@ -205,5 +205,8 @@ failing id against the baseline", not "suite green". A new head needs new eviden
 ## Telling the owner
 
 A docs worker or any other worker that needs to send a message runs
-`devloop-state PROJECT notify "TEXT"`. The text is scrubbed and cut to 300 characters, then
-sent through the notify command in `project.json`. Do not call a notify script directly.
+`devloop-state PROJECT notify "TEXT"` (or `-` with the text on stdin). The text is
+scrubbed, keeps its line breaks, is cut to 1500 characters, and is sent through the notify
+command in `project.json`. Do not call a notify script directly. The tick may post whenever
+the owner should know something: an open question, a hold, something stuck, a decision it
+took. Write plain language, with no commit ids and no paths other than the questions page.

@@ -259,8 +259,12 @@ def main(argv=None) -> int:
         elif args.cmd == "event":
             _event(args)
         elif args.cmd == "notify":
-            # notes.notify scrubs and cuts to 300 characters before it sends.
-            notes.notify(args.project, args.text, limit=300)
+            # Text from the argument, or stdin when it is "-". notes.notify scrubs it, keeps
+            # line breaks and cuts it to 1500 characters before it sends.
+            text = sys.stdin.read() if args.text == "-" else args.text
+            notes.notify(
+                args.project, text, limit=notes.MULTILINE_LIMIT, multiline=True
+            )
         else:
             _notes(args)
     except REFUSALS as exc:

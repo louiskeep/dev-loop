@@ -328,20 +328,40 @@ def test_playbook_and_skill_files_exist():
     assert store.skill_dir() == SKILL
 
 
-def test_notify_command_scrubs_and_cuts(
-    proj, home, cfg_edit, fakebin, tmp_path, monkeypatch
-):
+def _notify_cli(home, fakebin, cfg_edit, tmp_path, monkeypatch, *args, stdin=None):
     log = tmp_path / "n.log"
     monkeypatch.setenv("FAKE_NOTIFY_LOG", str(log))
     cfg_edit(lambda c: c.update(notify={"cmd": [str(fakebin / "notify")]}))
-    state = ROOT / "bin" / "devloop-state"
-    text = "token ghp_abcdefghijklmnop1234567 " + "x" * 600
     r = subprocess.run(
-        [str(state), "p", "notify", text],
+        [str(ROOT / "bin" / "devloop-state"), "p", "notify", *args],
         capture_output=True,
         text=True,
+        input=stdin,
         env={**os.environ, "DEVLOOP_HOME": str(home), "DEVLOOP_HEADLESS": "1"},
     )
     assert r.returncode == 0, r.stderr
-    sent = log.read_text()
-    assert "ghp_" not in sent and len(sent.split("\t", 1)[1].strip()) <= 300
+    return log.read_text().split("\t", 1)[1].rstrip("\n")
+
+
+def test_notify_command_scrubs_and_cuts(
+    proj, home, cfg_edit, fakebin, tmp_path, monkeypatch
+):
+    text = "token ghp_abcdefghijklmnop1234567 " + "x" * 2000
+    sent = _notify_cli(home, fakebin, cfg_edit, tmp_path, monkeypatch, text)
+    assert "ghp_" not in sent and len(sent) <= 1500
+
+
+def test_notify_keeps_line_breaks_and_reads_stdin(
+    proj, home, cfg_edit, fakebin, tmp_path, monkeypatch
+):
+    sent = _notify_cli(
+        home,
+        fakebin,
+        cfg_edit,
+        tmp_path,
+        monkeypatch,
+        "-",
+        stdin="first line\nsecond ghp_abcdefghijklmnop1234567\nthird",
+    )
+    assert sent.splitlines()[0] == "first line" and len(sent.splitlines()) == 3
+    assert "ghp_" not in sent

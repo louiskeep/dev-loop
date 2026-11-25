@@ -22,3 +22,22 @@ def scrub(text, limit: int = 160) -> str:
     ):
         out = rx.sub(repl, out)
     return out[:limit]
+
+
+def scrub_lines(text, limit: int = 1500, keep=()) -> str:
+    """Like `scrub`, but keeps line breaks and lets named paths (`keep`) through.
+
+    The kept paths are the pages the owner is told to open; everything else that looks
+    like a path, commit id or secret is still replaced.
+    """
+    marks = {}
+    raw = str(text)
+    for i, path in enumerate(p for p in keep if p):
+        mark = f"@@KEEP{i}@@"
+        marks[mark] = path
+        raw = raw.replace(path, mark)
+    lines = [scrub(line, len(raw) + 1) for line in raw.splitlines()]
+    out = "\n".join(lines).strip("\n")
+    for mark, path in marks.items():
+        out = out.replace(mark, path)
+    return out[:limit]

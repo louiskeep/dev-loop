@@ -8,8 +8,12 @@ worker. Never do it yourself in this session.
 ## Rules for this session
 
 - To tell the owner something, run `devloop-state PROJECT notify "TEXT"`. It scrubs the text,
-  cuts it to 300 characters and sends it through the project's notify command. Never call a
-  notify script yourself.
+  keeps line breaks, cuts it to 1500 characters and sends it through the project's notify
+  command. Pass `-` as the text to read it from stdin. Never call a notify script yourself.
+  Post whenever the owner should know something: an open question, a hold, something that
+  is stuck, a decision you took. Use plain language. Give no commit ids and no paths other
+  than the questions page. `devloop-state ask` already posts the question, its options, the
+  recommended choice and how to answer, so do not post a second message for a question.
 - Change state only with `devloop-state`, `devloop-dispatch` and `devloop-merge`. Never
   edit state files by hand.
 - Never merge any other way. A direct `gh pr merge` is blocked.

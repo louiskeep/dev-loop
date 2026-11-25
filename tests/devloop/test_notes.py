@@ -126,7 +126,7 @@ def test_ask_applies_default(proj, home, cfg_edit, tmp_path):
     assert "### q1" in page and "Use A or B?" in page
     assert events(home)[-1]["kind"] == "question-defaulted"
     sent = json.loads(log.read_text().splitlines()[-1])
-    assert len(sent) == 1 and "q1" in sent[0] and "Use A or B?" not in sent[0]
+    assert len(sent) == 1 and "q1" in sent[0]
 
 
 def test_ask_wait_blocks_slice(proj, mk_slice, home):
@@ -436,3 +436,65 @@ def test_reconcile_keeps_an_existing_answer(proj, mk_slice):
     before = (store.state_dir(proj) / "questions.md").read_text()
     assert notes.reconcile_hold_questions(proj) == []
     assert (store.state_dir(proj) / "questions.md").read_text() == before
+
+
+def _json_notify(tmp_path, cfg_edit):
+    log = tmp_path / "posts.log"
+    script = tmp_path / "jnotify"
+    script.write_text(
+        "#!/usr/bin/env python3\nimport json, sys\n"
+        f"open({str(log)!r}, 'a').write(json.dumps(sys.argv[1]) + '\\n')\n"
+    )
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    cfg_edit(
+        lambda c: c.update(
+            notify={"cmd": [str(script)]}, status_copy=str(tmp_path / "STATUS.md")
+        )
+    )
+    return lambda: [json.loads(x) for x in log.read_text().splitlines()]
+
+
+def test_ask_with_wait_posts_the_question_and_how_to_answer(
+    proj, home, cfg_edit, tmp_path
+):
+    posts = _json_notify(tmp_path, cfg_edit)
+    notes.ask(
+        proj,
+        "q2",
+        question="Spend the budget?",
+        options=["yes", "no"],
+        recommended="no",
+        wait=True,
+    )
+    text = posts()[-1]
+    assert "Question q2: Spend the budget?" in text
+    assert "Options: yes | no" in text and "Recommended: no" in text
+    assert "Waiting on you: answer with" in text and "answer q2 <option>" in text
+    assert (
+        str(home / "p" / "questions.md") in text and str(tmp_path / "STATUS.md") in text
+    )
+    assert "\n" in text  # line breaks survive
+
+
+def test_ask_without_wait_says_what_it_is_doing(proj, home, cfg_edit, tmp_path):
+    posts = _json_notify(tmp_path, cfg_edit)
+    notes.ask(
+        proj, "q3", question="A or B?", options=["A", "B"], recommended="B", wait=False
+    )
+    text = posts()[-1]
+    assert "Going with B now; answer to change it." in text
+    assert "Waiting on you" not in text
+
+
+def test_question_post_is_scrubbed(proj, home, cfg_edit, tmp_path):
+    posts = _json_notify(tmp_path, cfg_edit)
+    notes.ask(
+        proj,
+        "q4",
+        question="Use key ghp_abcdefghijklmnop1234567 in /home/x/secret/file?",
+        options=["yes", "no"],
+        recommended="no",
+        wait=False,
+    )
+    text = posts()[-1]
+    assert "ghp_" not in text and "/home/x/secret" not in text
