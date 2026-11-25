@@ -43,6 +43,11 @@ worker. Never do it yourself in this session.
    That is the only merge path. Read its answer. Do not retry an unknown state.
 8. Fill free slots in the project's priority order. Check merged PRs and open slices first,
    so a slice is never started twice.
+   When every slice of a row is DONE and no roadmap slice remains for it, the snapshot lists
+   the row under "Rows ready to close". Close it with
+   `devloop-state PROJECT row-close ROW --confirm-last`. The flag says you checked the
+   roadmap. The command refuses if any slice of the row is not DONE. If it answers "not
+   closed", do not run it again: the close is marked ambiguous and raised as a problem.
 9. Dispatch due duties from the project's tick document.
 10. Apply the recommended default to each new question with `devloop-state PROJECT ask`.
     Questions about R3 or product choices wait.

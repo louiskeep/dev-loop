@@ -239,6 +239,9 @@ mutate "an old lineage builder run still counts" devloop/evidence.py \
 mutate "a failed close is read as not closed" devloop/board.py \
   '        elif state == "unstarted":' '        else:' \
   $T/test_slices.py::test_a_close_that_started_and_failed_or_timed_out_is_ambiguous
+mutate "row-close ignores open slices" devloop/board.py \
+  '    if any(p != "DONE" for p in phases):' '    if False:' \
+  $T/test_slices.py::test_row_close_needs_every_slice_done_and_the_confirm_flag
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

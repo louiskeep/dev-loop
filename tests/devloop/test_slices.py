@@ -962,3 +962,51 @@ def test_a_close_that_started_and_failed_or_timed_out_is_ambiguous(
     assert slices.closure_records(proj)["ROW1"]["attempted"] is True
     assert slices.row_close(proj, "ROW1") is False  # the next call marks it ambiguous
     assert slices.closure_records(proj)["ROW1"]["close_ambiguous"] is True
+
+
+def test_row_close_needs_every_slice_done_and_the_confirm_flag(
+    proj, cfg_edit, tmp_path
+):
+    cfg_edit(
+        lambda c: c.update(board={"cmd": [str(_board(tmp_path, ""))], "phase_map": {}})
+    )
+    slices.new_slice(proj, "R7", "S1", repo="main")
+    s2 = slices.new_slice(proj, "R7", "S2", repo="main")
+    with pytest.raises(slices.SliceError, match="--confirm-last"):
+        slices.close_row_checked(proj, "R7")
+    with pytest.raises(slices.SliceError, match="must be DONE"):
+        slices.close_row_checked(proj, "R7", confirm_last=True)
+    for key in ("R7--S1", "R7--S2"):
+        s = slices.load(proj, key)
+        s["phase"] = "DONE"
+        slices._save(proj, s)
+    assert slices.closable_rows(proj) == ["R7"]
+    assert slices.close_row_checked(proj, "R7", confirm_last=True) is True
+    assert slices.closable_rows(proj) == []
+    with pytest.raises(slices.SliceError, match="no slices"):
+        slices.close_row_checked(proj, "NOPE", confirm_last=True)
+    assert s2
+
+
+def test_row_close_cli_and_snapshot_listing(proj, home, cfg_edit, tmp_path):
+    from devloop import snapshot
+
+    cfg_edit(
+        lambda c: c.update(board={"cmd": [str(_board(tmp_path, ""))], "phase_map": {}})
+    )
+    slices.new_slice(proj, "R8", "S1", repo="main")
+    s = slices.load(proj, "R8--S1")
+    s["phase"] = "DONE"
+    slices._save(proj, s)
+    md, _ = snapshot.build_snapshot(proj)
+    assert f"- R8: devloop-state {proj} row-close R8 --confirm-last" in md
+    refused = run_cli(home, "p", "row-close", "R8")
+    assert refused.returncode == 3 and "--confirm-last" in refused.stderr
+    ok = run_cli(home, "p", "row-close", "R8", "--confirm-last")
+    assert ok.returncode == 0 and "R8 closed" in ok.stdout
+    assert (
+        "R8:"
+        not in snapshot.build_snapshot(proj)[0]
+        .split("## Rows ready to close")[1]
+        .split("##")[0]
+    )

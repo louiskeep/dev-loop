@@ -89,6 +89,36 @@ def closure_records(project) -> dict:
     return store.read_json(_closures_path(project)).get("closures", {})
 
 
+def closable_rows(project) -> list:
+    """Rows whose every slice is DONE and that the board has not been told to close."""
+    by_row = {}
+    for s in slices.list_slices(project):
+        by_row.setdefault(s["row"], []).append(s["phase"])
+    done = closure_records(project)
+    return sorted(
+        row
+        for row, phases in by_row.items()
+        if all(p == "DONE" for p in phases)
+        and not (done.get(row) or {}).get("closed")
+        and not (done.get(row) or {}).get("close_ambiguous")
+    )
+
+
+def close_row_checked(project, row, *, confirm_last=False) -> bool:
+    """The tick's row close: every slice of the row must be DONE, and the caller states
+    that no roadmap slice remains for it."""
+    if not confirm_last:
+        raise slices.SliceError(
+            "row-close needs --confirm-last: no roadmap slice may remain"
+        )
+    phases = [s["phase"] for s in slices.list_slices(project) if s["row"] == row]
+    if not phases:
+        raise slices.SliceError("no slices for that row")
+    if any(p != "DONE" for p in phases):
+        raise slices.SliceError("every slice of the row must be DONE first")
+    return row_close(project, row)
+
+
 def row_close(project: str, row: str) -> bool:
     """Close a row on the board once. Only a successful board call is a closure.
 

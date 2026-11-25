@@ -244,6 +244,18 @@ def build_snapshot(project) -> tuple:
             f"- memory available: {mem_gb:.1f} GB (floor {cfg.get('min_free_gb', 2.5)} GB)",
         ]
     )
+    closable = slices.closable_rows(project)
+    sections.append(
+        ["## Rows ready to close"]
+        + (
+            [
+                f"- {r}: devloop-state {project} row-close {r} --confirm-last"
+                "  (only when no roadmap slice remains for it)"
+                for r in closable
+            ]
+            or ["- none"]
+        )
+    )
     sections.append(
         ["## Open questions and R3 waits"]
         + (
@@ -300,6 +312,7 @@ def build_snapshot(project) -> tuple:
             (rd.name, (rd / "exit").is_file(), runs.is_done(rd))
             for rd, _ in runs.iter_runs(project)
         ),
+        "closable": closable,
         "held_tests": sorted((h["id"], h["reason"], h["code"]) for h in held),
         "questions": sorted(q["key"] for q in qs),
         "problems": sorted((e["key"], e["count"]) for e in problems),

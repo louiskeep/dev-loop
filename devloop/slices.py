@@ -867,6 +867,8 @@ _MOVED = {
     "merge_id": board,
     "pending_board": board,
     "row_close": board,
+    "closable_rows": board,
+    "close_row_checked": board,
     "drain_pending_board": board,
     "closure_records": board,
 }
