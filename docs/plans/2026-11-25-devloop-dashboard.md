@@ -416,6 +416,21 @@ host, port) -> ThreadingHTTPServer` with no signal handling; 2 s view cache unde
 - [ ] Step 2 to 4: red, implement, green.
 - [ ] Step 5: commit `feat(devloop): serve the dashboard`.
 
+## Task 2b: Memory panel (owner addition, 2026-11-25)
+
+**Files:** `devloop/dash/memory.py`; `view.py` (`memory`), `render.py` (header bar and
+panel), `runs.reserved_mb` (shared with admission). Tests in `test_dash_view.py`.
+
+The view adds `memory`, read only from `/proc` (no command runs; the `/proc` root is a
+parameter): MemTotal and MemAvailable; the reservations of runs started in the last five
+minutes, from the same `runs.reserved_mb` admission uses; the floor (`min_free_gb`); per
+executing worker the process-group RSS over `payload_pgid`, labelled by role and slice; the
+five largest other processes by RSS as a command name only. States: OK, Tight (headroom
+below floor plus 1 GB) and Low (below the floor), where headroom is available memory less
+reservations. The shape carries an empty `hosts` list for the remote-workers slice. It
+refreshes with the same poll. Tests: fixture `/proc` numbers, no arguments or paths in the
+output, Low and Tight thresholds.
+
 ## Task 5: CLI and lifecycle
 
 **Files:** create `bin/devloop-dash`; modify `devloop/dash/server.py` (`main`,
@@ -436,6 +451,9 @@ hostname address. `dash_status(project) -> (state, url, port)`; `check` adds one
 - [ ] Step 1: failing lifecycle tests from Acceptance tests (SIGTERM in a subprocess).
 - [ ] Step 2 to 4: red, implement, green.
 - [ ] Step 5: commit `feat(devloop): add devloop-dash start and stop`.
+
+Build note (2026-11-25): the lifecycle code is in `devloop/dash/lifecycle.py`, not
+`server.py`, and the default bind is 127.0.0.1 (`dash.host` or `--host` opens it up).
 
 ## Task 6: Skill, install, shipped-files, mutations
 

@@ -213,7 +213,11 @@ def _needs(v, now):
     items = []
     for n in v["needs_you"]:
         icon, word, text, kind = NEED_TEXT[n["kind"]]
-        extra = f" (seen {n['count']} times)" if n["count"] else ""
+        extra = (
+            f" (seen {n['count']} time{'s' if n['count'] != 1 else ''})"
+            if n["count"]
+            else ""
+        )
         key = f" <code>{e(n['key'])}</code>" if n["key"] else ""
         items.append(
             f"<li>{_chip(kind, icon, word)}{key} {e(text)}{e(extra)} "

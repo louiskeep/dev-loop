@@ -167,3 +167,8 @@ def test_every_page_state_is_a_chip_not_a_row_colour():
     for sel in re.findall(r"([^{}]+)\{", css):
         if "st-" in sel:
             assert sel.strip().startswith(".st-"), sel  # only the chip classes
+
+
+def test_counts_read_naturally(proj, dash):
+    page = render.render_page(built(proj))
+    assert "seen 1 time)" in page and "1 times" not in page

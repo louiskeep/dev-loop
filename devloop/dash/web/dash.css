@@ -109,8 +109,9 @@ button { cursor: pointer; }
 }
 .stale::before { content: "\26A0  "; }
 
-main { max-width: 1200px; margin: 0 auto; padding: 0.75rem 1rem 2rem; display: grid; gap: 0.75rem; }
-#app-body { display: grid; gap: 0.75rem; }
+main { max-width: 1200px; margin: 0 auto; padding: 0.75rem 1rem 2rem; display: grid; gap: 0.75rem; grid-template-columns: minmax(0, 1fr); }
+#app-body { display: grid; gap: 0.75rem; grid-template-columns: minmax(0, 1fr); }
+#app-body > section { min-width: 0; overflow-wrap: anywhere; }
 #app-body > section {
   background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.7rem 0.9rem;
 }
