@@ -259,11 +259,7 @@ def main(argv=None) -> int:
         elif args.cmd == "merge-reset":
             slices.merge_reset(args.project, args.key)
         elif args.cmd in ("pause", "resume"):
-            flag = store.state_dir(args.project) / "PAUSE"
-            if args.cmd == "pause":
-                flag.touch()
-            else:
-                flag.unlink(missing_ok=True)
+            store.set_paused(args.project, args.cmd == "pause", "cli")
         elif args.cmd == "check":
             results = check.run_checks(args.project)
             for ok, msg in results:

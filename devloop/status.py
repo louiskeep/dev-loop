@@ -202,6 +202,9 @@ EVENTS = {
     "question-answered": EventDesc(
         lambda e, cfg: f"you answered question {e.get('key')}", "ANSWERED"
     ),
+    "loop-paused": EventDesc(lambda e, cfg: "loop paused", "PAUSED"),
+    "loop-resumed": EventDesc(lambda e, cfg: "loop resumed", "RESUMED"),
+    "tick-requested": EventDesc(lambda e, cfg: "a tick was requested", "TICK"),
     "question-waiting": EventDesc(
         lambda e, cfg: f"waiting on your answer to {e.get('key')}", "QUESTION"
     ),

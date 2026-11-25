@@ -226,6 +226,16 @@ def append_event(project: str, kind: str, *, once=None, at=None, **fields) -> No
             os.fsync(fh.fileno())
 
 
+def set_paused(project: str, on: bool, via: str) -> None:
+    """Pause or resume the loop: the one place the PAUSE flag changes, with its event."""
+    flag = state_dir(project) / "PAUSE"
+    if on:
+        flag.touch()
+    else:
+        flag.unlink(missing_ok=True)
+    append_event(project, "loop-paused" if on else "loop-resumed", via=via)
+
+
 def out_dir(rd) -> Path:
     """The one directory a payload may write. Control files live one level up."""
     return Path(rd) / "out"

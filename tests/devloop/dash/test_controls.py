@@ -1,15 +1,18 @@
 """Loop control: question class and detail, answer rules, one write path, POST actions."""
 
+import fcntl
 import json
 import os
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
-from devloop import notes, slices, store
+from devloop import notes, slices, state_cli, store, tick, wrap
+from devloop.dash import lifecycle
 
 STATE_BIN = str(Path(__file__).resolve().parents[3] / "bin" / "devloop-state")
 
@@ -439,3 +442,172 @@ def test_answer_event_once_across_append_failure(
     assert stored(proj, hk)["decision"]["status"] == "done"
     assert stored(proj, hk)["answered_at"] == saved["answered_at"]
     assert slices.load(proj, k)["phase"] == "FRAME"
+
+
+# --- Task 10: one write path for pause, resume and tick starts --------------------------
+
+
+def test_cli_and_dashboard_pause_share_one_path(proj, home, monkeypatch):
+    calls = []
+    with monkeypatch.context() as m:
+        m.setattr(
+            store,
+            "set_paused",
+            lambda project, on, via: calls.append((project, on, via)),
+        )
+        assert state_cli.main(["p", "pause"]) == 0
+        assert state_cli.main(["p", "resume"]) == 0
+    assert calls == [("p", True, "cli"), ("p", False, "cli")]
+    store.set_paused(proj, True, "dashboard")
+    assert (home / "p" / "PAUSE").exists()
+    store.set_paused(proj, False, "dashboard")
+    assert not (home / "p" / "PAUSE").exists()
+    kinds = [
+        (e["kind"], e["via"]) for e in events(home) if e["kind"].startswith("loop-")
+    ]
+    assert kinds == [("loop-paused", "dashboard"), ("loop-resumed", "dashboard")]
+
+
+def fake_proc(tmp_path, lines):
+    proc = tmp_path / "proc"
+    proc.mkdir(exist_ok=True)
+    (proc / "locks").write_text("".join(f"{ln}\n" for ln in lines))
+    return proc
+
+
+def lock_line(path, kind="FLOCK"):
+    st = os.stat(path)
+    ident = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+    return f"1: {kind}  ADVISORY  WRITE 4242 {ident} 0 EOF"
+
+
+def test_tick_running_is_passive(proj, home, tmp_path):
+    lock = home / "p" / "tick.lock"
+    assert tick.running(proj) is False and not lock.exists()
+    lock.write_text("")
+    before = lock.stat()
+    assert tick.running(proj, proc=fake_proc(tmp_path, [])) is False
+    held = [lock_line(lock)]
+    assert tick.running(proj, proc=fake_proc(tmp_path, held)) is True
+    # A POSIX lock, or a lock on another file, is not the tick's flock.
+    other = [lock_line(lock, "POSIX"), lock_line(home / "p" / "project.json")]
+    assert tick.running(proj, proc=fake_proc(tmp_path, other)) is False
+    assert lock.stat().st_mtime_ns == before.st_mtime_ns
+    # Against the real kernel table: the tick's own flock is seen, and probing takes none.
+    fd = os.open(lock, os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert tick.running(proj) is True
+    finally:
+        os.close(fd)
+    assert tick.running(proj) is False
+    fd = os.open(lock, os.O_RDWR)
+    try:
+        for _ in range(3):  # a probe never holds the lock, so a tick still starts
+            tick.running(proj)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def tick_launcher(tmp_path, monkeypatch, body):
+    bins = tmp_path / "bins"
+    bins.mkdir(exist_ok=True)
+    script = bins / "devloop-tick"
+    script.write_text(f"#!{sys.executable}\n{body}")
+    script.chmod(0o755)
+    monkeypatch.setenv("DEVLOOP_BIN_DIR", str(bins))
+
+
+def wait_for_file(path, seconds=10):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if path.exists() and path.read_text().strip().endswith("done"):
+            return path.read_text()
+        time.sleep(0.05)
+    raise AssertionError("the launcher never ran")
+
+
+def test_spawn_detached_leaves_no_child_fds(proj, home, tmp_path, monkeypatch):
+    out = tmp_path / "child.txt"
+    tick_launcher(
+        tmp_path,
+        monkeypatch,
+        "import os, sys\n"
+        "fds = ','.join(sorted(os.listdir('/proc/self/fd')))\n"
+        f"open({str(out)!r}, 'w').write(f\"{{fds}} {{os.getsid(0) == os.getpid()}} "
+        "{os.environ.get('DEVLOOP_HEADLESS')} {sys.argv[1]} done\")\n",
+    )
+    r, w = os.pipe()
+    os.set_inheritable(r, True)
+    os.set_inheritable(w, True)
+    try:
+        started = []
+        tick.spawn_detached(proj, "dashboard", on_started=lambda: started.append(1))
+        fds, leader, headless, project, _ = wait_for_file(out).split()
+    finally:
+        os.close(r)
+        os.close(w)
+    assert started == [1]
+    assert str(r) not in fds.split(",") and str(w) not in fds.split(",")
+    assert (leader, headless, project) == ("True", "1", "p")
+    assert (home / "p" / "events.jsonl").read_text().count("tick-requested") == 1
+    assert events(home)[-1]["via"] == "dashboard"
+
+
+def test_spawn_detached_raises_when_it_cannot_launch(proj, tmp_path, monkeypatch):
+    monkeypatch.setenv("DEVLOOP_BIN_DIR", str(tmp_path / "nowhere"))
+    started = []
+    with pytest.raises(OSError):
+        tick.spawn_detached(proj, "dashboard", on_started=lambda: started.append(1))
+    assert started == []
+
+
+def test_wrapper_wakes_tick_through_spawn_detached(
+    proj, tmp_path, monkeypatch, fakebin
+):
+    calls = []
+    monkeypatch.setattr(tick, "spawn_detached", lambda *a, **kw: calls.append(a))
+    rd = store.run_dir(proj, "r1")
+    rd.mkdir(parents=True)
+    req = {
+        "id": "r1",
+        "kind": "duty",
+        "row": "R",
+        "slice": "S",
+        "key": "R--S",
+        "reader": "exit",
+        "argv": ["true"],
+        "cwd": str(tmp_path),
+        "deadline_s": 60,
+        "idle_s": 60,
+    }
+    store.write_json(rd / "request.json", req)
+    (rd / "brief.md").write_text("b")
+    store.out_dir(rd).mkdir()
+    wrap.finish(proj, rd, req, 0, "exit")
+    assert calls == [(proj, "wrapper")]
+    # A launch failure never breaks the wrapper: the next cron tick collects the run.
+    monkeypatch.setattr(
+        tick, "spawn_detached", lambda *a, **kw: (_ for _ in ()).throw(OSError("x"))
+    )
+    wrap.finish(proj, rd, req, 0, "exit")
+
+
+def test_server_env_is_not_headless(proj, home, monkeypatch):
+    seen = {}
+
+    class Done(Exception):
+        pass
+
+    def popen(argv, **kw):
+        seen.update(kw)
+        raise Done
+
+    monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
+    monkeypatch.setattr(lifecycle.subprocess, "Popen", popen)
+    args = type("A", (), {"port": None, "host": None})()
+    with pytest.raises(Done):
+        lifecycle._detach(proj, args)
+    assert "DEVLOOP_HEADLESS" not in seen["env"]

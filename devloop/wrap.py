@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from . import project as projmod
-from . import push, runs, store
+from . import push, runs, store, tick
 from .caps import TAIL_CHARS, detect_cap, detect_cap_text
 
 VERDICT = re.compile(r"VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
@@ -246,23 +246,6 @@ def write_repair(rd, req):
         )
 
 
-def _wake_tick(project):
-    tick = store.bin_dir() / "devloop-tick"
-    env = dict(os.environ, DEVLOOP_HEADLESS="1", DEVLOOP_LIB=str(store.package_root()))
-    try:
-        subprocess.Popen(
-            [str(tick), project],
-            start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            env=env,
-        )
-    except OSError:
-        pass  # the next cron tick collects the run anyway
-
-
 def run(project, run_id) -> int:
     rd = store.run_dir(project, run_id)
     req = runs.read_request(project, run_id)
@@ -347,4 +330,7 @@ def finish(project, rd, req, code, reason):
     finally:
         runs.create_exit(rd, code=code, reason=reason)
         runs.remove_tree(project, rd.name, req)
-        _wake_tick(project)
+        try:
+            tick.spawn_detached(project, "wrapper")
+        except OSError:
+            pass  # the next cron tick collects the run anyway
