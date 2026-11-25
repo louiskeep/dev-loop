@@ -19,6 +19,8 @@ WORKER_ALLOWED = [
     "FOO=1 rg devloop-merge .",
     "timeout 30 rg devloop-merge .",
     "git push origin feat/x",
+    "cat > notes.md <<EOF\ngh pr merge\nEOF",
+    "git commit -F - <<EOF\ngh pr merge\nEOF",
     "cat > f.txt <<'EOF'\nit's not run: devloop-merge x; git push origin main\nEOF",
 ]
 WORKER_DENIED = [
@@ -39,6 +41,9 @@ WORKER_DENIED = [
     "git push origin main",
     "cd x && git push origin HEAD:main",
     "echo 'unterminated",
+    "bash <<EOF\ngh pr merge 5\nEOF",
+    "sh <<'EOF'\nit's text\ngit push origin main\nEOF",
+    "bash -s <<EOF\ndevloop-merge p k\nEOF",
     "if true; then gh pr merge 1; fi",
     "while true; do devloop-merge p k; done",
     "for x in a b; do git push origin main; done",

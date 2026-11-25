@@ -132,25 +132,39 @@ class _Unparseable(Exception):
 _HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
 
 
-def _strip_heredocs(command: str) -> str:
-    """Drop here-document bodies: they are input text, never commands."""
-    lines, out, end = command.split("\n"), [], None
-    for line in lines:
+def _feeds_shell(line: str) -> bool:
+    """True when the command that owns this heredoc is a shell reading it as a script."""
+    try:
+        tokens = shlex.split(line[: _HEREDOC.search(line).start()], posix=True)
+        i = _command_start(tokens)
+        return i < len(tokens) and os.path.basename(tokens[i]) in _SHELLS
+    except (ValueError, _Unparseable):
+        return False
+
+
+def _strip_heredocs(command: str):
+    """Drop here-document bodies, which are input text and not commands. Returns the
+    remaining text and the bodies that feed a shell, which are scripts."""
+    out, scripts, end, body, shell = [], [], None, [], False
+    for line in command.split("\n"):
         if end is not None:
             if line.strip() == end:
                 end = None
                 out.append(line)
+                if shell:
+                    scripts.append("\n".join(body))
+            else:
+                body.append(line)
             continue
         out.append(line)
         m = _HEREDOC.search(line)
         if m:
-            end = m.group(2)
-    return "\n".join(out)
+            end, body, shell = m.group(2), [], _feeds_shell(line)
+    return "\n".join(out), scripts
 
 
 def _segments(command: str) -> list[str]:
     """Split on shell command separators and `$(` that are outside quotes."""
-    command = _strip_heredocs(command)
     out, cur, quote, i = [], [], None, 0
     while i < len(command):
         c = command[i]
@@ -237,6 +251,9 @@ def _command_start(tokens: list[str]) -> int:
 def _commands(command: str):
     """Yield (executable basename, argument tokens) for every command in the text,
     including a script handed to a shell with -c, to eval, or to find -exec."""
+    command, scripts = _strip_heredocs(command)
+    for script in scripts:
+        yield from _commands(script)
     for seg in _segments(command):
         tokens = _tokens(seg)
         i = _command_start(tokens)
