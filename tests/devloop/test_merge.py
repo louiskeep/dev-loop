@@ -493,10 +493,18 @@ def test_merge_pinned_source_must_match(proj, gate, cfg_edit):
         ]
     )
     assert "from ci-workflow" in merge.merge(proj, k).reason
-    # An entry from another source is ignored, not counted against the pinned one.
+    # The pin picks the entry that satisfies `ci`; a red entry from another workflow
+    # still blocks the merge.
     gate.set_gh(
         statusCheckRollup=[
             {"name": "ci", "conclusion": "FAILURE", "workflowName": "someone-else"},
+            {"name": "ci", "conclusion": "SUCCESS", "workflowName": "ci-workflow"},
+        ]
+    )
+    assert "check ci is FAILURE" in merge.merge(proj, k).reason
+    gate.set_gh(
+        statusCheckRollup=[
+            {"name": "ci", "conclusion": "SKIPPED", "workflowName": "someone-else"},
             {"name": "ci", "conclusion": "SUCCESS", "workflowName": "ci-workflow"},
         ]
     )

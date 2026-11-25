@@ -207,6 +207,9 @@ mutate "only exit 1 counts as a red test" devloop/apply.py \
 mutate "gate ignores an unapplied rerun" devloop/evidence.py \
   '        if runs.is_done(rd) or req.get("kind") not in _EVIDENCE_KINDS:' '        if True:' \
   $T/test_merge.py::test_merge_refuses_while_a_rerun_for_the_head_is_unapplied
+mutate "a pin hides a red check of the same name" devloop/merge.py \
+  '            if id(e) not in satisfying and state(e) not in OK_STATES:' '            if e["name"] not in required and state(e) not in OK_STATES:' \
+  $T/test_merge.py::test_merge_pinned_source_must_match
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

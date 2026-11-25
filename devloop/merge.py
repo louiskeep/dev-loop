@@ -98,8 +98,8 @@ def _source_of(entry):
 
 def _check_states(rollup, rules):
     """Blocking checks. A required check passes only when it is present and every one
-    of its entries (from the pinned source, when one is set) is SUCCESS. Any other
-    check that is failed or pending refuses."""
+    of its entries (from the pinned source, when one is set) is SUCCESS. Every other
+    entry, whatever its name, that is failed or pending refuses."""
     by_name = {}
     for entry in rollup if isinstance(rollup, list) else []:
         name = entry.get("name") or entry.get("context")
@@ -112,18 +112,20 @@ def _check_states(rollup, rules):
     required = rules.get("required_checks", [])
     pins = rules.get("required_check_sources", {})
     problems = []
+    satisfying = set()  # ids of the entries that stand for a required check
     for name in required:
         entries = by_name.get(name, [])
         if name in pins:
             entries = [e for e in entries if pins[name] in _source_of(e)]
+        satisfying.update(id(e) for e in entries)
         if not entries or any(state(e) != "SUCCESS" for e in entries):
             where = f" from {pins[name]}" if name in pins else ""
             problems.append(f"required check {name}{where} is not SUCCESS")
+    # A pin only chooses which entry satisfies the requirement. Every other entry,
+    # including one with the same name from another workflow, must not be red or pending.
     for name, entries in by_name.items():
-        if name in required:
-            continue
         for e in entries:
-            if state(e) not in OK_STATES:
+            if id(e) not in satisfying and state(e) not in OK_STATES:
                 problems.append(f"check {name} is {state(e) or 'pending'}")
                 break
     return problems
