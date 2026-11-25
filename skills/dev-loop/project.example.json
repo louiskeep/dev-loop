@@ -85,7 +85,9 @@
         "codex-builder": [
           "codex-builder",
           "{worktree}",
-          "{brief}"
+          "{brief}",
+          "{out}",
+          "{label}"
         ]
       },
       "repair_out": "/path/to/cache/{run_id}/{plan_name}"

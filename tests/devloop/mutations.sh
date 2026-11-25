@@ -227,6 +227,9 @@ mutate "plan exit ignores an unapplied review" devloop/evidence.py \
 mutate "redesign keeps old plan reviews" devloop/slices.py \
   '                s["plan_lineage"] += 1' '                pass' \
   $T/test_runs_rounds.py::test_redesign_needs_fresh_plan_reviews_even_after_an_in_place_rewrite
+mutate "an ambiguous close is retried" devloop/board.py \
+  '            if not rec.get("close_ambiguous"):' '            if False:' \
+  $T/test_slices.py::test_close_attempt_without_a_saved_closure_is_ambiguous_and_never_retried
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

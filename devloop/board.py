@@ -1,7 +1,6 @@
 """Board mirror and the persisted merge ledger (merges.json)."""
 
 import hashlib
-import re
 import subprocess
 
 from . import project as projmod
@@ -82,8 +81,9 @@ def closure_records(project) -> dict:
 def row_close(project: str, row: str) -> bool:
     """Close a row on the board once. Only a successful board call is a closure.
 
-    The attempt is written first. If a crash left an attempt with no closure, the
-    board's own view decides whether the call landed, so a retry never posts twice.
+    The attempt is saved before the call. An attempt with no saved closure may or may not
+    have reached the board, and the board's `close` posts again on every call, so it is
+    marked ambiguous, raised once as a problem and never retried automatically.
     """
     if not isinstance(row, str) or slices.ID_RE.fullmatch(row) is None:
         raise slices.SliceError("bad row id")
@@ -95,18 +95,16 @@ def row_close(project: str, row: str) -> bool:
         if rec and rec.get("closed"):
             return True
         if rec and rec.get("attempted"):
-            shown = _board_show(project, cfg)
-            if shown is not None and re.search(
-                rf"Closed today: \d+ \(([^)]*\b)?{re.escape(row)}\b", shown
-            ):
-                doc["closures"][row] = {
-                    "attempted": True,
-                    "closed": True,
-                    "at": store.now_iso(),
-                }
+            if not rec.get("close_ambiguous"):
+                rec["close_ambiguous"] = True
                 store.write_json(path, doc)
-                store.append_event(project, "row-closed", row=row)
-                return True
+                notes.problem(
+                    project,
+                    f"close-ambiguous-{row}",
+                    impact="a row close may or may not have reached the board",
+                    fix="check the board, then close the row there by hand if needed",
+                )
+            return False
         doc["closures"][row] = {"attempted": True, "closed": False}
         store.write_json(path, doc)
         ok = _board_call(project, cfg, ["close", row], row=row)
@@ -118,6 +116,10 @@ def row_close(project: str, row: str) -> bool:
             }
             store.write_json(path, doc)
             store.append_event(project, "row-closed", row=row)
+        else:
+            # The call returned a failure, so it is known not to have closed the row.
+            doc["closures"][row] = {"attempted": False, "closed": False}
+            store.write_json(path, doc)
         return ok
 
 

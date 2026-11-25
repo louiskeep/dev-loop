@@ -365,3 +365,10 @@ def test_notify_keeps_line_breaks_and_reads_stdin(
     )
     assert sent.splitlines()[0] == "first line" and len(sent.splitlines()) == 3
     assert "ghp_" not in sent
+
+
+def test_example_codex_builder_argv_has_all_four_arguments():
+    cfg = json.loads((SKILL / "project.example.json").read_text())
+    argv = cfg["reviewers"]["codex"]["argv"]["codex-builder"]
+    assert argv == ["codex-builder", "{worktree}", "{brief}", "{out}", "{label}"]
+    assert "codex-builder" in cfg["reviewers"]["codex"]["kinds"]

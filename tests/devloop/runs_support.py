@@ -55,7 +55,13 @@ def config(proj, cfg_edit, tmp_path):
         c["reviewers"]["codex"]["argv"] = {
             "codex-review": ["codex-review", "{worktree}", "{brief}", "{out}"],
             "codex-fix": ["codex-fix", "{run_id}", "{brief}", "{plan}"],
-            "codex-builder": ["codex-builder", "{worktree}", "{brief}"],
+            # The shipped example's own argv, so the real shape is exercised.
+            "codex-builder": json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "skills/dev-loop/project.example.json"
+                ).read_text()
+            )["reviewers"]["codex"]["argv"]["codex-builder"],
         }
         c["reviewers"]["codex"]["kinds"] = [
             "codex-review",

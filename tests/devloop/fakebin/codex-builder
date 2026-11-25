@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Fake codex-builder <worktree>: commits one change in the worktree, like a Codex fixer.
 # FAKE_EXIT makes it fail; FAKE_NO_COMMIT leaves the tree alone.
+# Takes <worktree> <brief> <out> <label>, as the installed helper does.
+[ "$#" -ge 4 ] || { echo "usage: codex-builder WORKTREE BRIEF OUT LABEL" >&2; exit 64; }
 cd "$1" || exit 2
+echo "$4" > "$3"
 if [ -z "${FAKE_NO_COMMIT:-}" ]; then
   echo "codex fix" >> codex-fix.txt
   git add -A

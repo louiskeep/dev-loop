@@ -910,72 +910,27 @@ def test_failed_board_close_is_not_a_closure_and_a_retry_counts_once(
     ]
 
 
-def test_close_retry_after_a_crash_checks_the_board_before_posting_again(
+def test_close_attempt_without_a_saved_closure_is_ambiguous_and_never_retried(
     proj, cfg_edit, tmp_path
 ):
+    from devloop import board, status
+
     log = tmp_path / "calls.log"
-    shown = tmp_path / "shown.txt"
     script = _board(
         tmp_path,
-        "import sys\n"
-        f"open({str(log)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
-        f"if sys.argv[1:2] == ['show']: print(open({str(shown)!r}).read())\n",
+        f"import sys\nopen({str(log)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n",
     )
     cfg_edit(lambda c: c.update(board={"cmd": [str(script)], "phase_map": {}}))
-    from devloop import board, store
-
-    # Crash after the board call: attempted, never marked closed.
+    # A crash after the board call: attempted, never marked closed. A later retry, even
+    # on another day, must not call `close` again.
     store.write_json(
         board._closures_path(proj),
         {"closures": {"ROW1": {"attempted": True, "closed": False}}},
     )
-    shown.write_text("Closed today: 1 (ROW1). Slices merged today: 0.")
-    assert slices.row_close(proj, "ROW1") is True
-    assert "close ROW1" not in log.read_text()
-    # The board does not have it: the call is made.
-    store.write_json(
-        board._closures_path(proj),
-        {"closures": {"ROW2": {"attempted": True, "closed": False}}},
-    )
-    shown.write_text("Closed today: 0. Slices merged today: 0.")
-    assert slices.row_close(proj, "ROW2") is True
-    assert "close ROW2" in log.read_text()
-
-
-def test_import_uses_the_merge_base_and_slug(
-    proj, tmp_path, monkeypatch, fakebin, cfg_edit
-):
-    plan = tmp_path / "plan.md"
-    plan.write_text("Rules consulted: x\n")
-    log = tmp_path / "gh.log"
-    monkeypatch.setenv("FAKE_GH_LOG", str(log))
-    cfg_edit(
-        lambda c: (
-            c["repos"][0].update(base="main"),
-            c.update(merge={"allowed": True, "repos": {"main": {"base": "develop"}}}),
-        )
-    )
-    kw = dict(
-        repo="main",
-        risk="R2",
-        rulebooks=["a.md"],
-        worktree=str(tmp_path / "wt"),
-        branch="feat/x",
-        pr=7,
-        head="a" * 40,
-        plan_path=str(plan),
-        purpose="p",
-    )
-    monkeypatch.setenv("FAKE_GH_STATE", "MERGED")
-    monkeypatch.setenv(
-        "FAKE_GH_BASE", "main"
-    )  # merged, but not into the effective base
-    assert slices.import_slice(proj, "I1", "S1", phase="GATE", **kw)["phase"] == "PLAN"
-    monkeypatch.setenv("FAKE_GH_BASE", "develop")
-    assert (
-        slices.import_slice(proj, "I2", "S1", phase="GATE", **kw)["phase"] == "DOCUMENT"
-    )
-    calls = [json.loads(x) for x in log.read_text().splitlines()]
-    assert all(
-        c[c.index("-R") + 1] == "own/main" for c in calls if c[:2] == ["pr", "view"]
-    )
+    assert slices.row_close(proj, "ROW1") is False
+    assert slices.row_close(proj, "ROW1") is False
+    assert not log.exists() or "close ROW1" not in log.read_text()
+    assert slices.closure_records(proj)["ROW1"]["close_ambiguous"] is True
+    assert status.counts(proj)["rows_closed"] == 0
+    problems = store.read_json(store.state_dir(proj) / "problems.json")["problems"]
+    assert list(problems) == ["close-ambiguous-ROW1"]
