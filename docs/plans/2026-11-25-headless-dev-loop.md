@@ -691,8 +691,8 @@ that retired it.
 - [ ] **Step 4:** Add the `DEVLOOP_HEADLESS` early exits; check with `DEVLOOP_HEADLESS=1
   python3 ~/.claude/scripts/loop-protocol-reminder.py < /dev/null` printing nothing.
 - [ ] **Step 5:** Dennis reviews the parity table against the sources (gate item).
-- [ ] **Step 6:** Commit the vault files (`docs(decoy): add headless loop tick doc and node
-  directory`).
+- [ ] **Step 6:** No commit: the vault is not a git repo and syncs to `.116` by Syncthing.
+  Run `qmd-refresh` so the new pages are searchable at once.
 
 ## Task 11: Cutover
 
