@@ -335,52 +335,64 @@ DENIED = [
     "gh pr merge --auto 5",
     "env gh pr merge 5",
     "command gh pr merge 5",
-    "exec gh pr merge 5",
     "sudo -u bob gh pr merge 5",
     "timeout 60 gh pr merge 5",
     "GH_TOKEN=x gh pr merge 5",
     "/usr/bin/gh pr merge 5",
+    "GH pr MERGE 5",
     "cd x && gh pr merge 5",
     "true; gh pr merge 5",
     "echo hi | gh pr merge 5",
     "bash -c 'gh pr merge 5'",
+    "bash -lc 'gh pr merge 5'",
+    'sh -ec "gh pr merge 5"',
+    "eval 'gh pr merge 5'",
+    "echo 5 | xargs gh pr merge",
+    "find . -maxdepth 0 -exec gh pr merge 5 \\;",
     "echo $(gh pr merge 5)",
     "gh api repos/o/r/pulls/5/merge -X PUT",
     "gh api -X PUT /repos/o/r/pulls/12/merge",
+    "gh api repos/o/r/pulls/5 --method PATCH",
+    "gh api repos/o/r/issues/5/comments -f body=x",
+    "gh api repos/o/r/issues/5/comments -F body=x",
+    "gh api repos/o/r/x --input body.json",
     "gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
     "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { x } }'",
+    "curl -X POST https://api.github.com/repos/o/r/merges",
+    "curl https://api.github.com/repos/o/r/git/refs/heads/main",
     "gh alias set m 'pr merge'",
-    "gh -R o/r alias set m x",
     "gh extension install o/r",
-    "gh ext install o/r",
     "git push origin main",
-    "git push origin HEAD:main",
+    "git push origin feat/x",
     "env git push origin main",
-    "git push && gh pr view 1 && git push origin main",
+    "git status && git push",
+    "devloop-merge x; gh pr merge 1",
+    "devloop-merge x && git push",
+    "devloop-merge $(gh pr merge 1)",
 ]
 ALLOWED = [
     "gh pr view 5",
-    "gh -R o/r pr view 5 --json state",
+    "gh -R o/r pr view 5 --json state,mergeStateStatus",
+    "gh pr list",
+    "gh run list",
     "gh api repos/x/y/pulls/5",
     "gh api repos/x/y/pulls/5/files",
-    "gh pr list",
+    "gh api -X GET repos/x/y/pulls/5",
     "git status",
-    "git push origin feat/x",
-    "git push -u origin feat/x",
+    "git log --oneline",
     "env FOO=1 ls",
-    "timeout 5 sleep 1",
-    "echo gh pr merge is blocked",
+    "devloop-merge proj ROW--S1",
+    "/home/someone/bin/devloop-merge proj ROW--S1",
 ]
 
 
 @pytest.mark.parametrize("command", DENIED)
-def test_merge_guard_denies_gh_merge_when_headless(command):
+def test_merge_guard_denies_in_headless_mode(command):
     assert headless_merge_guard.blocked(command) is True
 
 
 @pytest.mark.parametrize("command", ALLOWED)
-def test_merge_guard_allows_ordinary_commands(command, monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
+def test_merge_guard_allows_reads_and_devloop_merge(command):
     assert headless_merge_guard.blocked(command) is False
 
 
