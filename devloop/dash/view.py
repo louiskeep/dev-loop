@@ -645,10 +645,17 @@ def _question_fields(ctx, q):
     }
 
 
+def _is_hold(s):
+    """A slice waiting on the owner's release: held, or parked for an owner reason."""
+    return s["phase"] == "HELD" or (
+        s["phase"] == "PARKED" and s["park_reason"] in slices.OWNER_PARKS
+    )
+
+
 def _needs_you(ctx):
     """Items that only the Product owner can answer: open questions and holds."""
     out = []
-    held_keys = {s["key"] for s in ctx.slices if s["phase"] == "HELD"}
+    held_keys = {s["key"] for s in ctx.slices if _is_hold(s)}
 
     def questions():
         path = notes.questions_path(ctx.project)
@@ -672,8 +679,7 @@ def _needs_you(ctx):
                 )
             )
     for s in ctx.slices:
-        owner_park = s["phase"] == "PARKED" and s["park_reason"] in slices.OWNER_PARKS
-        if s["phase"] == "HELD" or owner_park or s["merge_unknown"]:
+        if _is_hold(s) or s["merge_unknown"]:
             # A hold's question record carries the real answer key and options; without
             # one (a merge with an unknown result) there is nothing to answer by key.
             rec = records.get(notes.HOLD_PREFIX + s["key"])

@@ -620,3 +620,15 @@ def test_secret_in_owner_text_is_redacted_and_option_not_submittable(proj):
     assert q["options"][0] == "keep it" and q["options"][2] == "/etc/shadow"
     assert q["option_ok"] == [True, False, True]
     assert token not in render.render_page(v)
+
+
+def test_each_held_or_parked_slice_shows_once(proj, dash):
+    """The system's hold question is the hold item's own record, never a second row."""
+    for key in (dash["held"], dash["parked"]):
+        notes.ensure_hold_question(proj, key)
+    items = build(proj)["needs_you"]
+    assert [n for n in items if n["kind"] == "question" and "hold:" in n["key"]] == []
+    for key in (dash["held"], dash["parked"]):
+        hits = [n for n in items if key in (n["key"] or "")]
+        assert len(hits) == 1 and hits[0]["kind"] == "hold"
+        assert hits[0]["answer_key"] == f"hold:{key}" and hits[0]["options"]
