@@ -1011,3 +1011,25 @@ def test_tick_never_retries_an_ambiguous_delivery(proj, gate, monkeypatch, tmp_p
     rec = slices.merge_records(proj)[mid]
     assert rec["board_ambiguous"] is True and rec["board_done"] is False
     assert gate.board().count("merged ") == 0
+
+
+def test_a_crash_between_the_board_call_and_board_done_does_not_post_twice(
+    proj, gate, monkeypatch
+):
+    from devloop import board, tick
+
+    k = _crash_after_move(proj, gate, monkeypatch)
+    real = board.board_merged
+
+    def call_then_die(*a, **kw):
+        real(*a, **kw)
+        raise RuntimeError("crash after the board call")
+
+    monkeypatch.setattr(board, "board_merged", call_then_die)
+    with pytest.raises(RuntimeError):
+        slices.deliver_board(proj, {"slug": "own/main", "pr": 7, "head": HEAD})
+    monkeypatch.setattr(board, "board_merged", real)
+    tick.tick(proj)
+    assert gate.board().count("merged ") == 1
+    assert next(iter(slices.merge_records(proj).values()))["board_done"] is True
+    assert k

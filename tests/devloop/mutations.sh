@@ -143,7 +143,7 @@ mutate "remove_tree trusts the request path" devloop/runs.py \
     if not tree.exists()' \
   $T/test_runs_integrity.py::test_remove_tree_ignores_a_path_named_in_the_request
 mutate "builder failures keyed by head" devloop/apply.py \
-  '        base = f"builder:{req.get('"'"'lineage'"'"')}"' '        base = f"builder:{req.get('"'"'head'"'"')}"' \
+  '        base = f"{kind}:{req.get('"'"'lineage'"'"')}"' '        base = f"{kind}:{req.get('"'"'head'"'"')}"' \
   $T/test_runs_integrity.py::test_builder_failures_count_across_new_heads
 mutate "markdown is not stripped from the verdict" devloop/wrap.py \
   '    m = rx.fullmatch(_plain_line(lines[-1])) if lines else None' '    m = rx.fullmatch(lines[-1]) if lines else None' \
@@ -175,9 +175,9 @@ mutate "run conclusion compared case-sensitively" devloop/merge.py \
 mutate "unknown merge drops the attempt" devloop/merge.py \
   '    slices.set_merge_state(project, key, unknown=True)' '    slices.set_merge_state(project, key, attempt=None, unknown=True)' \
   $T/test_merge.py::test_unknown_response_keeps_the_attempt
-mutate "board call repeats on replay" devloop/board.py \
-  '        if rec is None or rec["board_done"]:' '        if rec is None:' \
-  $T/test_merge.py::test_crash_after_the_move_still_counts_and_delivers_the_board_once
+mutate "board attempt is not saved before the call" devloop/board.py \
+  '        rec["board_attempted"] = True' '        pass' \
+  $T/test_merge.py::test_a_crash_between_the_board_call_and_board_done_does_not_post_twice
 mutate "merge identity not checked" devloop/slices.py \
   '                if (s["repo"], s["pr"], s["head"]) != (' '                if False and (s["repo"], s["pr"], s["head"]) != (' \
   $T/test_merge.py::test_finish_refuses_when_the_slice_no_longer_matches_the_confirmed_merge
