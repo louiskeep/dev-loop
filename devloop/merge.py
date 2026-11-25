@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import notes, slices, store
+from . import evidence, notes, slices, store
 from . import project as projmod
 from .scrub import scrub
 
@@ -241,7 +241,7 @@ def _workflow_matches(repo_cfg, wf, run_id, run):
     return rc == 0 and Path(out.strip()).name == wf
 
 
-def _gate_dispatch(repo_cfg, rules, rollup, s, cfg):
+def _gate_dispatch(project, repo_cfg, rules, rollup, s, cfg):
     """The gate status must point at a green workflow_dispatch run for this head,
     created after the final cross-model GO."""
     wf, status = rules.get("dispatch_workflow"), rules.get("gate_status")
@@ -274,10 +274,10 @@ def _gate_dispatch(repo_cfg, rules, rollup, s, cfg):
         run = json.loads(out) if rc == 0 else {}
     except ValueError:
         run = {}
-    roster = cfg["reviews"][s["risk"]]["code"]
+    roster = evidence.code_roster(project, cfg, s)
     if not roster:  # config load refuses this; never an IndexError mid-merge
         return "the gate workflow needs a code reviewer for this risk tier"
-    last = projmod.reviewer_entry(roster[-1])[0]
+    last = roster[-1][0]
     final_go = ((s["evidence"].get(s["head"]) or {}).get(f"code:{last}") or {}).get(
         "at"
     )
@@ -315,7 +315,7 @@ def _preflight(project, cfg, s, view):
     problems = _check_states(rollup, rules)
     if problems:
         return "; ".join(problems)
-    why = _gate_dispatch(repo_cfg, rules, rollup, s, cfg)
+    why = _gate_dispatch(project, repo_cfg, rules, rollup, s, cfg)
     if why:
         return why
     why = _verify_cmd(project, cfg, repo_cfg, rules, base, s["head"])
@@ -405,6 +405,8 @@ def _unknown(project, key):
 
 
 def merge(project, key) -> MergeResult:
+    if os.environ.get("DEVLOOP_RUN"):  # set for every worker the loop starts
+        return _result("refused", "only the orchestrator merges")
     cfg = projmod.load_project(project)
     s = slices.load(project, key)
     for ident in slices.pending_board(project, key):

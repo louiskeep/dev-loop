@@ -146,6 +146,13 @@ def run_checks(project) -> list:
                 else "notify.env_file: missing or readable by others",
             )
         )
+    if not [n for n, s in cfg["reviewers"].items() if s.get("kind") == "dennis"]:
+        out.append(
+            (
+                True,
+                "reviewers: no dennis-kind reviewer; a Codex-written head cannot pass the gate",
+            )
+        )
     out += _agent_checks(cfg)
     out.append((_run(["gh", "auth", "status"], 30), "gh: authenticated"))
     for host in (cfg.get("nodes") or {}).get("hosts", []):

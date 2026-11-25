@@ -211,6 +211,7 @@ _FIELDS = {
     "approved_plan_sha": _match(_SHA, optional=True),
     "plan_frozen": _bool,
     "imported": _bool,
+    "head_writer": lambda v: v is None or v in ("builder", "codex-builder"),
     "owner_answered": _bool,
     "hold_question": _ostr,
     "hold_release_option": _ostr,
@@ -222,6 +223,7 @@ _FIELDS = {
 def _validate(s) -> dict:
     if not isinstance(s, dict):
         _bad("slice")
+    s.setdefault("head_writer", None)  # files written before the field existed
     for name, check in _FIELDS.items():
         if name not in s or not check(s[name]):
             _bad(name)
@@ -327,6 +329,7 @@ def _blank(row, slice_id, repo, risk) -> dict:
         "approved_plan_sha": None,
         "plan_frozen": False,
         "imported": False,
+        "head_writer": None,
         "owner_answered": False,
         "hold_question": None,
         "hold_release_option": None,
@@ -579,6 +582,7 @@ def apply_effects(
     want_plan_sha=None,
     seq=None,
     want_lineage=None,
+    writer=None,
 ) -> str:
     """Everything a run changes on a slice, plus its ID, in ONE locked replace.
 
@@ -602,6 +606,8 @@ def apply_effects(
                 _put_evidence(s, kind, verdict, run_id, sha=head or plan_sha_, seq=seq)
             if failure:
                 s["failures"][failure] = s["failures"].get(failure, 0) + 1
+            if writer:
+                s["head_writer"] = writer  # the one record of who wrote the head
         s["processed_run_ids"] = (s["processed_run_ids"] + [run_id])[-500:]
         if s["run"] == run_id:
             s["run"] = None

@@ -237,21 +237,13 @@ def _plan_items(project, s, cfg):
     return items
 
 
-def _codex_wrote_head(project, s) -> bool:
-    """True when an applied codex-builder run finished on the slice's current head."""
-    if not s["head"]:
-        return False
-    for rd, req in runs.iter_runs(project):
-        if (
-            req.get("kind") == "codex-builder"
-            and (req.get("row"), req.get("slice")) == (s["row"], s["slice"])
-            and (rd / "applied").is_file()
-            and store.request_matches_ledger(project, rd.name)
-        ):
-            hdr = store.read_header(store.out_dir(rd) / "result.md")
-            if hdr.get("status") == "DONE" and hdr.get("head") == s["head"]:
-                return True
-    return False
+def senior_reviewers(cfg) -> list:
+    return [n for n, spec in cfg["reviewers"].items() if spec.get("kind") == "dennis"]
+
+
+def senior_missing(cfg, s) -> bool:
+    """A Codex-written head needs a Senior (dennis kind) reviewer; none is configured."""
+    return s["head_writer"] == "codex-builder" and not senior_reviewers(cfg)
 
 
 def code_roster(project, cfg, s) -> list:
@@ -262,9 +254,9 @@ def code_roster(project, cfg, s) -> list:
     none. Dispatch order checks and the gate both read this one list.
     """
     roster = [projmod.reviewer_entry(e) for e in cfg["reviews"][s["risk"]]["code"]]
-    if not _codex_wrote_head(project, s):
+    if s["head_writer"] != "codex-builder":
         return roster
-    dennis = [n for n, spec in cfg["reviewers"].items() if spec.get("kind") == "dennis"]
+    dennis = senior_reviewers(cfg)
     if not dennis:
         return roster
     listed = [n for n, _ in roster if n in dennis]
@@ -375,6 +367,14 @@ def _gate_items(project, s, cfg):
         items.append(_test_item(project, s, "full", "full suite GO on head"))
     if s["risk"] not in slices.TIERS:
         return items + [Item("risk", "risk is R0, R1 or R2", False)]
+    if senior_missing(cfg, s):
+        items.append(
+            Item(
+                "code-review",
+                "Senior review (dennis kind) of the Codex-written head: no such reviewer configured",
+                False,
+            )
+        )
     prev_run, prev_at = None, None
     for i, (name, _cap) in enumerate(code_roster(project, cfg, s)):
         label = f"code review {name} GO on head"

@@ -281,6 +281,68 @@ def test_merge_refuses_gate_dispatch_before_codex_go(proj, gate, cfg_edit):
     assert merge.merge(proj, k).outcome == "merged"
 
 
+def test_gate_workflow_between_senior_and_codex_go_is_refused(
+    proj, gate, cfg_edit, mk_run, give
+):
+    def edit(c):
+        c["reviews"]["R0"]["code"] = ["codex"]
+        c["reviews"]["R1"]["code"] = ["codex", "dennis"]
+        c["merge"]["repos"]["main"].update(
+            dispatch_workflow="gate.yml", gate_status="gate-run"
+        )
+
+    cfg_edit(edit)
+    k = gate(risk="R1")
+    slices.apply_effects(proj, k, "cb1", writer="codex-builder")
+    s = slices.load(proj, k)
+    ev = s["evidence"][HEAD]
+    ev.pop("code:codex")
+    slices._save(proj, s)
+    give(proj, k, "code:dennis", "d-g1")
+    give(proj, k, "code:codex", "c-g9", pred="d-g1")
+    s = slices.load(proj, k)
+    ev = s["evidence"][HEAD]
+    ev["code:dennis"]["at"] = "2026-01-01T00:00:00+00:00"
+    ev["code:codex"]["at"] = "2026-01-03T00:00:00+00:00"
+    slices._save(proj, s)
+    roll = [
+        {"name": "ci", "conclusion": "SUCCESS"},
+        {
+            "name": "gate-run",
+            "conclusion": "SUCCESS",
+            "targetUrl": "https://x/actions/runs/99",
+        },
+    ]
+    run = {
+        "workflowName": "Gate",
+        "path": ".github/workflows/gate.yml",
+        "event": "workflow_dispatch",
+        "headSha": HEAD,
+        "conclusion": "success",
+        "jobs": [{"conclusion": "success"}],
+        "createdAt": "2026-01-02T00:00:00Z",
+    }
+    gate.set_gh(statusCheckRollup=roll, run=run)
+    assert "gate workflow" in merge.merge(proj, k).reason
+    gate.set_gh(run={**run, "createdAt": "2026-01-04T00:00:00Z"})
+    r = merge.merge(proj, k)
+    assert r.outcome == "merged", r.reason
+
+
+def test_merge_refuses_inside_a_worker(proj, gate, tmp_path):
+    k = gate()
+    env = {**os.environ, "DEVLOOP_RUN": "r1"}
+    r = subprocess.run(
+        [sys.executable, "-c", "import sys; from devloop import merge_cli; sys.exit(merge_cli.main(sys.argv[1:]))", proj, k],
+        env=env,
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parents[2],
+    )
+    assert r.returncode == 3 and "only the orchestrator merges" in r.stdout
+    assert not (tmp_path / "gh.log").exists()
+
+
 def _origin(repo, tmp_path):
     env = {
         **os.environ,
