@@ -30,17 +30,22 @@ use it.
 5. Run one tick in the same environment: `env -i HOME="$HOME" PATH="$PATH" devloop-tick PROJECT`.
 6. Add the schedule: `devloop-cron add PROJECT --bin-dir BIN_DIR`. It keeps every other
    cron line and checks the result.
-7. Tell the user it started and when the next tick runs.
+7. Start the dashboard: `devloop-dash PROJECT --detach`. Give the user the Network URL
+   it prints (the project keeps one stable port; run it again to read the URL).
+8. Tell the user it started, when the next tick runs, and the dashboard URL.
 
 ## stop
 
 1. `devloop-state PROJECT pause`.
 2. `devloop-cron remove PROJECT`.
-3. Tell the user that running workers finish and their results wait for the next start.
+3. Stop the dashboard: `devloop-dash PROJECT --stop`.
+4. Tell the user that running workers finish and their results wait for the next start.
 
 ## status
 
-Read `STATUS.md`, the events journal, the slice files (`devloop-state PROJECT slice
+For a quick look, give the dashboard URL from `devloop-state PROJECT check` (the line
+starting `dash:`). It shows rows, slice cards, workers, capacity, memory and what shipped,
+and updates itself. For detail, read `STATUS.md`, the events journal, the slice files (`devloop-state PROJECT slice
 list`), the known problems, the lessons, the questions page, and the board command's
 `show` when one is configured. Answer in plain language:
 

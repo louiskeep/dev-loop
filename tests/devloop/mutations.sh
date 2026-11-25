@@ -289,6 +289,64 @@ mutate "tick dispatch limit is never enforced" devloop/dispatch.py \
   '    if made >= projmod.max_dispatch_per_tick(cfg):' '    if False:' \
   $T/test_runs_limits.py::test_tick_dispatch_limit
 
+mutate "a word outside the fixed table is accepted" devloop/dash/view.py \
+  '        if value not in WORDS:' '        if False:' \
+  $T/test_dash_view.py::test_word_outside_the_table_is_refused
+mutate "ids skip the hex check" devloop/scrub.py \
+  '        or _HEX_RUN.search(text)
+' '' \
+  $T/test_dash_shared.py::test_token_in_id_is_redacted
+mutate "the dashboard leaves its pid file behind" devloop/dash/lifecycle.py \
+  '            _files(project)["pid"].unlink(missing_ok=True)' '            pass' \
+  $T/test_dash_cli.py::test_sigterm_removes_pid_file
+mutate "a reader creates the runs directory" devloop/runs.py \
+  '    return store.state_dir(project) / "runs"' '    d = store.state_dir(project) / "runs"
+    d.mkdir(exist_ok=True)
+    return d' \
+  $T/test_dash_shared.py::test_readers_create_no_directories $T/test_dash_view.py::test_build_view_writes_nothing
+mutate "error responses skip the security headers" devloop/dash/server.py \
+  '    def send_error(self, code, message=None, explain=None):' '    def _unused(self, code, message=None, explain=None):' \
+  $T/test_dash_server.py::test_every_response_sends_security_headers
+mutate "a PR link is built from the ledger slug alone" devloop/dash/view.py \
+  '    if slug in known and type(pr) is int and pr >= 0:' '    if type(pr) is int and pr >= 0:' \
+  $T/test_dash_view.py::test_merge_with_unknown_slug_has_no_url
+mutate "a failing checklist propagates" devloop/dash/view.py \
+  '    except CHECKLIST_ERRORS:' '    except ZeroDivisionError:' \
+  $T/test_dash_view.py::test_a_checklist_that_raises_reads_unavailable
+mutate "a second dashboard is not refused" devloop/dash/lifecycle.py \
+  '        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)' '        pass' \
+  $T/test_dash_cli.py::test_second_start_same_project_other_port_refused
+mutate "an exited builder reads as executing" devloop/runs.py \
+  '    if not (rd / "exit").is_file() and (wrapper_alive(req) or payload_alive(req)):' '    if True:' \
+  $T/test_dash_shared.py::test_exited_builder_is_awaiting_apply
+mutate "a damaged cap file reads as not capped" devloop/store.py \
+  '    except ValueError:
+        return True
+    if until.tzinfo is None:' '    except ValueError:
+        return False
+    if until.tzinfo is None:' \
+  $T/test_dash_shared.py::test_cap_active_cases
+mutate "a view key is renamed in the view only" devloop/dash/view.py \
+  '        "phase_index": CHIPS.index(phase),' '        "phase_idx": CHIPS.index(phase),' \
+  $T/test_dash_view.py::test_view_keys_match_schema
+mutate "memory reads low only far below the floor" devloop/dash/memory.py \
+  '    if headroom_mb < floor_mb:
+        return "low"' '    if headroom_mb < floor_mb - 1000:
+        return "low"' \
+  $T/test_dash_view.py::test_memory_thresholds
+mutate "an unchanged poll answers 200" devloop/dash/server.py \
+  '    return any(t.strip().removeprefix("W/") == etag for t in header.split(","))' '    return False' \
+  $T/test_dash_server.py::test_etag_304_on_unchanged_poll
+mutate "the tick line names pools by kind" devloop/status.py \
+  '        f"{projmod.pool_label(cfg, s)} {running.get(s, 0)}/{cfg['"'"'capacity'"'"'][s]}"' '        f"{s} {running.get(s, 0)}/{cfg['"'"'capacity'"'"'][s]}"' \
+  $T/test_dash_shared.py::test_status_and_tick_line_use_role_labels
+mutate "the renderer stops escaping" devloop/dash/render.py \
+  'e = html.escape' 'e = str' \
+  $T/test_dash_render.py::test_html_escapes_planted_markup
+mutate "playbook heading needs an exact match only" devloop/dispatch.py \
+  '    return heading == f"### {kind}" or (' '    return heading == f"### {kind}" and (' \
+  $T/test_runs_dispatch.py::test_section_matches_the_plain_heading_and_the_kind_in_backticks
+
 echo
 echo "killed: $killed  survived: $survived  stale: $stale"
 [ "$survived" -eq 0 ] && [ "$stale" -eq 0 ]

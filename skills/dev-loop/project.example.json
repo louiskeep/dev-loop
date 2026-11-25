@@ -182,5 +182,18 @@
   "process_doc": "/path/to/process.md",
   "status_copy": "/path/to/status.md",
   "min_free_gb": 2.5,
-  "brief_extra": "Commit messages: short subject, no body. Run T0 per edit and T1 per commit."
+  "brief_extra": "Commit messages: short subject, no body. Run T0 per edit and T1 per commit.",
+  "max_dispatch_per_tick": 4,
+  "memory_mb": {
+    "builder": 600,
+    "codex-review": 300,
+    "test": 50
+  },
+  "roles": {
+    "builder": "Developer",
+    "dennis": "Senior reviewer"
+  },
+  "dash": {
+    "port": 8791
+  }
 }
