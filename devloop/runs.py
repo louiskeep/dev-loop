@@ -72,12 +72,27 @@ def _runs_dir(project):
     return d
 
 
+# Process facts change after dispatch, so they live beside the frozen request.
+PROC_KEYS = ("pid", "pid_start", "boot_id", "payload_pgid", "payload_start")
+
+
+def _merged(rd) -> dict:
+    req = store.read_json(rd / "request.json")
+    if req:
+        proc = store.read_json(rd / "proc.json")
+        req.update({k: v for k, v in proc.items() if k in PROC_KEYS})
+    return req
+
+
 def read_request(project, run_id) -> dict:
-    return store.read_json(store.run_dir(project, run_id) / "request.json")
+    return _merged(store.run_dir(project, run_id))
 
 
 def update_request(project, run_id, **fields) -> None:
-    path = store.run_dir(project, run_id) / "request.json"
+    """Record process facts. The request itself is frozen and read-only."""
+    if not set(fields) <= set(PROC_KEYS):
+        raise RunError("only process fields may change after dispatch")
+    path = store.run_dir(project, run_id) / "proc.json"
     with store.locked(path):
         data = store.read_json(path)
         data.update(fields)
@@ -91,7 +106,7 @@ def iter_runs(project):
         unreadable = False
         req = {}
         try:
-            req = store.read_json(rd / "request.json")
+            req = _merged(rd)
         except store.StoreError:
             unreadable = True
         if req and not unreadable:
@@ -244,12 +259,14 @@ def parse_result(run_dir: Path, kind: str) -> Result:
     """Read result.md against the exit file. A contradiction is FAILED, never DONE."""
     if kind not in KINDS:
         raise RunError("unknown kind")
-    hdr = store.read_header(run_dir / "result.md")
+    hdr = store.read_header(store.out_dir(run_dir) / "result.md")
     ex = _exit_of(run_dir)
     status = hdr.get("status")
     body = ""
     try:
-        text = (run_dir / "result.md").read_text(encoding="utf-8", errors="replace")
+        text = (store.out_dir(run_dir) / "result.md").read_text(
+            encoding="utf-8", errors="replace"
+        )
         body = text.partition("\n---")[2].strip()
     except OSError:
         pass
@@ -653,17 +670,19 @@ def _freeze(project, req, s, rd, run_id, retry_of, body):
         id=run_id,
         retry_of=retry_of,
         started_at=store.now_iso(),
-        out=str(rd / "out"),
-        last_msg=str(rd / "last_msg"),
-        run_dir=str(rd),
+        out=str(store.out_dir(rd) / "codex.out"),
+        last_msg=str(store.out_dir(rd) / "final.md"),
+        run_dir=str(store.out_dir(rd)),
         job=f"{store.state_dir(project).name}-{run_id}",
     )
+    store.out_dir(rd).mkdir()
     plan_copy = None
     if req["plan_sha"] and s is not None:
         (rd / "plan").mkdir()
         src = slices.plan_file(s)
         plan_copy = rd / "plan" / src.name
         shutil.copyfile(src, plan_copy)
+        os.chmod(plan_copy, 0o444)
         req["plan_copy"] = str(plan_copy)
     if kind == "codex-fix":
         req["repair_out"] = os.path.expanduser(
@@ -692,18 +711,18 @@ def _freeze(project, req, s, rd, run_id, retry_of, body):
         req["tree"] = str(tree)
         work = cwd = tree
     elif plan_review:
-        work = cwd = plan_copy.parent
+        work, cwd = plan_copy.parent, store.out_dir(rd)
     elif (spec.writes_worktree and kind != "codex-fix") or kind == "docs":
         work = cwd = Path(req["worktree"])
     else:
-        work, cwd = Path(req["worktree"] or rd), rd
+        work, cwd = Path(req["worktree"] or rd), store.out_dir(rd)
     req["cwd"] = str(cwd)
     mapping = {
         "brief": rd / "brief.md",
         "worktree": work,
         "out": req["out"],
         "head": req["head"] or "",
-        "run_dir": rd,
+        "run_dir": store.out_dir(rd),
         "run_id": run_id,
         "plan": plan_copy or "",
         "last_msg": req["last_msg"],
@@ -712,6 +731,7 @@ def _freeze(project, req, s, rd, run_id, retry_of, body):
     req["argv"] = _fill(req.pop("argv_t"), mapping)
     store.write_text(rd / "brief.md", build_brief(project, req["key"], kind, body))
     store.write_json(rd / "request.json", req)
+    store.register_request(project, req["id"])
 
 
 def _launch(project, rd, run_id):
@@ -852,25 +872,25 @@ def _fail_key(req):
 
 
 def _install_repair(project, rd, req, s):
-    """Install the repaired plan once, and only over the file the repair read."""
-    rj = rd / "repair.json"
-    if not rj.is_file():
-        out = Path(req["repair_out"])
-        if not out.is_file():
-            return None, "missing"
-        shutil.copyfile(out, rd / "repaired")
-        store.write_json(
-            rj,
-            {"input_sha": req["plan_sha"], "output_sha": _sha_file(rd / "repaired")},
-        )
+    """Install the repaired plan once, and only over the file the repair read.
+
+    repair.json is the wrapper's record, made after the payload ended. Its hash is
+    checked against the control copy here, so a swapped copy never gets installed.
+    """
+    rj, copy = rd / "repair.json", rd / "repaired"
+    if not rj.is_file() or not copy.is_file():
+        return None, "missing"
     data = store.read_json(rj)
+    if _sha_file(copy) != data.get("output_sha"):
+        store.append_event(project, "apply-refused", run=req["id"], why="repaired-copy")
+        raise RunError("the repaired copy does not match its recorded hash")
     plan = slices.plan_file(s)
     live = _sha_file(plan) if plan.is_file() else None
     if live == data["output_sha"]:
         return data["output_sha"], None
     if live == data["input_sha"]:
         tmp = plan.with_name(f".{plan.name}.devloop{os.getpid()}")
-        shutil.copyfile(rd / "repaired", tmp)
+        shutil.copyfile(copy, tmp)
         os.replace(tmp, plan)
         return data["output_sha"], None
     store.append_event(project, "repair-conflict", run=req["id"])
@@ -957,6 +977,9 @@ def apply_run(project, run_id) -> str:
     cfg = projmod.load_project(project)
     if (rd / "applied").is_file():
         return "already"
+    if not store.request_matches_ledger(project, run_id):
+        store.append_event(project, "apply-refused", run=run_id, why="ledger")
+        raise RunError("the run request does not match the dispatch ledger")
     res = parse_result(rd, kind)
     reason = res.reason
 

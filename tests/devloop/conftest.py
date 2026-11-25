@@ -159,10 +159,12 @@ def mk_run(home):
                 "covers": dict(covers or {}),
             },
         )
-        (d / "result.md").write_text(
+        store.out_dir(d).mkdir()
+        (store.out_dir(d) / "result.md").write_text(
             f"status: {status}\nhead: {result_head or head or ''}\n"
             f"verdict: {verdict}\n---\nbody\n"
         )
+        store.register_request(project, run_id)
         store.write_json(d / "exit", {"code": 0, "reason": "exit", "ended_at": "t"})
         if applied:
             (d / "applied").write_text("")

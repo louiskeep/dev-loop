@@ -30,8 +30,8 @@ def mk(proj, tmp_path, argv, *, kind="builder", reader="claude", **over):
         "cwd": str(tmp_path),
         "deadline_s": 60,
         "idle_s": 60,
-        "out": str(rd / "out"),
-        "last_msg": str(rd / "last_msg"),
+        "out": str(store.out_dir(rd) / "codex.out"),
+        "last_msg": str(store.out_dir(rd) / "final.md"),
         "head": "abc1234",
         "infra_codes": [],
         "purpose": "code",
@@ -43,7 +43,7 @@ def mk(proj, tmp_path, argv, *, kind="builder", reader="claude", **over):
 
 
 def result(rd):
-    return store.read_header(rd / "result.md")
+    return store.read_header(store.out_dir(rd) / "result.md")
 
 
 def test_wrapper_writes_exit_on_kill(proj, tmp_path):
@@ -68,7 +68,7 @@ def test_idle_payload_killed_as_hung(proj, tmp_path, monkeypatch):
 def test_codex_out_growth_is_not_idle(proj, tmp_path, monkeypatch):
     monkeypatch.setenv("DEVLOOP_IDLE_SECS", "1")
     rd = store.run_dir(proj, "r1")
-    script = f"for i in 1 2 3 4 5 6; do echo x >> {rd}/out; sleep 0.4; done"
+    script = f"for i in 1 2 3 4 5 6; do echo x >> {rd}/out/codex.out; sleep 0.4; done"
     rd = mk(proj, tmp_path, ["sh", "-c", script], kind="duty", reader="exit")
     wrap.run(proj, "r1")
     assert store.read_json(rd / "exit")["reason"] == "exit"
@@ -85,7 +85,12 @@ def codex(
     monkeypatch.setenv("FAKE_EXIT", str(exit_))
     rd = store.run_dir(proj, "r1")
     argv = {
-        "codex-review": ["codex-review", str(tmp_path), "brief", str(rd / "out")],
+        "codex-review": [
+            "codex-review",
+            str(tmp_path),
+            "brief",
+            str(store.out_dir(rd) / "codex.out"),
+        ],
         "codex-fix": ["codex-fix", "r1", "brief", "x"],
     }[kind]
     rd = mk(
@@ -131,7 +136,7 @@ def test_repair_reads_the_self_verdict(proj, tmp_path, monkeypatch):
 
 def test_codex_final_message_env_is_set_for_codex_kinds(proj, tmp_path, monkeypatch):
     rd = codex(proj, tmp_path, monkeypatch, last="VERDICT: NO-GO")
-    assert (rd / "last_msg").read_text().strip() == "VERDICT: NO-GO"
+    assert (store.out_dir(rd) / "final.md").read_text().strip() == "VERDICT: NO-GO"
 
 
 def claude_argv(*extra):
@@ -197,7 +202,7 @@ def test_test_exit_codes_mapped(
     assert store.read_json(rd / "exit")["reason"] == reason
     assert (result(rd)["status"], result(rd)["verdict"]) == (status, verdict)
     if verdict == "NO-GO":
-        body = (rd / "result.md").read_text()
+        body = (store.out_dir(rd) / "result.md").read_text()
         assert "tests/a.py::t1" in body and "tests/b.py::t2" in body
 
 
@@ -230,4 +235,4 @@ def test_payload_env_marks_headless(proj, tmp_path):
         reader="exit",
     )
     wrap.run(proj, "r1")
-    assert out.read_text().split() == ["1", "r1", str(rd)]
+    assert out.read_text().split() == ["1", "r1", str(store.out_dir(rd))]

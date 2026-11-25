@@ -343,7 +343,9 @@ def test_gate_rejects_forged_or_stale_run_evidence(proj, ready, tamper):
     elif tamper == "wrong_purpose":
         req["purpose"] = "plan"
     elif tamper == "verdict_differs":
-        (d / "result.md").write_text("status: DONE\nverdict: NO-GO\n---\n")
+        (store.out_dir(d) / "result.md").write_text(
+            "status: DONE\nverdict: NO-GO\n---\n"
+        )
     elif tamper == "other_slice":
         req["row"] = "ELSEWHERE"
     elif tamper == "missing_run":

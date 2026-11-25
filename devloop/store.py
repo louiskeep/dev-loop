@@ -164,6 +164,40 @@ def append_event(project: str, kind: str, **fields) -> None:
             os.fsync(fh.fileno())
 
 
+def out_dir(rd) -> Path:
+    """The one directory a payload may write. Control files live one level up."""
+    return Path(rd) / "out"
+
+
+def _index_path(project: str) -> Path:
+    return state_dir(project) / "runs.index.json"
+
+
+def request_digest(rd) -> str:
+    import hashlib
+
+    return hashlib.sha256((Path(rd) / "request.json").read_bytes()).hexdigest()
+
+
+def register_request(project: str, run_id: str) -> None:
+    """Record the request's hash in a ledger only the dispatcher writes, then lock the file."""
+    rd = run_dir(project, run_id)
+    path = _index_path(project)
+    with locked(path):
+        data = read_json(path)
+        data[run_id] = request_digest(rd)
+        write_json(path, data)
+    os.chmod(rd / "request.json", 0o444)
+
+
+def request_matches_ledger(project: str, run_id: str) -> bool:
+    try:
+        want = read_json(_index_path(project)).get(run_id)
+        return want is not None and want == request_digest(run_dir(project, run_id))
+    except (OSError, StoreError):
+        return False
+
+
 def package_root() -> Path:
     """Directory that holds the `devloop` package (the repo checkout or the installed lib)."""
     return Path(__file__).resolve().parent.parent

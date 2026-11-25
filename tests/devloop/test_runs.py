@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from devloop import notes, runs, slices, store
+from devloop import notes, runs, slices, store, wrap
 
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
 
@@ -108,8 +108,12 @@ def finish(proj, run_id, *, code=0, reason="exit", result=None):
     """Stand in for the wrapper: write result.md and the exit file."""
     rd = store.run_dir(proj, run_id)
     if result is not None:
-        (rd / "result.md").write_text(result)
+        store.out_dir(rd).mkdir(exist_ok=True)
+        (store.out_dir(rd) / "result.md").write_text(result)
     assert runs.create_exit(rd, code=code, reason=reason)
+    req = runs.read_request(proj, run_id)
+    if req["kind"] == "codex-fix":
+        wrap.write_repair(rd, req)
 
 
 def res(status="DONE", verdict="", head=""):
@@ -316,7 +320,8 @@ def test_collect_does_not_overwrite_wrapper_exit(proj, ready):
 def test_status_contradicts_exit_is_failed(proj, ready):
     key, _, _ = ready()
     rd = _dead_run(proj, key)
-    (rd / "result.md").write_text(res("DONE"))
+    store.out_dir(rd).mkdir(exist_ok=True)
+    (store.out_dir(rd) / "result.md").write_text(res("DONE"))
     runs.create_exit(rd, code=1, reason="exit")
     assert runs.parse_result(rd, "builder").status == "FAILED"
 
@@ -326,7 +331,8 @@ def test_zero_exit_without_result_is_failed(proj, ready):
     rd = _dead_run(proj, key)
     runs.create_exit(rd, code=0, reason="exit")
     assert runs.parse_result(rd, "builder").status == "FAILED"
-    (rd / "result.md").write_text(res("DONE", head="abc"))
+    store.out_dir(rd).mkdir(exist_ok=True)
+    (store.out_dir(rd) / "result.md").write_text(res("DONE", head="abc"))
     r = runs.parse_result(rd, "builder")
     assert (r.status, r.head) == ("DONE", "abc")
 
@@ -405,13 +411,14 @@ def test_codex_code_review_refused_before_dennis_go(proj, ready, brief):
     assert runs.read_request(proj, c)["predecessor_run"] == r
 
 
-def test_reviewer_kind_binding_enforced(proj, ready, brief):
+def test_reviewer_kind_binding_enforced(proj, ready, brief, cfg_edit):
     key, _, _ = ready("REVIEW", risk="R2")
     with pytest.raises(runs.Refused, match="may not run"):
         go(proj, brief, "codex-review", key, reviewer="dennis")
     r = go(proj, brief, "dennis", key, reviewer="dennis")
     finish(proj, r, result=res("DONE", "GO"))
-    runs.update_request(proj, r, reviewer="codex")  # tampered after the fact
+    # The pairing is checked again at apply time, against the config as it is then.
+    cfg_edit(lambda c: c["reviewers"]["dennis"].update(kinds=["codex-review"]))
     with pytest.raises(runs.RunError, match="do not match"):
         runs.apply_run(proj, r)
 
@@ -524,7 +531,7 @@ def test_apply_replay_counts_once(proj, ready, brief):
 # --- plan repair --------------------------------------------------------------
 
 
-def _repair(proj, ready, brief, *, gos_first=True):
+def _repair(proj, ready, brief, *, plant=False):
     key, wt, _ = ready("PLAN", risk="R2")
     d = go(proj, brief, "dennis", key, reviewer="dennis")
     finish(proj, d, result=res("DONE", "NO-GO"))
@@ -537,6 +544,9 @@ def _repair(proj, ready, brief, *, gos_first=True):
     out = Path(req["repair_out"])
     out.parent.mkdir(parents=True)
     out.write_text("Rules consulted: repaired\n")
+    if plant:
+        planted = store.run_dir(proj, r) / "repair.json"
+        planted.write_text(json.dumps({"input_sha": "f" * 64, "output_sha": "f" * 64}))
     return key, wt, r
 
 
@@ -660,3 +670,79 @@ def test_state_cli_applied_release_and_list(proj, ready, brief, home):
     assert run_state(home, "release", t).returncode == 0
     assert t not in run_state(home, "list", "--live").stdout
     assert run_state(home, "list", "--writers").returncode == 0
+
+
+# --- control files are out of the payload's reach ---------------------------------
+
+
+def test_payload_dir_is_the_only_writable_place(proj, ready, brief):
+    key, _, _ = ready("REVIEW")
+    r = go(proj, brief, "codex-review", key, reviewer="codex")
+    req = runs.read_request(proj, r)
+    rd = store.run_dir(proj, r)
+    assert req["cwd"] == str(store.out_dir(rd)) or "tree" in req
+    assert req["out"].startswith(str(store.out_dir(rd)))
+    assert req["last_msg"].startswith(str(store.out_dir(rd)))
+    with pytest.raises(PermissionError):
+        (rd / "request.json").write_text("{}")
+    with pytest.raises(runs.RunError, match="process fields"):
+        runs.update_request(proj, r, head="ff")
+
+
+def test_payload_that_rewrites_request_gets_no_evidence(proj, ready, brief):
+    key, _, head = ready("REVIEW")
+    r = go(proj, brief, "codex-review", key, reviewer="codex")
+    finish(proj, r, result=res("DONE", "NO-GO"))
+    rd = store.run_dir(proj, r)
+    forged = store.read_json(rd / "request.json")
+    forged["head"] = "ff"  # try to move the verdict onto another head
+    os.chmod(rd / "request.json", 0o644)
+    store.write_json(rd / "request.json", forged)
+    with pytest.raises(runs.RunError, match="ledger"):
+        runs.apply_run(proj, r)
+    assert slices.load(proj, key)["evidence"] == {}
+    # A forged request cannot support a gate check either.
+    slices.record_evidence(proj, key, "code:codex", "GO", r, head=head)
+    assert any(
+        "ledger" in why
+        for why, ok in slices.exit_checklist(proj, key, "GATE")
+        if not ok
+    )
+
+
+def test_preplanted_repair_json_is_replaced_by_the_wrapper(proj, ready, brief):
+    key, wt, r = _repair(proj, ready, brief, plant=True)
+    finish(proj, r, result=res("DONE", "GO"))
+    data = store.read_json(store.run_dir(proj, r) / "repair.json")
+    assert data["output_sha"] != "f" * 64
+    runs.apply_run(proj, r)
+    assert (wt / "plan.md").read_text() == "Rules consulted: repaired\n"
+
+
+def test_missing_repair_record_is_a_failure(proj, ready, brief):
+    key, wt, r = _repair(proj, ready, brief)
+    rd = store.run_dir(proj, r)
+    runs.create_exit(rd, code=0, reason="exit")  # wrapper never ran write_repair
+    store.out_dir(rd).mkdir(exist_ok=True)
+    (store.out_dir(rd) / "result.md").write_text(res("DONE", "GO"))
+    runs.apply_run(proj, r)
+    assert "repaired" not in (wt / "plan.md").read_text()
+    assert slices.load(proj, key)["failures"]
+
+
+def test_tampered_repaired_copy_is_caught_before_install(proj, ready, brief):
+    key, wt, r = _repair(proj, ready, brief)
+    finish(proj, r, result=res("DONE", "GO"))
+    (store.run_dir(proj, r) / "repaired").write_text("Rules consulted: evil\n")
+    with pytest.raises(runs.RunError, match="repaired copy"):
+        runs.apply_run(proj, r)
+    assert "evil" not in (wt / "plan.md").read_text()
+
+
+def test_tampered_repaired_copy_is_caught_by_the_gate_recompute(proj, ready, brief):
+    key, wt, r = _repair(proj, ready, brief)
+    finish(proj, r, result=res("DONE", "GO"))
+    runs.apply_run(proj, r)
+    assert all(ok for _, ok in slices.exit_checklist(proj, key, "DEVELOP"))
+    (store.run_dir(proj, r) / "repaired").write_text("Rules consulted: evil\n")
+    assert not all(ok for _, ok in slices.exit_checklist(proj, key, "DEVELOP"))

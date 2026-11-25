@@ -4,6 +4,7 @@ The wrapper is the only writer of `exit` on a normal path, and it writes it in a
 `finally`, so a killed, hung or crashing payload still leaves a record.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -56,7 +57,7 @@ def _watch(proc, req, rd) -> str:
             _kill_group(proc)
             return "deadline"
         # Codex writes to `out` and not to the log, so either file growing is progress.
-        size = _size(rd / "log") + _size(req.get("out") or "")
+        size = _size(store.out_dir(rd) / "log") + _size(req.get("out") or "")
         if size != seen:
             seen, last_growth = size, now
         elif now - last_growth > idle_s:
@@ -69,7 +70,9 @@ def _final_message(req, rd):
     if req["reader"] == "claude-verdict":
         final = None
         try:
-            lines = (rd / "log").read_text(encoding="utf-8", errors="replace")
+            lines = (store.out_dir(rd) / "log").read_text(
+                encoding="utf-8", errors="replace"
+            )
         except OSError:
             return None
         for line in lines.splitlines():
@@ -95,7 +98,7 @@ def _last_line_verdict(text, rx):
 def _failing_ids(rd):
     ids, in_block = [], False
     try:
-        text = (rd / "log").read_text(encoding="utf-8", errors="replace")
+        text = (store.out_dir(rd) / "log").read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ids
     for line in text.splitlines():
@@ -137,14 +140,14 @@ def _write_result(rd, req, code, reason):
             status, verdict = "DONE", found
     text = f"status: {status}\nhead: {req.get('head') or ''}\nverdict: {verdict}\n"
     text += f"tests: exit {code}\n---\n{body}\n"
-    store.write_text(rd / "result.md", text)
+    store.write_text(store.out_dir(rd) / "result.md", text)
 
 
 def _set_cap_until(project, code, rd, req):
     from .tick import detect_cap
 
     text = ""
-    for p in (rd / "log", Path(req.get("out") or "")):
+    for p in (store.out_dir(rd) / "log", Path(req.get("out") or "")):
         try:
             text += p.read_text(encoding="utf-8", errors="replace")[-20000:]
         except OSError:
@@ -153,6 +156,33 @@ def _set_cap_until(project, code, rd, req):
     if until is not None:
         store.write_text(store.state_dir(project) / "cap-until", until.isoformat())
     return until is not None
+
+
+def write_repair(rd, req):
+    """After the payload has ended, keep a control copy of the helper's output.
+
+    The hashes come from the bytes copied here, and repair.json is created
+    exclusively after removing anything found there, so nothing a payload left
+    in the control directory is ever trusted.
+    """
+    out = Path(req.get("repair_out") or "")
+    if not out.is_file():
+        return
+    data = out.read_bytes()
+    copy = rd / "repaired"
+    copy.unlink(missing_ok=True)
+    copy.write_bytes(data)
+    record = rd / "repair.json"
+    record.unlink(missing_ok=True)
+    fd = os.open(record, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        json.dump(
+            {
+                "input_sha": req["plan_sha"],
+                "output_sha": hashlib.sha256(data).hexdigest(),
+            },
+            fh,
+        )
 
 
 def _wake_tick(project):
@@ -180,10 +210,11 @@ def run(project, run_id) -> int:
         DEVLOOP_HEADLESS="1",
         DEVLOOP_PROJECT=project,
         DEVLOOP_RUN=run_id,
-        DEVLOOP_RUN_DIR=str(rd),
+        DEVLOOP_RUN_DIR=str(store.out_dir(rd)),
     )
     if req["kind"] in CODEX_KINDS:
         env["CODEX_LAST_MSG"] = req["last_msg"]
+    store.out_dir(rd).mkdir(exist_ok=True)
     me = os.getpid()
     runs.update_request(
         project, run_id, pid=me, pid_start=runs._proc_start(me), boot_id=runs._boot_id()
@@ -191,7 +222,10 @@ def run(project, run_id) -> int:
     proc, code, reason = None, -1, "exit"
     try:
         try:
-            with open(rd / "brief.md", "rb") as stdin, open(rd / "log", "ab") as log:
+            with (
+                open(rd / "brief.md", "rb") as stdin,
+                open(store.out_dir(rd) / "log", "ab") as log,
+            ):
                 proc = subprocess.Popen(
                     req["argv"],
                     cwd=req["cwd"],
@@ -232,8 +266,10 @@ def finish(project, rd, req, code, reason):
         ):
             reason = "infra"
         _write_result(rd, req, code, reason)
+        if req["kind"] == "codex-fix":
+            write_repair(rd, req)
     except Exception as exc:  # noqa: BLE001 - the exit file must still be written
-        with open(rd / "log", "a") as log:
+        with open(store.out_dir(rd) / "log", "a") as log:
             log.write(f"wrapper error: {type(exc).__name__}\n")
     finally:
         runs.create_exit(rd, code=code, reason=reason)

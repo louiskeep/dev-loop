@@ -736,6 +736,8 @@ def _verify_run(project, s, entry, *, kinds, expect, covers_ok=False):
         return f"run {run_id} belongs to another slice", None
     if not own and covers.get(s["key"]) != s["head"]:
         return f"run {run_id} froze a different head for this slice", None
+    if not store.request_matches_ledger(project, run_id):
+        return f"run {run_id} request does not match the ledger", None
     if not (rd / "applied").is_file():
         return f"run {run_id} is not applied", None
     if req.get("kind") not in kinds:
@@ -745,12 +747,18 @@ def _verify_run(project, s, entry, *, kinds, expect, covers_ok=False):
             continue
         got = req.get(field)
         if field == "plan_sha" and req.get("kind") == "codex-fix":
-            # A repair is credited to the file it produced, not the one it read.
-            repair = store.read_json(rd / "repair.json")
-            got = repair.get("output_sha") or got
+            # A repair is credited to the file it produced, not the one it read. The
+            # hash is recomputed from the control copy, never read from repair.json.
+            copy = rd / "repaired"
+            got = (
+                hashlib.sha256(copy.read_bytes()).hexdigest() if copy.is_file() else got
+            )
         if got != want:
             return f"run {run_id} {field} does not match", None
-    if store.read_header(rd / "result.md").get("verdict") != entry["verdict"]:
+    if (
+        store.read_header(store.out_dir(rd) / "result.md").get("verdict")
+        != entry["verdict"]
+    ):
         return f"run {run_id} result differs from the recorded verdict", None
     return None, req
 
@@ -858,9 +866,10 @@ def _builder_run_ok(project, s):
             continue
         if (req.get("row"), req.get("slice")) != (s["row"], s["slice"]):
             continue
-        hdr = store.read_header(rd / "result.md")
+        hdr = store.read_header(store.out_dir(rd) / "result.md")
         if (
             (rd / "applied").is_file()
+            and store.request_matches_ledger(project, rd.name)
             and hdr.get("status") == "DONE"
             and hdr.get("head") == s["head"]
         ):
