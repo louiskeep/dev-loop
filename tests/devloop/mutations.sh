@@ -153,8 +153,8 @@ mutate "a closed PR is read as unknown" devloop/merge.py \
   $T/test_merge.py::test_closed_pr_clears_the_flags_and_refuses_with_a_fixed_reason
 mutate "merge move re-checks the gate" devloop/slices.py \
   '            if via_merge
-            else [name' '            if False
-            else [name' \
+            else [i.label' '            if False
+            else [i.label' \
   $T/test_merge.py::test_plan_edited_after_the_merge_still_finishes_the_move
 mutate "no-verdict resumes forever" devloop/apply.py \
   'reason == "no-verdict" and count < 3' 'reason == "no-verdict"' \
@@ -257,7 +257,7 @@ mutate "hex runs are not scrubbed" devloop/scrub.py \
   '        (_HEX, "[ref]"),' '' \
   $T/test_snapshot_status.py::test_scrub_removes_sha_and_path
 mutate "snapshot hash includes digits" devloop/snapshot.py \
-  '"outputs": [(n, DIGITS.sub("", t)) for n, t in outputs],' '"outputs": [(n, t) for n, t in outputs],' \
+  '"outputs": [(n, DIGITS.sub("", t)) for n, t, _ok in outputs],' '"outputs": [(n, t) for n, t, _ok in outputs],' \
   $T/test_snapshot_status.py::test_hash_ignores_ages_and_digits
 mutate "stacked member need not be an ancestor" devloop/dispatch.py \
   '        if not stacked:' '        if False:' \
