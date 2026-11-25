@@ -3,7 +3,7 @@
 import pytest
 
 from devloop import runs, store, wrap
-from test_push import commit, remote_head
+from test_push import commit, remote_head, repo  # noqa: F401
 from test_wrap import mk
 
 

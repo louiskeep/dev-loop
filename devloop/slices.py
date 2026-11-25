@@ -211,13 +211,31 @@ _FIELDS = {
     "approved_plan_sha": _match(_SHA, optional=True),
     "plan_frozen": _bool,
     "imported": _bool,
-    "head_writer": lambda v: v is None or v in ("builder", "codex-builder"),
+    "head_writer": lambda v: v is None or v in WRITER_KINDS or _writer_record(v),
     "owner_answered": _bool,
     "hold_question": _ostr,
     "hold_release_option": _ostr,
     "was_r3": _bool,
     "processed_run_ids": _strlist,
 }
+
+
+WRITER_KINDS = ("builder", "codex-builder")
+
+
+def _writer_record(v) -> bool:
+    """One record binds who wrote a head to the commit and the plan it was written for."""
+    return (
+        isinstance(v, dict)
+        and v.get("kind") in WRITER_KINDS
+        and isinstance(v.get("sha"), str)
+        and bool(v["sha"])
+        and _nat(v.get("plan_lineage"))
+    )
+
+
+def writer_record(kind, sha, plan_lineage=0) -> dict:
+    return {"kind": kind, "sha": sha, "plan_lineage": plan_lineage}
 
 
 def _validate(s) -> dict:
@@ -607,7 +625,9 @@ def apply_effects(
             if failure:
                 s["failures"][failure] = s["failures"].get(failure, 0) + 1
             if writer:
-                s["head_writer"] = writer  # the one record of who wrote the head
+                s["head_writer"] = (
+                    writer  # the one record: kind, commit and plan lineage
+                )
         s["processed_run_ids"] = (s["processed_run_ids"] + [run_id])[-500:]
         if s["run"] == run_id:
             s["run"] = None

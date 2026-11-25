@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from . import evidence
 from . import project as projmod
 from . import slices
 from .dash.lifecycle import dash_status
@@ -146,7 +147,7 @@ def run_checks(project) -> list:
                 else "notify.env_file: missing or readable by others",
             )
         )
-    if not [n for n, s in cfg["reviewers"].items() if s.get("kind") == "dennis"]:
+    if not evidence.senior_reviewers(cfg):
         out.append(
             (
                 True,

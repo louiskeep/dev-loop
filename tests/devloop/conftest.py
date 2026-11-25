@@ -117,6 +117,10 @@ def mk_slice(proj):
         s = slices.new_slice(project, f"ROW{next(counter)}", "S1", repo="main")
         s["phase"] = phase
         s.update(fields)
+        if s["head"] and "head_writer" not in fields:  # a head some builder wrote
+            s["head_writer"] = slices.writer_record(
+                "builder", s["head"], s["plan_lineage"]
+            )
         s["was_r3"] = s["was_r3"] or s["risk"] == "R3"
         slices._save(project, s)
         return s["key"]

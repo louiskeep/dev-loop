@@ -367,8 +367,8 @@ def _apply(project, run_id) -> str:
         outcome = slices.apply_effects(project, key, run_id, failure=fkey, **guard)
     elif res.status == "BLOCKED" or ev_kind is None:
         writer = (
-            kind
-            if kind in ("builder", "codex-builder") and res.status == "DONE"
+            slices.writer_record(kind, res.head, req.get("plan_lineage", 0))
+            if kind in slices.WRITER_KINDS and res.status == "DONE" and res.head
             else None
         )
         outcome = slices.apply_effects(project, key, run_id, writer=writer)

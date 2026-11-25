@@ -6,3 +6,4 @@ markers = ["real_git: resolve slice heads with git instead of the test stub"]
 # Fixtures imported from runs_support are used as test arguments.
 "tests/devloop/test_runs_*.py" = ["F811"]
 "tests/devloop/test_dash_*.py" = ["F811"]
+"tests/devloop/guard/*.py" = ["F811"]

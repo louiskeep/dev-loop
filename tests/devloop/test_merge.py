@@ -293,7 +293,9 @@ def test_gate_workflow_between_senior_and_codex_go_is_refused(
 
     cfg_edit(edit)
     k = gate(risk="R1")
-    slices.apply_effects(proj, k, "cb1", writer="codex-builder")
+    slices.apply_effects(
+        proj, k, "cb1", writer=slices.writer_record("codex-builder", HEAD)
+    )
     s = slices.load(proj, k)
     ev = s["evidence"][HEAD]
     ev.pop("code:codex")
