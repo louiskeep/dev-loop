@@ -3,9 +3,14 @@
 import http.client
 import io
 import json
+import pathlib
+import sys
 import threading
 
 import pytest
+
+sys.path.insert(0, str(pathlib.Path(__file__).parent / "dash"))
+import transcript_fixture as tf  # noqa: E402
 from dash_fixture import AGENT_NAMES, dash, put_slice  # noqa: F401
 
 from devloop import notes, slices
@@ -266,3 +271,108 @@ def test_html_routes_serve_200_and_schema_2(srv):
         for sid in render.SECTION_IDS:
             assert f'id="{sid}"' in text, (path, sid)
     assert json.loads(call(srv, "/api/state")[2])["schema"] == 2
+
+
+# --- transcript facts are the only thing a transcript contributes ------------------
+
+PLANTED_TRANSCRIPT = (
+    "ghp_DEMOTOKEN1234567",
+    "AKIAABCDEFGH1234",
+    "hunter2",
+    "user:pw@host",
+    "/home/someone/private-dir",
+    "0123456789abcdef0123456789abcdef01234567",
+    "customer42",
+)
+
+
+def _plant_claude(proj, run_id, key, alive):
+    from dash_fixture import put_run
+
+    from devloop import store
+
+    secret = " ".join(PLANTED_TRANSCRIPT)
+    items = [
+        tf.init("claude-opus-5-5", cwd="/home/someone/private-dir"),
+        tf.assistant(
+            "m1",
+            tf.text(secret),
+            tf.thinking(secret),
+            tf.tool_use("a", "Bash", command="git status"),
+            tf.tool_use("b", "Bash", command="customer42 --x ghp_DEMOTOKEN1234567"),
+            tf.tool_use("c", "Bash", command="password hunter2 && AKIAABCDEFGH1234"),
+            tf.tool_use(
+                "d",
+                "Edit",
+                file_path="/home/someone/private-dir/view.py",
+                old_string=secret,
+                new_string=secret,
+            ),
+            tf.tool_use("e", "Write", file_path="/x/.env", content=secret),
+            tf.tool_use("f", "Grep", pattern=secret, path="/home/someone/private-dir/"),
+            tf.tool_use("g", "WebFetch", url="https://user:pw@host/x", prompt=secret),
+            tf.tool_use("h", "Agent", prompt=secret, subagent_type="customer42"),
+        ),
+        tf.user(
+            tf.tool_result("a", False, secret),
+            tf.tool_result("b", True, secret),
+        ),
+        tf.result(secret),
+    ]
+    rd = put_run(proj, run_id, kind="builder", key=key, alive=alive)
+    (store.out_dir(rd) / "log").write_bytes(tf.claude_events(items))
+    return rd
+
+
+def _plant_codex(proj, run_id, key):
+    from dash_fixture import put_run
+
+    from devloop import store
+
+    secret = " ".join(PLANTED_TRANSCRIPT)
+    text = (
+        tf.codex_header("gpt-6.2-astra")
+        + f"user\n{secret}\ncodex\n{secret}\n"
+        + tf.codex_exec("git diff", output=f"{secret}\n")
+        + tf.codex_exec(
+            "customer42 --x ghp_DEMOTOKEN1234567", code=1, output=secret + "\n"
+        )
+        + tf.codex_patch(
+            "Success. Updated the following files:", "M /home/someone/private-dir/x.py"
+        )
+    )
+    rd = put_run(proj, run_id, kind="codex-review", key=key, alive=True)
+    (store.out_dir(rd) / "codex.out").write_bytes(text.encode())
+
+
+def test_transcript_secrets_reach_no_route(proj, dash, srv):
+    from devloop import store
+
+    _plant_claude(proj, "builder.leak", dash["plan"], alive=True)
+    finished = _plant_claude(proj, "builder.fin", dash["gate"], alive=False)
+    store.write_json(
+        finished / "exit",
+        {"code": 0, "reason": "exit", "ended_at": "2026-11-25T00:00:00+00:00"},
+    )
+    (finished / "applied").write_text("")
+    _plant_codex(proj, "codex-review.leak", dash["review"])
+    bodies = {}
+    for path in ROUTES:
+        status, _, body = call(srv, path)
+        assert status == 200, path
+        bodies[path] = body.decode()
+    state = json.loads(bodies["/api/state"])
+    # Positive facts: the page does show tool kinds, allowlisted names and counts.
+    plan = next(c for c in state["live"] if c["key"] == dash["plan"])
+    assert plan["tools"] == 8 and plan["model"] == "claude-opus-5-5"
+    feed = [(f["tag"], f["target"]) for f in state["feed"] if f["role"]]
+    assert ("SHELL", "git") in feed and ("EDIT", "view.py") in feed
+    assert ("SHELL", "?") in feed
+    codex = next(c for c in state["live"] if c["harness"] == "codex")
+    assert codex["model"] == "gpt-6.2-astra" and codex["tools"] == 3
+    gate = next(d for d in state["drawers"] if d["key"] == dash["gate"])
+    assert {"name": "view.py", "edits": 1} in gate["files"]
+    assert "SHELL" in bodies["/"] and "view.py" in bodies["/fragment"]
+    for path, text in bodies.items():
+        for value in PLANTED_TRANSCRIPT:
+            assert value not in text, (path, value)

@@ -229,7 +229,8 @@ def _drawer(d, cards, now) -> str:
         for c in d["calls"]
     )
     files = "".join(
-        f"<li><code>{e(f['name'])}</code> {f['edits']} edits</li>" for f in d["files"]
+        f"<li><code>{e(f['name'])}</code> {f['edits']} edit{'s' if f['edits'] != 1 else ''}</li>"
+        for f in d["files"]
     )
     card = cards.get(d["key"])
     checklist = r._checklist_items(card) if card else ""

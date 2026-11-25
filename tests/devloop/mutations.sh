@@ -266,7 +266,7 @@ mutate "cron read error counts as empty" devloop/cron.py \
             return ""' \
   $T/test_cron.py::test_cron_read_error_is_not_empty
 mutate "hex runs are not scrubbed" devloop/scrub.py \
-  '        (_HEX, "[ref]"),' '' \
+  '    for rx in (_PATH, _HEX):' '    for rx in (_PATH,):' \
   $T/test_snapshot_status.py::test_scrub_removes_sha_and_path
 mutate "snapshot hash includes digits" devloop/snapshot.py \
   '"outputs": [(n, DIGITS.sub("", t)) for n, t, _ok in outputs],' '"outputs": [(n, t) for n, t, _ok in outputs],' \
@@ -403,6 +403,27 @@ mutate "reader trusts the stat identity, not the open file" devloop/dash/transcr
 mutate "the first read ignores the tail limit" devloop/dash/transcript.py \
   '        if (first and end > TAIL_BYTES) or end - entry.offset > STEP_BYTES:' '        if end - entry.offset > STEP_BYTES:' \
   $T/dash/test_transcript.py::test_first_read_is_bounded_by_tail_bytes
+
+mutate "a shell command word reaches the page without the allowlist" devloop/dash/transcript.py \
+  '        return word if word in PUBLIC_COMMANDS else "?"' '        return word' \
+  $T/test_dash_server.py::test_transcript_secrets_reach_no_route $T/dash/test_transcript.py::test_shell_word_cases
+mutate "drawer run history is filed under the wrong key" devloop/dash/view.py \
+  '                    self.history.setdefault(rec["key"], []).append(rec)' \
+  '                    self.history.setdefault(rec["role"], []).append(rec)' \
+  $T/dash/test_live.py::test_drawer_keeps_finished_run_history
+mutate "the wrapper keeps its own list of Codex kinds" devloop/wrap.py \
+  'CODEX_KINDS = tuple(k for k, s in runs.KINDS.items() if s.harness == "codex")' \
+  'CODEX_KINDS = ("codex-review", "codex-fix")' \
+  $T/dash/test_transcript.py::test_codex_kinds_derived_from_registry
+mutate "an event kind carries a tag outside the frozen set" devloop/status.py \
+  '{e.get('"'"'key'"'"')}", "DROPPED"' '{e.get('"'"'key'"'"')}", "DROP"' \
+  $T/test_dash_view.py::test_every_event_kind_has_a_tag
+mutate "the view schema number stays at 1" devloop/dash/view.py \
+  'SCHEMA = 2' 'SCHEMA = 1' \
+  $T/test_dash_view.py::test_schema_is_two
+mutate "a live card key is renamed in the model only" devloop/dash/live.py \
+  '                "tools": st.tools if st else 0,' '                "tool_count": st.tools if st else 0,' \
+  $T/test_dash_view.py::test_view_keys_match_schema $T/dash/test_live.py::test_live_card_fields
 
 echo
 echo "killed: $killed  survived: $survived  stale: $stale  red-base: $redbase"
