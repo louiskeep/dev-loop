@@ -270,4 +270,4 @@ def test_tick_session_gets_the_configured_base_branches(proj, cfg_edit, tmp_path
     )
     tick.tick(proj)
     env = claude_calls(tmp_path)[0]["env"]
-    assert env["DEVLOOP_BASE_BRANCHES"] == "develop,main"
+    assert env["DEVLOOP_BASE_BRANCHES"] == "develop,main,master"

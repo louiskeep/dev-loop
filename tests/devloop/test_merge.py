@@ -216,7 +216,9 @@ def test_merge_refuses_unknown_merge_state(proj, gate, cfg_edit):
 
 def test_merge_changelog_glob_per_repo(proj, gate, cfg_edit):
     def edit(c):
-        c["repos"].append({"name": "eng", "path": c["repos"][0]["path"]})
+        c["repos"].append(
+            {"name": "eng", "path": c["repos"][0]["path"], "slug": "own/eng"}
+        )
         c["merge"]["repos"]["main"]["changelog_glob"] = "CHANGELOG.md"
         c["merge"]["repos"]["eng"] = {
             "required_checks": ["ci"],
@@ -239,6 +241,7 @@ def test_merge_changelog_glob_missing_refuses(proj, gate, cfg_edit):
 
 def test_merge_refuses_gate_dispatch_before_codex_go(proj, gate, cfg_edit):
     def edit(c):
+        c["reviews"]["R0"]["code"] = ["codex"]
         c["merge"]["repos"]["main"].update(
             dispatch_workflow="gate", gate_status="gate-run"
         )
@@ -257,8 +260,8 @@ def test_merge_refuses_gate_dispatch_before_codex_go(proj, gate, cfg_edit):
         "workflowName": "gate",
         "event": "workflow_dispatch",
         "headSha": HEAD,
-        "conclusion": "SUCCESS",
-        "jobs": [{"conclusion": "SUCCESS"}],
+        "conclusion": "success",
+        "jobs": [{"conclusion": "success"}],
         "createdAt": "2000-01-01T00:00:00Z",
     }
     gate.set_gh(statusCheckRollup=roll, run=run)
@@ -597,4 +600,75 @@ def test_base_branches_come_from_the_project_config(proj):
 
     cfg = projmod.load_project(proj)
     cfg["merge"] = {"repos": {"main": {"base": "develop"}}}
-    assert projmod.base_branches(cfg) == "develop,main"
+    assert projmod.base_branches(cfg) == "develop,main,master"
+
+
+def test_gate_run_failure_conclusion_is_still_refused(proj, gate, cfg_edit):
+    def edit(c):
+        c["reviews"]["R0"]["code"] = ["codex"]
+        c["merge"]["repos"]["main"].update(
+            dispatch_workflow="gate", gate_status="gate-run"
+        )
+
+    cfg_edit(edit)
+    k = gate()
+    roll = [
+        {"name": "ci", "conclusion": "SUCCESS"},
+        {
+            "name": "gate-run",
+            "conclusion": "SUCCESS",
+            "targetUrl": "https://x/actions/runs/9",
+        },
+    ]
+    run = {
+        "workflowName": "gate",
+        "event": "workflow_dispatch",
+        "headSha": HEAD,
+        "conclusion": "failure",
+        "jobs": [{"conclusion": "success"}],
+        "createdAt": "2999-01-01T00:00:00Z",
+    }
+    gate.set_gh(statusCheckRollup=roll, run=run)
+    assert merge.merge(proj, k).outcome == "refused"
+
+
+def test_every_gh_call_uses_the_repo_slug(proj, gate):
+    k = gate()
+    assert merge.merge(proj, k).outcome == "merged"
+    calls = [c for c in gate.gh_calls() if c[:1] in (["pr"], ["run"])]
+    assert calls and all(c[c.index("-R") + 1] == "own/main" for c in calls)
+
+
+def test_a_repo_without_a_valid_slug_is_refused_at_load(proj, cfg_edit):
+    from devloop import project as projmod
+
+    for bad in (None, "main", "a/b/c", "a b/c", ""):
+
+        def edit(c, bad=bad):
+            if bad is None:
+                c["repos"][0].pop("slug")
+            else:
+                c["repos"][0]["slug"] = bad
+
+        cfg_edit(edit)
+        with pytest.raises(projmod.ConfigError, match="slug"):
+            projmod.load_project(proj)
+
+
+def test_dispatch_workflow_with_an_empty_code_roster_is_refused_at_load(
+    proj, gate, cfg_edit
+):
+    from devloop import project as projmod
+
+    def edit(c):
+        c["reviews"]["R1"]["code"] = []
+        c["merge"]["repos"]["main"] = {"dispatch_workflow": "gate", "gate_status": "g"}
+
+    cfg_edit(edit)
+    with pytest.raises(projmod.ConfigError, match="code reviewer in every tier"):
+        projmod.load_project(proj)
+
+
+def test_main_and_master_are_always_base_branches(monkeypatch):
+    monkeypatch.setenv("DEVLOOP_BASE_BRANCHES", "develop")
+    assert headless_merge_guard._base_branches() == ["develop", "main", "master"]

@@ -13,7 +13,9 @@ def _minimal_project(name="p"):
         "name": name,
         "intent": "ship the thing",
         "roadmap": {"path": "ROADMAP.md", "section": "5", "row_id": "ROW"},
-        "repos": [{"name": "main", "path": "/tmp/devloop-test-repo"}],
+        "repos": [
+            {"name": "main", "path": "/tmp/devloop-test-repo", "slug": "own/main"}
+        ],
         "rules_dir": "/tmp/devloop-test-rules",
         "capacity": {"builder": 8, "tester": 4, "reviewer": 2, "planner": 3},
         "models": {

@@ -40,8 +40,9 @@ _ONLY_MERGE_CMD = re.compile(r"\s*(?:/[^\s]*/)?devloop-merge(?:\s+[^\s]+)*\s*")
 
 
 def _base_branches() -> list[str]:
-    raw = os.environ.get("DEVLOOP_BASE_BRANCHES", "main,master")
-    return [b.strip() for b in raw.split(",") if b.strip()]
+    raw = os.environ.get("DEVLOOP_BASE_BRANCHES", "")
+    extra = [b.strip() for b in raw.split(",") if b.strip()]
+    return sorted({"main", "master", *extra})
 
 
 def _current_branch(cwd):

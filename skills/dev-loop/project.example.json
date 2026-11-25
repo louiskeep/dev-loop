@@ -10,6 +10,7 @@
     {
       "name": "main",
       "path": "/path/to/repo",
+      "slug": "OWNER/REPO",
       "base": "main"
     }
   ],

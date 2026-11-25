@@ -29,7 +29,7 @@ def _result(outcome, reason):
 
 
 def _slug(repo_cfg):
-    return repo_cfg.get("slug") or repo_cfg["name"]
+    return repo_cfg["slug"]
 
 
 def _gh(repo_cfg, *args, timeout=120):
@@ -60,6 +60,11 @@ def _view(repo_cfg, pr, fields):
     except ValueError:
         return None
     return data if isinstance(data, dict) else None
+
+
+def _success(conclusion):
+    """gh run view exports lowercase `success`; the status rollup uses `SUCCESS`."""
+    return isinstance(conclusion, str) and conclusion.lower() == "success"
 
 
 def _same_head(oid, head):
@@ -221,7 +226,10 @@ def _gate_dispatch(repo_cfg, rules, rollup, s, cfg):
         run = json.loads(out) if rc == 0 else {}
     except ValueError:
         run = {}
-    last = projmod.reviewer_entry(cfg["reviews"][s["risk"]]["code"][-1])[0]
+    roster = cfg["reviews"][s["risk"]]["code"]
+    if not roster:  # config load refuses this; never an IndexError mid-merge
+        return "the gate workflow needs a code reviewer for this risk tier"
+    last = projmod.reviewer_entry(roster[-1])[0]
     final_go = ((s["evidence"].get(s["head"]) or {}).get(f"code:{last}") or {}).get(
         "at"
     )
@@ -230,9 +238,9 @@ def _gate_dispatch(repo_cfg, rules, rollup, s, cfg):
         run.get("workflowName") != wf
         or run.get("event") != "workflow_dispatch"
         or not _same_head(run.get("headSha"), s["head"])
-        or run.get("conclusion") != "SUCCESS"
+        or not _success(run.get("conclusion"))
         or not run.get("jobs")
-        or any(j.get("conclusion") != "SUCCESS" for j in run["jobs"])
+        or any(not _success(j.get("conclusion")) for j in run["jobs"])
         or created is None
         or final_at is None
         or created <= final_at

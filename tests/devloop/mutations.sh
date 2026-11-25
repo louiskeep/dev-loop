@@ -169,6 +169,9 @@ mutate "guard ignores configured bases" devloop/project.py \
   '    names = {"main"}' '    return "main"
     names = {"main"}' \
   $T/test_tick.py::test_tick_session_gets_the_configured_base_branches
+mutate "run conclusion compared case-sensitively" devloop/merge.py \
+  '    return isinstance(conclusion, str) and conclusion.lower() == "success"' '    return conclusion == "SUCCESS"' \
+  $T/test_merge.py::test_merge_refuses_gate_dispatch_before_codex_go
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

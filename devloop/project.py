@@ -4,11 +4,13 @@ A typo here would otherwise surface mid-tick, so every refusal names the key pat
 """
 
 import json
+import re
 
 from . import store
 
 TIERS = ("R0", "R1", "R2")
 SLOTS = ("builder", "tester", "reviewer", "planner")
+SLUG = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 ROLES = ("tick", "planner", "builder", "reviewer")
 
 
@@ -82,6 +84,8 @@ def _validate(cfg: dict, project: str) -> dict:
         for k in ("name", "path"):
             if not isinstance(repo.get(k), str) or not repo[k]:
                 _fail(f"repos[{i}].{k}", "must be a non-empty string")
+        if not isinstance(repo.get("slug"), str) or not SLUG.fullmatch(repo["slug"]):
+            _fail(f"repos[{i}].slug", "must be OWNER/REPO (the GitHub repository)")
         if repo["name"] in seen:
             _fail(f"repos[{i}].name", "duplicate repo name")
         seen.add(repo["name"])
@@ -127,6 +131,14 @@ def _validate(cfg: dict, project: str) -> dict:
             if len(set(names)) != len(names):
                 _fail(path, "reviewer listed twice")
 
+    empty_tiers = [t for t in TIERS if not cfg["reviews"][t]["code"]]
+    for rname, spec in ((cfg.get("merge") or {}).get("repos") or {}).items():
+        if isinstance(spec, dict) and spec.get("dispatch_workflow") and empty_tiers:
+            _fail(
+                f"merge.repos.{rname}.dispatch_workflow",
+                "needs a code reviewer in every tier, but reviews."
+                f"{empty_tiers[0]}.code is empty",
+            )
     tests = _opt(cfg, "tests", dict)
     for level, spec in (tests or {}).items():
         if not isinstance(spec, dict):
@@ -231,9 +243,9 @@ def load_project(project: str) -> dict:
 
 
 def base_branches(cfg) -> str:
-    """Comma list the headless merge guard treats as base branches: main plus every
+    """Comma list the headless merge guard treats as base branches: main and master plus every
     configured base, so a project on `develop` is guarded the same way."""
-    names = {"main"}
+    names = {"main", "master"}
     names.update(r["base"] for r in cfg.get("repos", []) if r.get("base"))
     for rules in ((cfg.get("merge") or {}).get("repos") or {}).values():
         if rules.get("base"):
