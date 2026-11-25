@@ -120,6 +120,28 @@ def test_model_prompt_carries_intent_and_snapshot(proj, tmp_path):
     assert "--permission-mode" in call["argv"] and "opus" in call["argv"]
 
 
+def test_tick_model_starts_without_mcp_and_with_a_tick_id(proj, tmp_path, cfg_edit):
+    tick.tick(proj)
+    call = claude_calls(tmp_path)[0]
+    i = call["argv"].index("--mcp-config")
+    assert "--strict-mcp-config" in call["argv"]
+    assert call["argv"][i + 1] == '{"mcpServers":{}}'
+    assert call["env"]["DEVLOOP_TICK_ID"]
+
+
+def test_tick_mcp_allow_list_and_fresh_tick_ids(proj, tmp_path, cfg_edit, home):
+    cfg_edit(lambda c: c.update(mcp={"tick": "/etc/tick-mcp.json"}))
+    tick.tick(proj)
+    mk = claude_calls(tmp_path)[0]
+    assert mk["argv"][mk["argv"].index("--mcp-config") + 1] == "/etc/tick-mcp.json"
+    state = json.loads((home / "p" / "tick-state.json").read_text())
+    state["last_model_at"] = "2020-01-01T00:00:00+00:00"
+    (home / "p" / "tick-state.json").write_text(json.dumps(state))
+    tick.tick(proj)
+    ids = [c["env"]["DEVLOOP_TICK_ID"] for c in claude_calls(tmp_path)]
+    assert len(set(ids)) == 2
+
+
 def test_cap_detection_sets_cap_until_and_blocks_model(
     proj, tmp_path, home, monkeypatch
 ):

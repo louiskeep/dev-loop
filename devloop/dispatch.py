@@ -107,10 +107,11 @@ def _fill(argv, mapping):
     ]
 
 
-def _claude_argv(model, *extra):
+def _claude_argv(cfg, kind, model, *extra):
     return [
         "claude",
         "-p",
+        *projmod.mcp_args(cfg, kind),
         *extra,
         "--model",
         model,
@@ -182,7 +183,7 @@ def _prepare_review(project, cfg, s, req, kind, reviewer, wt):
     req["purpose"] = purpose
     argv = (spec_r.get("argv") or {}).get(kind)
     if argv is None and kind == "dennis":
-        argv = _claude_argv(cfg["models"]["reviewer"], "--agent", reviewer)
+        argv = _claude_argv(cfg, kind, cfg["models"]["reviewer"], "--agent", reviewer)
     if argv is None:
         raise runs.Refused("no command configured for this reviewer and kind")
     req["argv_t"] = list(argv)
@@ -300,7 +301,7 @@ def _prepare(project, cfg, kind, key, worktree, reviewer, level, select, covers)
         model = cfg["models"][role]
         if role == "planner" and "opus" not in model.lower():
             raise runs.Refused("planner and docs need an Opus model")
-        req.update(model=model, argv_t=_claude_argv(model), head=s["head"])
+        req.update(model=model, argv_t=_claude_argv(cfg, kind, model), head=s["head"])
         req["purpose"] = "author" if kind == "planner" else "code"
         if kind == "planner":
             if not s["plan_path"]:
@@ -308,6 +309,45 @@ def _prepare(project, cfg, kind, key, worktree, reviewer, level, select, covers)
             pf = slices.plan_file(s)
             req["plan_sha"] = slices.plan_sha(s) if pf and pf.is_file() else None
     return req, s
+
+
+RESERVE_WINDOW_S = 300
+
+
+def _check_memory(project, cfg, kind):
+    """Refuse when free memory, less what recent starts still have to claim and this
+    kind's own estimate, would drop below the floor. A worker's memory is not in
+    MemAvailable until it has grown, so a burst of starts needs the reservations."""
+    reserved = 0
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+        seconds=RESERVE_WINDOW_S
+    )
+    for rd, r in runs.iter_runs(project):
+        try:
+            started = datetime.datetime.fromisoformat(r["started_at"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if started >= cutoff and not (rd / "exit").is_file():
+            reserved += projmod.memory_mb(cfg, r["kind"])
+    free_mb = mem_available_kb() / 1024
+    floor_mb = cfg.get("min_free_gb", 2.5) * 1024
+    if free_mb - reserved - projmod.memory_mb(cfg, kind) < floor_mb:
+        raise runs.Refused("memory is below the floor")
+
+
+def _tick_id():
+    value = os.environ.get("DEVLOOP_TICK_ID")
+    return value if value and store.TOKEN.fullmatch(value) else None
+
+
+def _check_tick_limit(project, cfg):
+    """One tick may start only so many runs; a model that loops cannot flood the box."""
+    tid = _tick_id()
+    if tid is None:
+        return
+    made = sum(1 for _, r in runs.iter_runs(project) if r.get("tick_id") == tid)
+    if made >= projmod.max_dispatch_per_tick(cfg):
+        raise runs.Refused("tick-dispatch-limit")
 
 
 def _check_admission(project, cfg, req, root):
@@ -367,11 +407,12 @@ def dispatch(
 
     with store.locked(store.state_dir(project) / "admit"):
         _pause_or_cap(project)
-        if mem_available_kb() < cfg.get("min_free_gb", 2.5) * 1024 * 1024:
-            raise runs.Refused("memory is below the floor")
+        _check_memory(project, cfg, kind)
+        _check_tick_limit(project, cfg)
         req["root"] = worktree_root(req["worktree"]) if spec.writes_worktree else None
         _check_admission(project, cfg, req, req["root"])
         req["seq"] = store.next_seq(project)
+        req["tick_id"] = _tick_id()
         run_id = "{}.{}.{}".format(
             kind, key, time.strftime("%Y%m%dT%H%M%S") + secrets.token_hex(2)
         )

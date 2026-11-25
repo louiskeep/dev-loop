@@ -35,6 +35,43 @@ POOL_DEFAULTS = {
 }
 
 
+# Workers start with no MCP servers: each one would otherwise launch all of the user's
+# servers, and a burst of workers ran the devbox out of memory. A project can point a
+# kind at its own MCP config file instead (`mcp` in project.json).
+NO_MCP = '{"mcpServers":{}}'
+CLAUDE_MB = 600
+CODEX_MB = 300
+LIGHT_MB = 50
+MEMORY_DEFAULTS = {
+    "planner": CLAUDE_MB,
+    "builder": CLAUDE_MB,
+    "docs": CLAUDE_MB,
+    "dennis": CLAUDE_MB,
+    "tick": CLAUDE_MB,
+    "codex-builder": CODEX_MB,
+    "codex-review": CODEX_MB,
+    "codex-fix": CODEX_MB,
+    "test": LIGHT_MB,
+    "duty": LIGHT_MB,
+}
+DEFAULT_MAX_DISPATCH_PER_TICK = 4
+
+
+def mcp_args(cfg, kind) -> list:
+    """The claude flags that replace the user's MCP servers for this kind."""
+    path = (cfg.get("mcp") or {}).get(kind)
+    return ["--strict-mcp-config", "--mcp-config", path or NO_MCP]
+
+
+def memory_mb(cfg, kind) -> int:
+    custom = (cfg.get("memory_mb") or {}).get(kind)
+    return MEMORY_DEFAULTS.get(kind, CLAUDE_MB) if custom is None else custom
+
+
+def max_dispatch_per_tick(cfg) -> int:
+    return cfg.get("max_dispatch_per_tick", DEFAULT_MAX_DISPATCH_PER_TICK)
+
+
 def role_label(cfg, kind) -> str:
     custom = (cfg.get("roles") or {}).get(kind)
     return custom or ROLE_DEFAULTS.get(kind, "Worker")
@@ -256,6 +293,19 @@ def _validate(cfg: dict, project: str) -> dict:
             or label != " ".join(label.split())
         ):
             _fail(f"roles.{key}", "must be one line of 1 to 40 characters")
+    for key, path in (_opt(cfg, "mcp", dict) or {}).items():
+        if key not in MEMORY_DEFAULTS:
+            _fail(f"mcp.{key}", "unknown kind")
+        if not isinstance(path, str) or not path:
+            _fail(f"mcp.{key}", "must be a path to an MCP config file")
+    for key, mb in (_opt(cfg, "memory_mb", dict) or {}).items():
+        if key not in MEMORY_DEFAULTS:
+            _fail(f"memory_mb.{key}", "unknown kind")
+        if not _int(mb) or mb < 0:
+            _fail(f"memory_mb.{key}", "must be an integer >= 0")
+    cap = cfg.get("max_dispatch_per_tick")
+    if cap is not None and (not _int(cap) or cap < 1):
+        _fail("max_dispatch_per_tick", "must be an integer >= 1")
     dash = _opt(cfg, "dash", dict)
     if dash is not None:
         port = dash.get("port")

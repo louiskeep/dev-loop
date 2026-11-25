@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -71,6 +72,7 @@ def _model_call(project, cfg, prompt):
         str(MODEL_TIMEOUT_S),
         "claude",
         "-p",
+        *projmod.mcp_args(cfg, "tick"),
         "--model",
         cfg["models"]["tick"],
         "--permission-mode",
@@ -83,6 +85,7 @@ def _model_call(project, cfg, prompt):
         os.environ,
         DEVLOOP_HEADLESS="1",
         DEVLOOP_PROJECT=project,
+        DEVLOOP_TICK_ID=secrets.token_hex(8),
         DEVLOOP_BASE_BRANCHES=projmod.base_branches(projmod.load_project(project)),
     )
     try:

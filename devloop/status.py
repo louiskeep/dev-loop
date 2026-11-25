@@ -112,8 +112,7 @@ def render_status(project) -> str:
     lines += ["", "## Running"]
     cfg = projmod.load_project(project)
     lines += [
-        f"- {projmod.pool_label(cfg, slot)}: {n}"
-        for slot, n in sorted(running.items())
+        f"- {projmod.pool_label(cfg, slot)}: {n}" for slot, n in sorted(running.items())
     ] or ["- nothing"]
     held = [s["key"] for s in all_slices if s["phase"] in ("HELD", "PARKED")]
     lines += ["", "## Held or parked"] + ([f"- {k}" for k in held] or ["- none"])
@@ -151,7 +150,9 @@ def write_status(project) -> None:
 # --- the tick line ------------------------------------------------------------
 
 _WORDS = {
-    "slice-moved": lambda e, cfg: f"moved {e.get('row')} {e.get('slice')} to {e.get('to')}",
+    "slice-moved": lambda e, cfg: (
+        f"moved {e.get('row')} {e.get('slice')} to {e.get('to')}"
+    ),
     "merged": lambda e, cfg: f"merged {e.get('row')} {e.get('slice')}",
     "run-dispatched": lambda e, cfg: (
         f"started {projmod.role_label(cfg, e.get('run_kind'))} on {e.get('key')}"
