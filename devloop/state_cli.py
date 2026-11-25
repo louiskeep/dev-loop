@@ -21,10 +21,25 @@ def _out(obj):
     print(json.dumps(obj, indent=2, sort_keys=True))
 
 
+def _line(s):
+    return f"{s['key']} {s['phase']} head={(s['head'] or '-')[:8]} round={s['round']}"
+
+
+def _show(args, s):
+    """One short line by default so a tick does not read a whole slice; --json for all."""
+    if args.json:
+        _out(s)
+    else:
+        print(_line(s))
+
+
 def _slice(args):
     p = args.project
     if args.action == "new":
-        _out(slices.new_slice(p, args.row, args.slice, repo=args.repo, risk=args.risk))
+        _show(
+            args,
+            slices.new_slice(p, args.row, args.slice, repo=args.repo, risk=args.risk),
+        )
     elif args.action == "set":
         fields = {}
         for name in (
@@ -47,16 +62,17 @@ def _slice(args):
             fields["rulebooks"] = args.rulebook
         if args.full_suite_required:
             fields["full_suite_required"] = True
-        _out(slices.set_fields(p, args.key, **fields))
+        _show(args, slices.set_fields(p, args.key, **fields))
     elif args.action == "move":
-        _out(slices.move(p, args.key, args.phase, args.reason))
+        _show(args, slices.move(p, args.key, args.phase, args.reason))
     elif args.action == "show":
         _out(slices.load(p, args.key))
     elif args.action == "list":
         for s in slices.list_slices(p):
             print(f"{s['key']} {s['phase']}")
     elif args.action == "import":
-        _out(
+        _show(
+            args,
             slices.import_slice(
                 p,
                 args.row,
@@ -72,7 +88,7 @@ def _slice(args):
                 purpose=args.purpose,
                 phase=args.phase,
                 plan_approved=args.plan_approved,
-            )
+            ),
         )
 
 
@@ -137,13 +153,15 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("project")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    jp = argparse.ArgumentParser(add_help=False)
+    jp.add_argument("--json", action="store_true", help="print the full slice as JSON")
     sl = sub.add_parser("slice").add_subparsers(dest="action", required=True)
-    n = sl.add_parser("new")
+    n = sl.add_parser("new", parents=[jp])
     n.add_argument("row")
     n.add_argument("slice")
     n.add_argument("--repo", required=True)
     n.add_argument("--risk")
-    st = sl.add_parser("set")
+    st = sl.add_parser("set", parents=[jp])
     st.add_argument("key")
     for flag in ("worktree", "branch", "head", "plan-path", "purpose", "next-action"):
         st.add_argument(f"--{flag}")
@@ -152,13 +170,13 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--risk")
     st.add_argument("--rulebook", action="append")
     st.add_argument("--full-suite-required", action="store_true")
-    mv = sl.add_parser("move")
+    mv = sl.add_parser("move", parents=[jp])
     mv.add_argument("key")
     mv.add_argument("phase")
     mv.add_argument("--reason", required=True)
     sl.add_parser("show").add_argument("key")
     sl.add_parser("list")
-    im = sl.add_parser("import")
+    im = sl.add_parser("import", parents=[jp])
     im.add_argument("row")
     im.add_argument("slice")
     im.add_argument("--repo", required=True)

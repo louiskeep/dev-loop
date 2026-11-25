@@ -173,13 +173,27 @@ def kill_payload(req) -> None:
             pass
 
 
-def remove_tree(req) -> None:
-    """Remove a pinned run's private checkout and its worktree registration."""
-    tree, src = req.get("tree"), req.get("worktree")
-    if not tree or not Path(tree).exists():
+def remove_tree(project, run_id, req=None) -> None:
+    """Remove a run's private checkout and its worktree registration.
+
+    The path is the dispatcher's own layout, <run dir>/tree, never a value read from the
+    request, so a corrupt request cannot point the delete elsewhere.
+    """
+    rd = store.run_dir(project, run_id)
+    tree = rd / "tree"
+    if not tree.exists() and not tree.is_symlink():
         return
+    if tree.is_symlink() or tree.resolve() != (rd.resolve() / "tree"):
+        notes.problem(
+            project,
+            "bad-run-tree",
+            impact="a run's private checkout was not removed",
+            fix=f"inspect {run_id} by hand",
+        )
+        return
+    src = (req or {}).get("worktree")
     subprocess.run(
-        ["git", "-C", src or ".", "worktree", "remove", "--force", tree],
+        ["git", "-C", src or str(rd), "worktree", "remove", "--force", str(tree)],
         capture_output=True,
         stdin=subprocess.DEVNULL,
         check=False,
@@ -250,7 +264,7 @@ def collect(project) -> list:
             if not (rd / "exit").is_file() and not wrapper_alive(req):
                 kill_payload(req)
                 create_exit(rd, code=-1, reason="lost")
-                remove_tree(req)
+                remove_tree(project, rd.name, req)
             if (rd / "exit").is_file() and not is_done(rd):
                 done.append(rd.name)
     return done
@@ -463,6 +477,19 @@ def _skeleton(kind, key):
     }
 
 
+def _require_commit(wt, head):
+    """Pinned runs use a private checkout at the head, so the builder's worktree may be
+    dirty or ahead. The commit only has to exist."""
+    r = subprocess.run(
+        ["git", "-C", str(wt), "cat-file", "-e", f"{head}^{{commit}}"],
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    if r.returncode != 0:
+        raise Refused("the slice head is not a commit in the worktree")
+
+
 def _prepare_review(project, cfg, s, req, kind, reviewer, wt):
     if s["risk"] not in slices.TIERS:
         raise Refused("risk is not set")
@@ -491,10 +518,7 @@ def _prepare_review(project, cfg, s, req, kind, reviewer, wt):
         if not s["head"]:
             raise Refused("slice has no head")
         req["head"] = s["head"]
-        if _git(wt, "status", "--porcelain"):
-            raise Refused("worktree has uncommitted changes")
-        if not _git(wt, "rev-parse", "HEAD").startswith(s["head"]):
-            raise Refused("worktree is not at the slice head")
+        _require_commit(wt, s["head"])
     req["predecessor_run"] = _predecessor(project, s, cfg, purpose, reviewer)
     if kind == "codex-fix":
         req["repair_out_t"] = spec_r.get("repair_out")
@@ -563,7 +587,8 @@ def _prepare(project, cfg, kind, key, worktree, reviewer, level, select, covers)
         s = slices.load(project, key)
     except slices.SliceError:
         raise Refused("no such slice") from None
-    req.update(row=s["row"], slice=s["slice"])
+    req.update(row=s["row"], slice=s["slice"], plan_path=s["plan_path"])
+    req["lineage"] = f"{s['round']}:{s['last_moved_at']}"
     if s["phase"] not in KIND_PHASES[kind]:
         raise Refused(f"{kind} does not run in {s['phase']}")
     wt = worktree or s["worktree"]
@@ -662,7 +687,7 @@ def dispatch(
             if kind != "duty":
                 slices.set_run(project, key, run_id)
         except BaseException:
-            remove_tree(req)
+            remove_tree(project, run_id, req)
             shutil.rmtree(rd, ignore_errors=True)
             raise
     store.append_event(
@@ -810,12 +835,12 @@ HAND_BACK = (
     "code; a contradiction counts as FAILED. Never put secrets or data values in it."
 )
 REVIEW_END = (
-    "End your final message with one line: `VERDICT: GO`, `VERDICT: GO-WITH-FIXES` "
-    "or `VERDICT: NO-GO`. Only `GO` counts as GO."
+    "End your final message with one plain line, with no quotes, bold or backticks: "
+    "VERDICT: GO, VERDICT: GO-WITH-FIXES or VERDICT: NO-GO. Only GO counts as GO."
 )
 REPAIR_END = (
-    "End your final message with one line: `SELF-VERDICT: GO`, "
-    "`SELF-VERDICT: GO-WITH-FIXES` or `SELF-VERDICT: NO-GO`."
+    "End your final message with one plain line, with no quotes, bold or backticks: "
+    "SELF-VERDICT: GO, SELF-VERDICT: GO-WITH-FIXES or SELF-VERDICT: NO-GO."
 )
 CONTRACTS = {
     "claude": HAND_BACK,
@@ -875,14 +900,27 @@ def _check_binding(cfg, req):
         raise Rejected("binding", "review run has no purpose")
 
 
-def _mark_applied(rd, req):
+def _mark_applied(project, rd, req):
     (rd / "applied").write_text("")
-    remove_tree(req)
+    remove_tree(project, rd.name, req)
 
 
-def _fail_key(req):
-    # Keyed by the artifact, so a new head or plan starts with a fresh retry.
-    return "{}:{}".format(req["kind"], req.get("head") or req.get("plan_sha") or "none")
+def _fail_key(req, reason=""):
+    """Failure counter key.
+
+    Writers are keyed by lineage, not by head: a builder that pushes a new head on each
+    failed try would otherwise retry forever. A builder's lineage is the review round and
+    the moment its phase was entered; a planner's is its plan path. Reviews and tests are
+    keyed by the artifact they read. A clean exit with no verdict line counts apart.
+    """
+    kind = req["kind"]
+    if kind == "builder":
+        base = f"builder:{req.get('lineage')}"
+    elif kind in ("planner", "codex-fix"):
+        base = f"{kind}:{req.get('plan_path')}"
+    else:
+        base = "{}:{}".format(kind, req.get("head") or req.get("plan_sha") or "none")
+    return base + (":no-verdict" if reason == "no-verdict" else "")
 
 
 def _install_repair(project, rd, req, s):
@@ -984,9 +1022,10 @@ def _mark_rejected(project, run_id, why):
     (rd / "rejected").write_text(why)
     store.append_event(project, "apply-refused", run=run_id, why=why)
     try:
-        remove_tree(read_request(project, run_id))
-    except store.StoreError:
-        pass
+        req = read_request(project, run_id)
+    except Exception:  # noqa: BLE001 - a corrupt request must not stop the rejection
+        req = None
+    remove_tree(project, run_id, req)
 
 
 def apply_run(project, run_id) -> str:
@@ -1050,7 +1089,7 @@ def _apply(project, run_id) -> str:
                 impact="a scheduled duty did not finish",
                 fix="read the run log",
             )
-        _mark_applied(rd, req)
+        _mark_applied(project, rd, req)
         return "applied"
 
     _check_binding(cfg, req)
@@ -1059,7 +1098,7 @@ def _apply(project, run_id) -> str:
         s = slices.load(project, key)
     except slices.SliceError:
         store.append_event(project, "apply-mismatch", run=run_id, outcome="no-slice")
-        _mark_applied(rd, req)
+        _mark_applied(project, rd, req)
         return "stale"
 
     ev_kind = None
@@ -1068,6 +1107,7 @@ def _apply(project, run_id) -> str:
     elif kind in REVIEW_KINDS:
         ev_kind = f"{req['purpose']}:{req['reviewer']}"
     failed = False
+    fkey = _fail_key(req, reason)
     if reason in ("capped", "infra"):
         outcome = slices.apply_effects(project, key, run_id)
         store.append_event(project, f"run-{reason}", run=run_id, key=key)
@@ -1080,9 +1120,7 @@ def _apply(project, run_id) -> str:
                 if req["purpose"] == "plan"
                 else {"want_head": req["head"]}
             )
-        outcome = slices.apply_effects(
-            project, key, run_id, failure=_fail_key(req), **guard
-        )
+        outcome = slices.apply_effects(project, key, run_id, failure=fkey, **guard)
     elif res.status == "BLOCKED" or ev_kind is None:
         outcome = slices.apply_effects(project, key, run_id)
         store.append_event(
@@ -1094,15 +1132,17 @@ def _apply(project, run_id) -> str:
         store.append_event(
             project, "apply-mismatch", run=run_id, key=key, outcome="stale"
         )
-    _mark_applied(rd, req)
+    _mark_applied(project, rd, req)
     if failed:
-        _maybe_park(project, key, _fail_key(req))
+        _maybe_park(project, key, fkey, reason)
     store.append_event(project, "run-applied", run=run_id, key=key, outcome=outcome)
     return outcome
 
 
-def _maybe_park(project, key, fkey):
+def _maybe_park(project, key, fkey, reason=""):
     s = slices.load(project, key)
     if s["failures"].get(fkey, 0) >= 2 and s["phase"] in slices.ACTIVE:
-        slices.move(project, key, "PARKED", "failed-twice")
-        notes.notify(project, f"Parked {key}: a worker failed twice.")
+        # no-verdict parks under its own reason so it never reads as a double failure
+        why = "no-verdict" if reason == "no-verdict" else "failed-twice"
+        slices.move(project, key, "PARKED", why)
+        notes.notify(project, f"Parked {key}: {why}.")

@@ -116,6 +116,44 @@ def test_codex_final_message_gives_the_verdict(proj, tmp_path, monkeypatch):
     assert (result(rd)["status"], result(rd)["verdict"]) == ("DONE", "GO")
 
 
+@pytest.mark.parametrize(
+    "line,verdict",
+    [
+        ("`VERDICT: GO`", "GO"),
+        ("**VERDICT: GO**", "GO"),
+        ("_VERDICT: NO-GO_", "NO-GO"),
+        ("VERDICT: GO.", "GO"),
+        ("**VERDICT: GO-WITH-FIXES**.", "GO-WITH-FIXES"),
+        ("  `VERDICT: GO-WITH-FIXES`.  ", "GO-WITH-FIXES"),
+    ],
+)
+def test_markdown_around_the_verdict_line_is_stripped(
+    proj, tmp_path, monkeypatch, line, verdict
+):
+    rd = codex(proj, tmp_path, monkeypatch, last=f"notes\n{line}")
+    assert (result(rd)["status"], result(rd)["verdict"]) == ("DONE", verdict)
+
+
+@pytest.mark.parametrize(
+    "line", ["VERDICT: GO..", "VERDICT: GOOD", "the VERDICT: GO", "VERDICT: GO, mostly"]
+)
+def test_stripping_never_turns_a_non_verdict_into_a_verdict(
+    proj, tmp_path, monkeypatch, line
+):
+    rd = codex(proj, tmp_path, monkeypatch, last=line)
+    assert result(rd)["status"] == "FAILED"
+
+
+def test_a_clean_exit_with_no_verdict_has_its_own_reason(proj, tmp_path, monkeypatch):
+    rd = codex(proj, tmp_path, monkeypatch, no_last=True)
+    assert store.read_json(rd / "exit")["reason"] == "no-verdict"
+
+
+def test_a_failed_exit_is_not_no_verdict(proj, tmp_path, monkeypatch):
+    rd = codex(proj, tmp_path, monkeypatch, last="VERDICT: GO", exit_=3)
+    assert store.read_json(rd / "exit")["reason"] == "exit"
+
+
 def test_go_with_fixes_is_not_go(proj, tmp_path, monkeypatch):
     rd = codex(proj, tmp_path, monkeypatch, last="VERDICT: GO-WITH-FIXES")
     assert result(rd)["verdict"] == "GO-WITH-FIXES"

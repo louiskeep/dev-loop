@@ -443,6 +443,8 @@ def import_slice(
     repo_cfg = next((r for r in cfg["repos"] if r["name"] == repo), None)
     if repo_cfg is None:
         raise SliceError("unknown repo")
+    if head:
+        head = resolve_head(project, head, worktree=worktree, repo=repo)
 
     merged = False
     if pr is not None and head:
@@ -522,10 +524,53 @@ def _rank(risk):
     return -1 if risk is None else RISKS.index(risk) if risk in RISKS else -1
 
 
+def resolve_head(project: str, head: str, *, worktree=None, repo=None) -> str:
+    """The full 40-hex commit a head names, resolved in the slice's repo.
+
+    A short SHA or a branch name could mean a different commit later, so only the
+    resolved form is stored.
+    """
+    cfg = projmod.load_project(project)
+    path = worktree or next(
+        (r["path"] for r in cfg["repos"] if r["name"] == repo), cfg["repos"][0]["path"]
+    )
+    try:
+        r = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(path),
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                f"{head}^{{commit}}",
+            ],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise SliceError("could not resolve the head") from None
+    full = r.stdout.strip()
+    if r.returncode != 0 or re.fullmatch(r"[0-9a-f]{40}", full) is None:
+        raise SliceError("head is not a commit in the slice's repo")
+    return full
+
+
 def set_fields(project: str, key: str, **fields) -> dict:
     unknown = sorted(set(fields) - set(SETTABLE))
     if unknown:
         raise SliceError(f"unknown field: {', '.join(unknown)}")
+    if fields.get("head") is not None:
+        current = load(project, key)
+        fields["head"] = resolve_head(
+            project,
+            fields["head"],
+            worktree=fields.get("worktree") or current["worktree"],
+            repo=current["repo"],
+        )
     with _edit(project, key) as s:
         if s["phase"] == "DONE":
             raise SliceError("slice is DONE")

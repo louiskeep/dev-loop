@@ -690,12 +690,26 @@ def run_cli(home, *args, headless=False):
     )
 
 
-def test_cli_slice_lifecycle(proj, home):
+@pytest.mark.real_git
+def test_cli_slice_lifecycle(proj, home, cfg_edit, tmp_path):
+    repo = tmp_path / "gitrepo"
+    repo.mkdir()
+    git_ok = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(repo)]
+    subprocess.run([*git_ok, "init", "-q"], check=True)
+    subprocess.run([*git_ok, "commit", "-q", "--allow-empty", "-m", "c"], check=True)
+    sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    cfg_edit(lambda c: c["repos"][0].update(path=str(repo)))
     r = run_cli(home, "p", "slice", "new", "C1", "S1", "--repo", "main", "--risk", "R1")
     assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == "C1--S1 FRAME head=- round=0"
     k = "C1--S1"
-    r = run_cli(home, "p", "slice", "set", k, "--rulebook", "a.md", "--head", "a1")
+    r = run_cli(home, "p", "slice", "set", k, "--rulebook", "a.md", "--head", sha[:8])
     assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == f"C1--S1 FRAME head={sha[:8]} round=0"
+    full = run_cli(home, "p", "slice", "set", k, "--next-action", "x", "--json")
+    assert json.loads(full.stdout)["head"] == sha
     refused = run_cli(home, "p", "slice", "move", k, "GATE", "--reason", "x")
     assert refused.returncode == 3 and "REFUSED" in refused.stderr
     assert (

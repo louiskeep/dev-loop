@@ -393,10 +393,21 @@ def test_review_brief_ends_with_verdict_line_instruction(proj, ready, brief):
 # --- reviews: roster, predecessor, binding ------------------------------------
 
 
-def test_review_refused_on_dirty_worktree(proj, ready, brief):
-    key, wt, _ = ready("REVIEW", risk="R1")
+def test_review_runs_on_the_private_checkout_of_a_dirty_worktree(proj, ready, brief):
+    key, wt, head = ready("REVIEW", risk="R1")
     (wt / "f.txt").write_text("edited\n")
-    with pytest.raises(runs.Refused, match="uncommitted"):
+    (wt / "stray.txt").write_text("uncommitted\n")
+    r = go(proj, brief, "codex-review", key, reviewer="codex")
+    tree = Path(runs.read_request(proj, r)["tree"])
+    assert (tree / "f.txt").read_text() == "one\n" and not (tree / "stray.txt").exists()
+
+
+def test_review_refused_when_the_head_is_not_a_commit(proj, ready, brief):
+    key, _, _ = ready("REVIEW", risk="R1")
+    s = slices.load(proj, key)
+    s["head"] = "d" * 40
+    slices._save(proj, s)
+    with pytest.raises(runs.Refused, match="not a commit"):
         go(proj, brief, "codex-review", key, reviewer="codex")
 
 
@@ -844,3 +855,81 @@ def test_state_cli_discard_is_interactive_only(proj, ready, brief, home):
     )
     assert headless.returncode == 3
     assert subprocess.run([str(bin_), "p", "discard", r], env=env).returncode == 0
+
+
+# --- failure lineage and the no-verdict reason ------------------------------------
+
+
+def test_builder_failures_count_across_new_heads(proj, ready, brief):
+    key, wt, _ = ready()
+    for n in range(2):
+        r = go(proj, brief, "builder", key)
+        finish(proj, r, code=1, result=res("FAILED"))
+        runs.apply_run(proj, r)
+        (wt / "f.txt").write_text(f"try {n}\n")
+        git(wt, "commit", "-qam", f"try {n}")
+        if n == 0:  # the builder moved the branch before failing again
+            slices.set_fields(proj, key, head=git(wt, "rev-parse", "HEAD"))
+    s = slices.load(proj, key)
+    assert (s["phase"], s["park_reason"]) == ("PARKED", "failed-twice")
+    assert len(s["failures"]) == 1 and next(iter(s["failures"])).startswith("builder:")
+
+
+def test_planner_failures_are_keyed_by_plan_path(proj, ready, brief):
+    key, _, _ = ready("PLAN", plan_path="new-plan.md")
+    for _ in range(2):
+        r = go(proj, brief, "planner", key)
+        finish(proj, r, code=1, result=res("FAILED"))
+        runs.apply_run(proj, r)
+    s = slices.load(proj, key)
+    assert s["failures"] == {"planner:new-plan.md": 2} and s["phase"] == "PARKED"
+
+
+def test_no_verdict_retries_once_and_is_not_a_double_failure(proj, ready, brief):
+    key, _, _ = ready("REVIEW", risk="R1")
+    for i in range(2):
+        r = go(proj, brief, "codex-review", key, reviewer="codex")
+        finish(proj, r, code=0, reason="no-verdict", result=res("FAILED"))
+        runs.apply_run(proj, r)
+        if i == 0:
+            assert slices.load(proj, key)["phase"] == "REVIEW"
+    s = slices.load(proj, key)
+    assert s["park_reason"] == "no-verdict" and s["phase"] == "PARKED"
+    assert all(k.endswith(":no-verdict") for k in s["failures"])
+
+
+def test_one_no_verdict_and_one_real_failure_do_not_park(proj, ready, brief):
+    key, _, _ = ready("REVIEW", risk="R1")
+    r1 = go(proj, brief, "codex-review", key, reviewer="codex")
+    finish(proj, r1, code=0, reason="no-verdict", result=res("FAILED"))
+    runs.apply_run(proj, r1)
+    r2 = go(proj, brief, "codex-review", key, reviewer="codex")
+    finish(proj, r2, code=1, result=res("FAILED"))
+    runs.apply_run(proj, r2)
+    assert slices.load(proj, key)["phase"] == "REVIEW"
+
+
+def test_remove_tree_ignores_a_path_named_in_the_request(proj, ready, brief, tmp_path):
+    key, _, _ = ready("REVIEW", risk="R1")
+    r = go(proj, brief, "codex-review", key, reviewer="codex")
+    outside = tmp_path / "precious"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("x")
+    req = dict(runs.read_request(proj, r))
+    req["tree"] = str(outside)
+    runs.remove_tree(proj, r, req)
+    assert (outside / "keep.txt").exists()
+    assert not (store.run_dir(proj, r) / "tree").exists()
+
+
+def test_remove_tree_skips_a_symlinked_tree(proj, ready, brief, tmp_path):
+    key, _, _ = ready("REVIEW", risk="R1")
+    r = go(proj, brief, "codex-review", key, reviewer="codex")
+    rd = store.run_dir(proj, r)
+    runs.remove_tree(proj, r, runs.read_request(proj, r))
+    outside = tmp_path / "precious"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("x")
+    (rd / "tree").symlink_to(outside)
+    runs.remove_tree(proj, r, {})
+    assert (outside / "keep.txt").exists()

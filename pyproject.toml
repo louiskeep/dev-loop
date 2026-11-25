@@ -1,2 +1,3 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["real_git: resolve slice heads with git instead of the test stub"]

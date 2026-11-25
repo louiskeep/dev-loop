@@ -53,8 +53,8 @@ mutate "evidence key from the slice phase at apply time" devloop/runs.py \
   "ev_kind = f\"{'plan' if s['phase'] == 'PLAN' else 'code'}:{req['reviewer']}\"" \
   $T/test_runs.py::test_late_plan_review_grants_no_code_go
 mutate "verdict taken from anywhere in the transcript" devloop/wrap.py \
-  'm = rx.fullmatch(lines[-1]) if lines else None' \
-  'm = next((x for x in map(rx.fullmatch, lines) if x), None)' \
+  'm = rx.fullmatch(_plain_line(lines[-1])) if lines else None' \
+  'm = next((x for x in map(rx.fullmatch, map(_plain_line, lines)) if x), None)' \
   $T/test_wrap.py::test_verdict_must_be_the_last_line_of_the_final_message $T/test_wrap.py::test_go_with_fixes_is_not_go
 mutate "an error result can carry the verdict" devloop/wrap.py \
   'final = None if event.get("is_error") else event.get("result")' \
@@ -133,8 +133,19 @@ mutate "refusal writes no rejected marker" devloop/runs.py \
   '    (rd / "rejected").write_text(why)' '    pass' \
   $T/test_runs.py::test_binding_mismatch_rejects_the_run_and_frees_the_slot
 mutate "held test runs are not listed" devloop/snapshot.py \
-  'if req["kind"] == "test" and (rd / "exit").is_file() and runs.holds_slot(rd, req):' 'if False:' \
+  '            and runs.holds_slot(rd, req)' '            and False' \
   $T/test_snapshot_status.py::test_snapshot_lists_test_runs_that_hold_a_slot
+mutate "remove_tree trusts the request path" devloop/runs.py \
+  '    tree = rd / "tree"
+    if not tree.exists()' '    tree = Path((req or {}).get("tree") or rd / "tree")
+    if not tree.exists()' \
+  $T/test_runs.py::test_remove_tree_ignores_a_path_named_in_the_request
+mutate "builder failures keyed by head" devloop/runs.py \
+  '        base = f"builder:{req.get('"'"'lineage'"'"')}"' '        base = f"builder:{req.get('"'"'head'"'"')}"' \
+  $T/test_runs.py::test_builder_failures_count_across_new_heads
+mutate "markdown is not stripped from the verdict" devloop/wrap.py \
+  '    m = rx.fullmatch(_plain_line(lines[-1])) if lines else None' '    m = rx.fullmatch(lines[-1]) if lines else None' \
+  $T/test_wrap.py::test_markdown_around_the_verdict_line_is_stripped
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

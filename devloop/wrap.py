@@ -18,6 +18,7 @@ from .caps import TAIL_CHARS, detect_cap, detect_cap_text
 
 VERDICT = re.compile(r"VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
 SELF_VERDICT = re.compile(r"SELF-VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
+VERDICT_READERS = ("claude-verdict", "verdict", "selfverdict")
 CODEX_KINDS = ("codex-review", "codex-fix")
 FAILING_BLOCK = "FAILING TEST IDS"
 MAX_FAILING = 200
@@ -90,10 +91,26 @@ def _final_message(req, rd):
         return None
 
 
+_MARKUP = " \t`*_"
+
+
+def _plain_line(line):
+    """The line without the markdown a model wraps around it: backticks, * and _, one final ."""
+    line = line.strip(_MARKUP)
+    if line.endswith("."):
+        line = line[:-1]
+    return line.strip(_MARKUP)
+
+
 def _last_line_verdict(text, rx):
     lines = [x.strip() for x in (text or "").splitlines() if x.strip()]
-    m = rx.fullmatch(lines[-1]) if lines else None
+    m = rx.fullmatch(_plain_line(lines[-1])) if lines else None
     return m.group(1) if m else None
+
+
+def _verdict_found(req, rd):
+    rx = SELF_VERDICT if req["reader"] == "selfverdict" else VERDICT
+    return _last_line_verdict(_final_message(req, rd), rx)
 
 
 def _failing_ids(rd):
@@ -131,12 +148,7 @@ def _write_result(rd, req, code, reason):
             status, verdict = "DONE", "NO-GO"
             body = "\n".join(_failing_ids(rd))
     else:
-        rx = SELF_VERDICT if reader == "selfverdict" else VERDICT
-        found = (
-            _last_line_verdict(_final_message(req, rd), rx)
-            if ok and code == 0
-            else None
-        )
+        found = _verdict_found(req, rd) if ok and code == 0 else None
         if found:
             status, verdict = "DONE", found
     text = f"status: {status}\nhead: {req.get('head') or ''}\nverdict: {verdict}\n"
@@ -270,6 +282,15 @@ def finish(project, rd, req, code, reason):
             and code in req.get("infra_codes", [])
         ):
             reason = "infra"
+        if (
+            reason == "exit"
+            and code == 0
+            and req["reader"] in VERDICT_READERS
+            and _verdict_found(req, rd) is None
+        ):
+            reason = (
+                "no-verdict"  # a clean exit that named no verdict: retry, not a failure
+            )
         _write_result(rd, req, code, reason)
         if req["kind"] == "codex-fix":
             write_repair(rd, req)
@@ -278,5 +299,5 @@ def finish(project, rd, req, code, reason):
             log.write(f"wrapper error: {type(exc).__name__}\n")
     finally:
         runs.create_exit(rd, code=code, reason=reason)
-        runs.remove_tree(req)
+        runs.remove_tree(project, rd.name, req)
         _wake_tick(project)

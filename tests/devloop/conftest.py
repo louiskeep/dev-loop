@@ -37,6 +37,18 @@ def _minimal_project(name="p"):
     }
 
 
+@pytest.fixture(autouse=True)
+def stub_head_resolution(request, monkeypatch):
+    """Most tests use made-up heads like `a1`; real_git tests resolve them with git."""
+    if request.node.get_closest_marker("real_git"):
+        return
+    from devloop import slices
+
+    monkeypatch.setattr(
+        slices, "resolve_head", lambda project, head, worktree=None, repo=None: head
+    )
+
+
 @pytest.fixture
 def minimal_project():
     return lambda name="p": copy.deepcopy(_minimal_project(name))
