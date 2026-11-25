@@ -378,6 +378,7 @@ def dispatch(
             raise runs.Refused("memory is below the floor")
         req["root"] = worktree_root(req["worktree"]) if spec.writes_worktree else None
         _check_admission(project, cfg, req, req["root"])
+        req["seq"] = store.next_seq(project)
         run_id = "{}.{}.{}".format(
             kind, key, time.strftime("%Y%m%dT%H%M%S") + secrets.token_hex(2)
         )

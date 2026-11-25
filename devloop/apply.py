@@ -193,6 +193,7 @@ def _apply_evidence(project, key, run_id, req, res, s, ev_kind):
     guard = (
         {"want_plan_sha": req["plan_sha"]} if is_plan else {"want_head": req["head"]}
     )
+    seq = req.get("seq")
     if kind == "codex-fix" and res.verdict == "GO":
         sha, why = _install_repair(project, store.run_dir(project, run_id), req, s)
         if why == "missing":
@@ -210,6 +211,7 @@ def _apply_evidence(project, key, run_id, req, res, s, ev_kind):
                 verdict="GO",
                 plan_sha_=sha,
                 want_plan_sha=sha,
+                seq=seq,
             ),
             False,
         )
@@ -222,6 +224,7 @@ def _apply_evidence(project, key, run_id, req, res, s, ev_kind):
             verdict=res.verdict,
             head=req["head"],
             want_head=req["head"],
+            seq=seq,
         )
         for ckey, chead in req["covers"].items():
             try:
@@ -233,6 +236,7 @@ def _apply_evidence(project, key, run_id, req, res, s, ev_kind):
                     verdict=res.verdict,
                     head=chead,
                     want_head=chead,
+                    seq=seq,
                 )
             except slices.SliceError:
                 store.append_event(project, "apply-mismatch", run=run_id, key=ckey)
@@ -246,6 +250,7 @@ def _apply_evidence(project, key, run_id, req, res, s, ev_kind):
             verdict=res.verdict,
             head=None if is_plan else req["head"],
             plan_sha_=req["plan_sha"] if is_plan else None,
+            seq=seq,
             **guard,
         ),
         False,

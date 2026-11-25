@@ -221,3 +221,12 @@ def bin_dir() -> Path:
         return Path(env)
     beside = package_root() / "bin"
     return beside if (beside / "devloop-wrap").is_file() else Path.home() / "bin"
+
+
+def next_seq(project) -> int:
+    """A durable, increasing dispatch number. Call it under the admission lock."""
+    path = state_dir(project) / "seq.json"
+    with locked(path):
+        n = int(read_json(path).get("seq", 0)) + 1
+        write_json(path, {"seq": n})
+    return n

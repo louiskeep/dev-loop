@@ -394,3 +394,31 @@ def test_state_cli_applied_release_and_list(proj, ready, brief, home):
     assert run_state(home, "release", t).returncode == 0
     assert t not in run_state(home, "list", "--live").stdout
     assert run_state(home, "list", "--writers").returncode == 0
+
+
+def test_an_older_green_cannot_replace_a_newer_red(proj, ready, brief):
+    key, _, head = ready("VERIFY")
+    green = go(proj, brief, "test", key, level="t1")
+    finish(proj, green, code=0, result=res("DONE", "GO", head))
+    red = go(proj, brief, "test", key, level="t1")
+    finish(proj, red, code=1, result=res("DONE", "NO-GO", head))
+    assert runs.read_request(proj, red)["seq"] > runs.read_request(proj, green)["seq"]
+    runs.apply_run(proj, red)
+    runs.apply_run(proj, green)  # the older result arrives last
+    entry = slices.load(proj, key)["evidence"][head]["t1"]
+    assert entry["verdict"] == "NO-GO" and entry["run"] == red
+    assert any(p.startswith("t1 GO on head") for p in slices.validate_gate(proj, key))
+
+
+def test_an_older_full_run_cannot_replace_a_newer_one_for_covered_slices(
+    proj, ready, brief
+):
+    key, h1, top, h2 = train(proj, ready, brief)
+    first = go(proj, brief, "test", top, level="full", covers=[key])
+    finish(proj, first, code=0, result=res("DONE", "GO", h2))
+    second = go(proj, brief, "test", top, level="full", covers=[key])
+    finish(proj, second, code=1, result=res("DONE", "NO-GO", h2))
+    runs.apply_run(proj, second)
+    runs.apply_run(proj, first)
+    assert slices.load(proj, key)["evidence"][h1]["full"]["verdict"] == "NO-GO"
+    assert slices.load(proj, top)["evidence"][h2]["full"]["verdict"] == "NO-GO"

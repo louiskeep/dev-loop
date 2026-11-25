@@ -216,6 +216,9 @@ mutate "round seven still goes to remediate" devloop/slices.py \
 mutate "builder allowed after round three" devloop/dispatch.py \
   '        if kind == "builder" and late:' '        if False:' \
   $T/test_runs_rounds.py::test_rounds_four_to_six_are_fixed_by_codex
+mutate "an older run replaces newer evidence" devloop/slices.py \
+  '    if seq is not None and prior is not None and (prior.get("seq") or 0) > seq:' '    if False:' \
+  $T/test_runs_apply.py::test_an_older_green_cannot_replace_a_newer_red
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

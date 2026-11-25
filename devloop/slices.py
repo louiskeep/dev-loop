@@ -564,6 +564,7 @@ def apply_effects(
     failure=None,
     want_head=None,
     want_plan_sha=None,
+    seq=None,
 ) -> str:
     """Everything a run changes on a slice, plus its ID, in ONE locked replace.
 
@@ -582,7 +583,7 @@ def apply_effects(
             if kind:
                 if kind in TICK_KINDS or verdict not in VERDICTS:
                     raise SliceError("bad evidence")
-                _put_evidence(s, kind, verdict, run_id, sha=head or plan_sha_)
+                _put_evidence(s, kind, verdict, run_id, sha=head or plan_sha_, seq=seq)
             if failure:
                 s["failures"][failure] = s["failures"].get(failure, 0) + 1
         s["processed_run_ids"] = (s["processed_run_ids"] + [run_id])[-500:]
@@ -600,13 +601,22 @@ def mark_plan_started(project: str, key: str) -> None:
 # --- evidence -----------------------------------------------------------------
 
 
-def _put_evidence(s, kind, verdict, run_id, *, sha, extra=None):
-    """Mutate `s` in place; the same run recorded twice changes nothing."""
+def _put_evidence(s, kind, verdict, run_id, *, sha, extra=None, seq=None):
+    """Mutate `s` in place; the same run recorded twice changes nothing.
+
+    `seq` is the run's dispatch sequence. A result from an earlier dispatch never
+    replaces evidence from a later one for the same head and check, whatever order
+    the two are applied in.
+    """
     bucket = s["evidence"].setdefault(sha, {})
     prior = bucket.get(kind)
     if run_id is not None and prior is not None and prior.get("run") == run_id:
         return
+    if seq is not None and prior is not None and (prior.get("seq") or 0) > seq:
+        return
     entry = {"verdict": verdict, "run": run_id, "at": store.now_iso(), **(extra or {})}
+    if seq is not None:
+        entry["seq"] = seq
     if kind.startswith("plan:"):
         if not s["plan_path"]:
             raise SliceError("plan evidence needs a plan_path")
