@@ -193,3 +193,49 @@ def test_review_brief_ends_with_verdict_line_instruction(proj, ready, brief):
     key, _, _ = ready("PLAN", risk="R2")
     r = go(proj, brief, "dennis", key, reviewer="dennis")
     assert "VERDICT: GO" in (store.run_dir(proj, r) / "brief.md").read_text()
+
+
+# --- playbook role sections ---------------------------------------------------
+
+PLAYBOOK = """## Worker briefs
+
+### builder
+PLAIN-BUILDER
+
+### Developer (`codex-builder` kind)
+CODEX-BUILDER-BODY
+
+### Outside reviewer: plan repair (`codex-fix` kind)
+FIX-BODY
+
+### Outside reviewer (`codex-review` kind)
+REVIEW-BODY
+"""
+
+
+def test_section_matches_the_plain_heading_and_the_kind_in_backticks():
+    from devloop import dispatch
+
+    assert dispatch._section(PLAYBOOK, "builder") == "PLAIN-BUILDER"
+    assert dispatch._section(PLAYBOOK, "codex-builder") == "CODEX-BUILDER-BODY"
+    assert dispatch._section(PLAYBOOK, "codex-fix") == "FIX-BODY"
+
+
+def test_section_near_misses_do_not_match():
+    from devloop import dispatch
+
+    # codex-fix must not pick up codex-review's section, nor a bare mention of the kind.
+    assert "REVIEW-BODY" not in dispatch._section(PLAYBOOK, "codex-fix")
+    assert dispatch._section(PLAYBOOK, "codex-review") == "REVIEW-BODY"
+    assert dispatch._section(PLAYBOOK, "codex") == ""
+    assert dispatch._section(PLAYBOOK, "review") == ""
+    text = "### Notes about `builder` kinds\nX\n#### builder\nY\n## builder\nZ\n"
+    assert dispatch._section(text, "builder") == ""
+
+
+def test_every_kind_finds_a_section_in_the_shipped_playbook():
+    from devloop import dispatch
+
+    text = (store.package_root() / "skills" / "dev-loop" / "PLAYBOOK.md").read_text()
+    for kind in runs.KINDS:
+        assert dispatch._section(text, kind), kind

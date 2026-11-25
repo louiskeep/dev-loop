@@ -548,12 +548,23 @@ def _launch(project, rd, run_id):
 # --- briefs -------------------------------------------------------------------
 
 
+def _names_kind(line, kind) -> bool:
+    """A level-3 heading that is exactly `### <kind>` or holds the kind in backticks
+    followed by " kind", as in "### Developer (`builder` kind)". The backticks keep
+    `codex-fix` from matching `codex-review` or a longer kind name."""
+    heading = line.strip()
+    return heading == f"### {kind}" or (
+        heading.startswith("### ")
+        and re.search(rf"`{re.escape(kind)}` kind\b", heading) is not None
+    )
+
+
 def _section(text, kind):
-    """The `### <kind>` block of a playbook, or ''."""
+    """The playbook block whose heading names `kind`, or ''."""
     out, on = [], False
     for line in text.splitlines():
         if line.startswith("#"):
-            on = line.strip() == f"### {kind}"
+            on = _names_kind(line, kind)
             continue
         if on:
             out.append(line)
