@@ -7,12 +7,24 @@ module; a value that is not on an allowlist reads `?`.
 
 import collections
 import dataclasses
+import datetime
 import json
+import os
 import re
+import time
+from pathlib import Path
 
-from .. import scrub
+from .. import runs, scrub, store
 
+TAIL_BYTES = 524288  # the first read starts this far from the end
+STEP_BYTES = 1048576  # most bytes read from one file per build
 MAX_LINE = 2097152  # 2 MiB: a longer line is dropped before parsing
+KEEP_CALLS = 50
+SPARK_MINUTES = 15
+RATE_SECONDS = 60
+DEDUP_IDS = 2000
+CACHE_ENTRIES = 64
+FEED_LIMIT = 40
 
 TOOL_TAGS = (
     "READ",
@@ -317,3 +329,234 @@ class CodexParser:
                 elif not line or line in _BLOCK_HEADS:
                     self._in_patch = False
         return calls, results
+
+
+# --- bounded tail reader ----------------------------------------------------------
+
+# One bad line never takes down a file; these are every error a line can raise.
+_LINE_ERRORS = (ValueError, RecursionError, TypeError, KeyError)
+
+
+class FileState:
+    """What one worker output file has told us so far. Reset on a new file generation."""
+
+    def __init__(self):
+        self.ident: tuple | None = None
+        self.offset = 0
+        self.size = 0
+        self.mtime_ns = 0
+        self.pending = bytearray()
+        self.skip_to_newline = False
+        self.partial = False
+        self.state = "starting"
+        self.bytes_read = 0
+        self.head_done = False
+        self._reset_counters()
+
+    def _reset_counters(self):
+        self.calls: collections.deque = collections.deque(maxlen=KEEP_CALLS)
+        self.tools = 0
+        self.errors = 0
+        self.newest_id: str | None = None
+        self.newest_done = False
+        self.token_total = 0
+        self.seen_tokens: collections.OrderedDict = collections.OrderedDict()
+        self.context: int | None = None
+        self.model: str | None = None
+        self.minutes: dict = {}
+        self.seconds: dict = {}
+        self.codex: CodexParser | None = None
+
+    def new_generation(self):
+        """A different or shorter file sits at the path: start over, keep the identity."""
+        self.offset = 0
+        self.pending = bytearray()
+        self.skip_to_newline = False
+        self.partial = True
+        self.head_done = False
+        self._reset_counters()
+
+    def discontinuity(self):
+        """Bytes were skipped, so half-read blocks and the running flag mean nothing."""
+        self.pending = bytearray()
+        self.partial = True
+        self.newest_done = True
+        if self.codex is not None:
+            self.codex.reset_continuation()
+
+    def doing(self):
+        """The newest call and whether it is still running, or None."""
+        if not self.calls:
+            return None
+        return self.calls[-1], not self.newest_done
+
+    def rate(self, now_s: int) -> int:
+        """Calls in the trailing RATE_SECONDS seconds, from one-second buckets."""
+        return sum(
+            n for s, n in self.seconds.items() if now_s - RATE_SECONDS < s <= now_s
+        )
+
+    def spark(self, now: float) -> list:
+        """Calls per minute for the last SPARK_MINUTES minutes, oldest first."""
+        cur = int(now // 60)
+        return [self.minutes.get(m, 0) for m in range(cur - SPARK_MINUTES + 1, cur + 1)]
+
+    def count(self, at_s: int):
+        self.tools += 1
+        self.seconds[at_s] = self.seconds.get(at_s, 0) + 1
+        self.minutes[at_s // 60] = self.minutes.get(at_s // 60, 0) + 1
+        for s in [s for s in self.seconds if s <= at_s - RATE_SECONDS - 1]:
+            del self.seconds[s]
+        for m in [m for m in self.minutes if m <= at_s // 60 - SPARK_MINUTES]:
+            del self.minutes[m]
+
+
+def transcript_path(rd, req: dict) -> Path | None:
+    """Where a run's activity is written, from its kind. Never from the request."""
+    kind = runs.KINDS.get(req.get("kind"))
+    if kind is None:
+        return None
+    if kind.transcript == "stream-json":
+        return store.out_dir(rd) / "log"
+    if kind.transcript == "codex-text":
+        return store.out_dir(rd) / "codex.out"
+    return None
+
+
+def _iso(t: float) -> str:
+    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).isoformat(
+        timespec="seconds"
+    )
+
+
+class Cache:
+    """Per-file state across polls. Callers serialize builds, so there is no lock."""
+
+    def __init__(self, clock=time.time):
+        self.clock = clock
+        self.entries: collections.OrderedDict = collections.OrderedDict()
+        self.feed_log: collections.deque = collections.deque(maxlen=FEED_LIMIT)
+
+    def collect(self, keep: set) -> None:
+        for path in [p for p in self.entries if p not in keep]:
+            del self.entries[path]
+
+    def read(self, path, transcript: str, executing: bool, label: tuple) -> FileState:
+        if path is None or transcript in ("outside", "none"):
+            st = FileState()
+            st.state = "outside" if transcript == "outside" else "none"
+            return st
+        entry = self.entries.get(path)
+        if entry is None:
+            entry = self.entries[path] = FileState()
+        self.entries.move_to_end(path)
+        while len(self.entries) > CACHE_ENTRIES:
+            self.entries.popitem(last=False)
+        try:
+            st = os.stat(path)
+        except OSError:
+            entry.state = "starting" if executing else "none"
+            return entry
+        if (
+            entry.ident == (st.st_dev, st.st_ino)
+            and entry.size == st.st_size
+            and entry.mtime_ns == st.st_mtime_ns
+        ):
+            entry.state = "live"
+            return entry
+        try:
+            with open(path, "rb") as fh:
+                self._pull(entry, fh, transcript)
+        except OSError:
+            entry.state = "unreadable"
+            return entry
+        entry.state = "live"
+        self._frame(entry, transcript, label)
+        return entry
+
+    def _pull(self, entry, fh, transcript):
+        fs = os.fstat(fh.fileno())
+        ident, end = (fs.st_dev, fs.st_ino), fs.st_size
+        if entry.ident is not None and (ident != entry.ident or end < entry.offset):
+            entry.new_generation()
+        first = entry.offset == 0
+        if transcript == "codex-text" and not entry.head_done:
+            entry.head_done = True
+            entry.bytes_read += HEAD_BYTES
+            entry.model = codex_head_model(fh.read(HEAD_BYTES))
+        if (first and end > TAIL_BYTES) or end - entry.offset > STEP_BYTES:
+            start = end - TAIL_BYTES
+            entry.discontinuity()
+            fh.seek(start - 1)
+            entry.skip_to_newline = fh.read(1) != b"\n"
+            entry.bytes_read += 1
+        else:
+            start = entry.offset
+        fh.seek(start)
+        data = fh.read(max(0, end - start))
+        # The cursor follows the bytes actually read: the file may have shrunk since fstat.
+        entry.offset = start + len(data)
+        entry.size, entry.mtime_ns, entry.ident = end, fs.st_mtime_ns, ident
+        entry.bytes_read += len(data)
+        entry.pending += data
+
+    def _frame(self, entry, transcript, label):
+        buf = bytes(entry.pending)
+        entry.pending = bytearray()
+        if entry.skip_to_newline:
+            cut = buf.find(b"\n")
+            if cut < 0:
+                return
+            buf, entry.skip_to_newline = buf[cut + 1 :], False
+        *lines, last = buf.split(b"\n")
+        for line in lines:
+            if len(line) > MAX_LINE:
+                entry.discontinuity()
+                continue
+            self._one(entry, line, transcript, label)
+        if len(last) > MAX_LINE:
+            entry.discontinuity()
+            entry.skip_to_newline = True
+        else:
+            entry.pending = bytearray(last)
+
+    def _one(self, entry, line, transcript, label):
+        now = self.clock()
+        at = _iso(now)
+        try:
+            if transcript == "codex-text":
+                if entry.codex is None:
+                    entry.codex = CodexParser()
+                calls, results = entry.codex.feed([line], at)
+                if entry.codex.tokens_out is not None:
+                    entry.token_total = entry.codex.tokens_out
+                facts = ClaudeFacts(calls=calls, results=results)
+            else:
+                facts = parse_claude_line(line)
+        except _LINE_ERRORS:
+            return
+        if facts is None:
+            return
+        if facts.model:
+            entry.model = facts.model
+        if facts.usage:
+            mid, out, ctx = facts.usage
+            seen = entry.seen_tokens.get(mid, 0)
+            if out > seen:
+                entry.token_total += out - seen
+                entry.seen_tokens[mid] = out
+            if mid in entry.seen_tokens:
+                entry.seen_tokens.move_to_end(mid)
+            while len(entry.seen_tokens) > DEDUP_IDS:
+                entry.seen_tokens.popitem(last=False)
+            entry.context = ctx
+        for call in facts.calls:
+            call = call._replace(at=at)
+            entry.calls.append(call)
+            entry.count(int(now))
+            entry.newest_id, entry.newest_done = call.call_id, False
+            self.feed_log.append((at, call.tag, call.target, label[0], label[1]))
+        for cid, failed in facts.results:
+            entry.errors += failed
+            if cid == entry.newest_id:
+                entry.newest_done = True

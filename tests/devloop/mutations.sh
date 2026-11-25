@@ -9,12 +9,15 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 cp -r "$ROOT/devloop" "$ROOT/hooks" "$ROOT/bin" "$ROOT/skills" "$ROOT/tests" "$ROOT/conftest.py" "$ROOT/pyproject.toml" "$WORK/"
 find "$WORK" -name __pycache__ -prune -exec rm -rf {} +
-killed=0; survived=0; stale=0
+killed=0; survived=0; stale=0; redbase=0
 declare -a SURVIVORS
 
 # mutate NAME FILE OLD NEW TESTS...
 mutate() {
   local name="$1" file="$2" old="$3" new="$4"; shift 4
+  if ! (cd "$WORK" && "$PY" -m pytest -q -x -p no:cacheprovider "$@" >/dev/null 2>&1); then
+    echo "RED-BASE $name (tests fail before the edit)"; redbase=$((redbase+1)); return
+  fi
   cp "$WORK/$file" "$WORK/$file.orig"
   if ! OLD="$old" NEW="$new" F="$WORK/$file" "$PY" - <<'PYEOF'
 import os, sys
@@ -26,10 +29,14 @@ PYEOF
   then
     echo "STALE   $name (text not found in $file)"; stale=$((stale+1)); mv "$WORK/$file.orig" "$WORK/$file"; return
   fi
-  if (cd "$WORK" && "$PY" -m pytest -q -x -p no:cacheprovider "$@" >/dev/null 2>&1); then
-    echo "SURVIVED $name"; survived=$((survived+1)); SURVIVORS+=("$name")
-  else
+  # A kill is pytest exit 1 (a failed assertion). Exit 2 to 5 is a collection, usage or
+  # setup error, which proves nothing about the tests.
+  (cd "$WORK" && "$PY" -m pytest -q -x -p no:cacheprovider "$@" >/dev/null 2>&1)
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
     echo "killed   $name"; killed=$((killed+1))
+  else
+    echo "SURVIVED $name (pytest exit $rc)"; survived=$((survived+1)); SURVIVORS+=("$name")
   fi
   mv "$WORK/$file.orig" "$WORK/$file"
 }
@@ -378,6 +385,25 @@ mutate "the reservation amount is not frozen at dispatch" devloop/dispatch.py \
   '        req["memory_mb"] = projmod.memory_mb(cfg, kind)' '        pass' \
   $T/test_runs_limits.py::test_dispatch_freezes_the_reservation_amount
 
+mutate "transcript cache keeps paths nobody needs" devloop/dash/transcript.py \
+  '        for path in [p for p in self.entries if p not in keep]:
+            del self.entries[path]' '        pass' \
+  $T/dash/test_transcript.py::test_cache_evicts_a_previously_cached_path
+mutate "reader cursor jumps to the fstat size" devloop/dash/transcript.py \
+  '        entry.offset = start + len(data)' '        entry.offset = end' \
+  $T/dash/test_transcript.py::test_truncate_between_fstat_and_read_then_regrow
+mutate "one bad transcript line stops the reader" devloop/dash/transcript.py \
+  '        except _LINE_ERRORS:
+            return' '        except ZeroDivisionError:
+            return' \
+  $T/dash/test_transcript.py::test_parser_error_on_one_line_keeps_the_next
+mutate "reader trusts the stat identity, not the open file" devloop/dash/transcript.py \
+  '        ident, end = (fs.st_dev, fs.st_ino), fs.st_size' '        ident, end = (entry.ident or (fs.st_dev, fs.st_ino)), fs.st_size' \
+  $T/dash/test_transcript.py::test_path_replaced_between_stat_and_open_reads_new_file_only
+mutate "the first read ignores the tail limit" devloop/dash/transcript.py \
+  '        if (first and end > TAIL_BYTES) or end - entry.offset > STEP_BYTES:' '        if end - entry.offset > STEP_BYTES:' \
+  $T/dash/test_transcript.py::test_first_read_is_bounded_by_tail_bytes
+
 echo
-echo "killed: $killed  survived: $survived  stale: $stale"
-[ "$survived" -eq 0 ] && [ "$stale" -eq 0 ]
+echo "killed: $killed  survived: $survived  stale: $stale  red-base: $redbase"
+[ "$survived" -eq 0 ] && [ "$stale" -eq 0 ] && [ "$redbase" -eq 0 ]
