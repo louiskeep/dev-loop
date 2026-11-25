@@ -12,7 +12,7 @@ import re
 
 from .. import evidence, notes, runs, slices, snapshot, status, store
 from .. import project as projmod
-from ..scrub import plain, scrub
+from ..scrub import plain, redact_secrets, scrub
 from . import memory
 
 SCHEMA = 2
@@ -120,6 +120,7 @@ VIEW_SCHEMA = {
             "question": "owner_text?",
             "detail": "owner_text?",
             "options": ["owner_text"],
+            "option_ok": ["bool"],
             "recommended": "owner_text?",
             "klass": "word",
             "version": "version?",
@@ -498,6 +499,7 @@ def _owner_item(kind, owner, key=None, since=None, **extra):
         "question": None,
         "detail": None,
         "options": [],
+        "option_ok": [],
         "recommended": None,
         "klass": "product",
         "version": None,
@@ -519,14 +521,28 @@ def _owner_text(text, limit=OWNER_TEXT_LIMIT):
     out = " ".join(text.split())[:limit].strip()
     if notes.BLOCK_START in out or notes.BLOCK_END in out:
         return None
-    return out or None
+    # Full text, except spans shaped like a secret, so a pasted key never reaches a page.
+    return redact_secrets(out) or None
+
+
+def _options(raw):
+    """Shown options, each with whether the shown text is the real value to submit."""
+    shown, ok = [], []
+    for o in raw:
+        text = _owner_text(o)
+        if text:
+            shown.append(text)
+            ok.append(text == " ".join(o.split())[:OWNER_TEXT_LIMIT].strip())
+    return shown, ok
 
 
 def _question_fields(ctx, q):
+    options, option_ok = _options(q["options"])
     return {
         "answer_key": q["key"],
         "question": _owner_text(q["question"]),
-        "options": [o for o in (_owner_text(o) for o in q["options"]) if o],
+        "options": options,
+        "option_ok": option_ok,
         "recommended": _owner_text(q["recommended"]),
         "answer_at": _plain_line(answer_file(ctx), 80),
     }

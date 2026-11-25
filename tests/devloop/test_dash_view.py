@@ -599,3 +599,23 @@ def test_version_digest_fixtures(proj, dash):
     assert v["version"] == store.canonical_digest(
         {k: x for k, x in v.items() if k != "version"}
     )
+
+
+def test_secret_in_owner_text_is_redacted_and_option_not_submittable(proj):
+    token = "ghp_PLANTEDSECRET1234567"
+    notes.ask(
+        proj,
+        "q-secret",
+        question=f"Use {token} for the call? Key at https://u:pw@host/x",
+        options=["keep it", f"use {token}", "/etc/shadow"],
+        recommended="keep it",
+        wait=True,
+    )
+    v = build(proj)
+    q = next(n for n in v["needs_you"] if n["key"] == "q-secret")
+    blob = json.dumps(v)
+    assert token not in blob and "u:pw@host" not in blob
+    assert "[redacted]" in q["question"]
+    assert q["options"][0] == "keep it" and q["options"][2] == "/etc/shadow"
+    assert q["option_ok"] == [True, False, True]
+    assert token not in render.render_page(v)
