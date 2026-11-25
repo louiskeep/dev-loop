@@ -474,6 +474,19 @@ About 12 focused tests with fakes for `claude`, `gh`, `codex-review` and `vm-run
   standing rules and the area's lessons;
 - `devloop-state` refuses to move a slice out of FRAME without a risk level and rulebooks.
 
+### Owner additions (2026-11-25)
+
+- **Node directory.** Config key `nodes.directory` names one current page per project that
+  says, for each node, what it is, where it lives, how to reach and check it, what to use it
+  for and not, and which tools target it. The snapshot carries its summary; builder and test
+  briefs name it. For Decoy it is a live-checked vault page, and the `dev-nodes` skill points
+  to it.
+- **Rules parity.** Every standing rule the live loop follows today maps to where the
+  headless loop enforces it (code), carries it (TICK or brief) or configures it
+  (`project.json`). The table lives in the project's tick doc and is a gate item.
+- **Slack on every tick.** Each tick run, including skipped, paused and capped ones, posts
+  one plain-language line: what it did, what is running, what is next.
+
 ## Calls made in writing (owner to check)
 
 - Hindsight left out of v1.
