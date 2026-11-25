@@ -183,8 +183,14 @@ def _push_writer(rd, req):
     hdr = store.read_header(path)
     if hdr.get("status") != "DONE":
         return
-    _, why = push.push_slice_branch(req)
+    try:
+        pushed, why = push.push_slice_branch(req)
+    except Exception as exc:  # any failure to confirm must not leave a DONE result
+        pushed, why = None, f"push confirmation failed: {type(exc).__name__}"
     if why is None:
+        if hdr.get("head") != pushed:  # report the commit the remote confirmed
+            old = path.read_text(encoding="utf-8", errors="replace")
+            store.write_text(path, re.sub(r"(?m)^head:.*$", f"head: {pushed}", old, count=1))
         return
     body = path.read_text(encoding="utf-8", errors="replace").partition("\n---")[2]
     text = f"status: FAILED\nhead: \nverdict: \ntests: {hdr.get('tests', '')}\n"

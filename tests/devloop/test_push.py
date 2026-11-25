@@ -153,3 +153,29 @@ def test_push_failure_is_recorded_not_applied(proj, tmp_path, repo):
     assert res.status == "FAILED" and res.head is None
     assert "push" in store.read_header(store.out_dir(rd) / "result.md")["push"]
     assert store.read_json(rd / "exit")["reason"] == "exit"
+
+
+def test_amended_head_is_pushed_and_reported(proj, tmp_path, repo):
+    wt, remote = repo
+    old = commit(wt)
+    (wt / "b").write_text("amended")
+    git(wt, "add", "-A")
+    git(wt, "commit", "-q", "--amend", "-m", "b2")
+    new = git(wt, "rev-parse", "HEAD")
+    assert new != old
+    rd = run_writer(proj, tmp_path, wt, head=old)
+    assert remote_head(remote) == new
+    res = runs.parse_result(rd, "builder")
+    assert (res.status, res.head) == ("DONE", new)
+
+
+def test_confirm_failure_makes_the_result_failed(proj, tmp_path, repo, monkeypatch):
+    wt, remote = repo
+    sha = commit(wt)
+
+    def boom(req):
+        raise OSError("confirm blew up")
+
+    monkeypatch.setattr(push, "push_slice_branch", boom)
+    rd = run_writer(proj, tmp_path, wt, head=sha)
+    assert runs.parse_result(rd, "builder").status == "FAILED"

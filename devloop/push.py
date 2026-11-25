@@ -56,9 +56,13 @@ def push_slice_branch(req):
             anc = _git(wt, "merge-base", "--is-ancestor", remote, local)
             if anc.returncode != 0:
                 return None, "remote branch has commits not in the worktree"
-        pushed = _git(wt, "push", "-q", "origin", f"HEAD:{ref}")
+        pushed = _git(wt, "push", "-q", "origin", f"{local}:{ref}")
         if pushed.returncode != 0:
             return None, "push rejected or failed"
+        ls = _git(wt, "ls-remote", "--heads", "origin", ref)
+        seen = ls.stdout.split()[0] if ls.returncode == 0 and ls.stdout.split() else ""
+        if seen != local:
+            return None, "the remote does not have the pushed commit"
         return local, None
     except (OSError, subprocess.SubprocessError):
         return None, "git failed"
