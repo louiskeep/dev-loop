@@ -226,7 +226,7 @@ def test_answer_is_refused_headless(proj, mk_slice, monkeypatch):
         notes.answer(proj, k, "no")
     assert slices.load(proj, k)["phase"] == "HELD"
     monkeypatch.delenv("DEVLOOP_HEADLESS")
-    notes.answer(proj, k, "no")
+    notes.answer(proj, k, "yes")
     s = slices.load(proj, k)
     assert (s["phase"], s["risk"], s["waiting_on"]) == ("FRAME", "R2", None)
 
@@ -321,3 +321,49 @@ def test_cli_notes_commands(proj, home):
     assert run_cli(home, "p", "answer", "q1", "B").returncode == 0
     assert run_cli(home, "p", "answers-sync").returncode == 0
     assert run_cli(home, "p", "answer", "q1", "C").returncode == 3
+
+
+def test_wrong_choice_keeps_a_held_slice_held(proj, mk_slice):
+    k = mk_slice(proj, phase="FRAME", risk="R3", rulebooks=["a.md"])
+    notes.ask(
+        proj, k, question="Spend?", options=["yes", "no"], recommended="no", wait=True
+    )
+    slices.move(proj, k, "HELD", "R3 waits")
+    s = slices.load(proj, k)
+    assert (s["hold_question"], s["hold_release_option"]) == (k, "yes")
+    notes.answer(proj, k, "no")
+    assert slices.load(proj, k)["phase"] == "HELD"
+    assert "- Answer: no" in (store.state_dir(proj) / "questions.md").read_text()
+    s["hold_question"] = "OTHER--S1"
+    slices._save(proj, s)
+    notes.answer(proj, k, "yes")
+    assert slices.load(proj, k)["phase"] == "HELD"
+
+
+def test_owner_park_needs_its_release_option(proj, mk_slice):
+    k = mk_slice(proj, phase="REMEDIATE", round=2)
+    slices.move(proj, k, "PARKED", "round-3")
+    assert slices.load(proj, k)["hold_release_option"] == "approve"
+    notes.ask(
+        proj,
+        k,
+        question="Go on?",
+        options=["approve", "reject"],
+        recommended="reject",
+        wait=False,
+    )
+    notes.answer(proj, k, "reject")
+    assert slices.load(proj, k)["owner_answered"] is False
+    notes.answer(proj, k, "approve")
+    assert slices.load(proj, k)["owner_answered"] is True
+
+
+def test_headless_ask_refused_for_a_held_slice(proj, mk_slice, monkeypatch):
+    k = mk_slice(proj, phase="FRAME", risk="R3", rulebooks=["a.md"])
+    slices.set_fields(proj, k, waiting_on="question x")
+    slices.move(proj, k, "HELD", "R3 waits")
+    monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
+    with pytest.raises(notes.NotesError, match="owner"):
+        notes.ask(
+            proj, k, question="Spend?", options=["yes"], recommended="yes", wait=False
+        )

@@ -40,6 +40,7 @@ MAX_ROUNDS = 3
 # Parks that only the owner may lift.
 OWNER_PARKS = ("round-3", "failed-twice")
 HISTORY_KEEP = 200
+HOLD_DEFAULT_OPTION = "approve"
 
 # The phase a slice normally leaves through; the checklist and `move` agree on it.
 FORWARD = {
@@ -208,6 +209,8 @@ _FIELDS = {
     "plan_frozen": _bool,
     "imported": _bool,
     "owner_answered": _bool,
+    "hold_question": _ostr,
+    "hold_release_option": _ostr,
     "was_r3": _bool,
     "processed_run_ids": _strlist,
 }
@@ -308,6 +311,8 @@ def _blank(row, slice_id, repo, risk) -> dict:
         "plan_frozen": False,
         "imported": False,
         "owner_answered": False,
+        "hold_question": None,
+        "hold_release_option": None,
         "was_r3": risk == "R3",
         "processed_run_ids": [],
     }
@@ -890,6 +895,8 @@ def _move(project, key, to, reason, via_merge=False):
         raise TransitionError("unknown phase")
     cfg = projmod.load_project(project)
     reason = str(reason)[:500]
+    # Read before the slice lock so the two locks are never nested.
+    hold_option = notes.first_option(project, key) or HOLD_DEFAULT_OPTION
     with _edit(project, key) as s:
         frm = s["phase"]
         if via_merge:
@@ -922,9 +929,13 @@ def _move(project, key, to, reason, via_merge=False):
                 to, reason, parked_from = "PARKED", "round-3", "REMEDIATE"
         if to in ("PARKED", "HELD"):
             s["parked_from"], s["park_reason"] = parked_from, reason
+            if to == "HELD" or reason in OWNER_PARKS:
+                # Only this question and this option may lift the hold.
+                s["hold_question"], s["hold_release_option"] = key, hold_option
         elif frm in ("PARKED", "HELD"):
             s["parked_from"] = s["park_reason"] = None
             s["owner_answered"] = False
+            s["hold_question"] = s["hold_release_option"] = None
         if to == "FRAME":
             s["approved_plan_sha"], s["plan_frozen"] = None, False
             if not store.is_headless():
@@ -978,6 +989,8 @@ def release_hold(project: str, key: str) -> dict:
             parked_from=None,
             park_reason=None,
             owner_answered=False,
+            hold_question=None,
+            hold_release_option=None,
             phase=to,
             last_moved_at=now,
         )

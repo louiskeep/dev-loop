@@ -351,6 +351,13 @@ def ask(
         raise NotesError("options must be non-empty text without ' | '")
     if recommended not in clean:
         raise NotesError("recommended must be one of the options")
+    if store.is_headless():
+        held = _slice_for(project, key)
+        if held and (
+            held["phase"] == "HELD"
+            or (held["phase"] == "PARKED" and held["park_reason"] in slices.OWNER_PARKS)
+        ):
+            raise NotesError("a held slice's question is the owner's to ask")
     path = _questions_path(project)
     with store.locked(_lock_for(project)):
         before, qs, after, had = _load_questions(path)
@@ -384,6 +391,21 @@ def ask(
     return q
 
 
+def first_option(project, key):
+    """First option of the stored question for `key`, or None when there is none."""
+    path = _questions_path(project)
+    if not path.is_file():
+        return None
+    with store.locked(_lock_for(project)):
+        _, qs, _, _ = _load_questions(path)
+    q = qs.get(key)
+    return q["options"][0] if q and q["options"] else None
+
+
+def _lifts_hold(s, key, choice):
+    return s["hold_question"] == key and s["hold_release_option"] == choice
+
+
 def _apply_answer(project, key, choice):
     from . import slices
 
@@ -401,11 +423,14 @@ def _apply_answer(project, key, choice):
     s = _slice_for(project, key)
     if s and s["waiting_on"] == f"question {key}":
         if s["phase"] == "HELD":
-            slices.release_hold(project, key)
+            # Any other choice is recorded above but keeps the slice held.
+            if _lifts_hold(s, key, choice):
+                slices.release_hold(project, key)
         elif s["phase"] != "DONE":
             slices.set_fields(project, key, waiting_on=None)
     if s and s["phase"] == "PARKED" and s["park_reason"] in slices.OWNER_PARKS:
-        slices.owner_answer(project, key)
+        if _lifts_hold(s, key, choice):
+            slices.owner_answer(project, key)
 
 
 def answer(project: str, key: str, choice: str) -> None:
