@@ -239,3 +239,117 @@ def test_parser_never_raises_on_random_bytes():
 
 def test_scrub_agrees_with_target_rule():
     assert scrub.plain("view.py") == "view.py"
+
+
+# --- Codex text -------------------------------------------------------------------
+
+
+def codex_feed(parser, text, at="2026-11-25T00:00:00+00:00"):
+    return parser.feed(text.encode().splitlines(), at)
+
+
+def test_codex_exec_and_patch_blocks():
+    p = tr.CodexParser()
+    text = (
+        "codex\nI will look at the tree.\n"
+        + tf.codex_exec("git status")
+        + tf.codex_exec("customer42 run", code=2, output="boom\n")
+        + 'exec\n/bin/bash -lc "pytest -q" in /work/tree\n succeeded in 9ms:\n'
+        + tf.codex_patch(
+            "Success. Updated the following files:", "A new.py", "M old.py"
+        )
+        + "tokens used\n22,651\n"
+    )
+    calls, results = codex_feed(p, text)
+    assert [(c.tag, c.target) for c in calls] == [
+        ("SHELL", "?"),
+        ("SHELL", "?"),
+        ("SHELL", "?"),
+        ("WRITE", None),
+        ("EDIT", None),
+    ]
+    flags = [err for _, err in results]
+    assert flags.count(True) == 1 and len(results) == 5
+    assert p.tokens_out == 22651
+    assert all(c.at == "2026-11-25T00:00:00+00:00" for c in calls)
+
+
+def test_codex_single_quoted_public_command_shows_its_name():
+    p = tr.CodexParser()
+    calls, _ = codex_feed(p, tf.codex_exec("git status", quote="'"))
+    assert [(c.tag, c.target) for c in calls] == [("SHELL", "git")]
+
+
+def test_codex_unwrapped_command_shows_allowlisted_name():
+    p = tr.CodexParser()
+    calls, _ = codex_feed(
+        p, "exec\ngit diff --stat in /work/tree\n succeeded in 1ms:\nout\n"
+    )
+    assert [(c.tag, c.target) for c in calls] == [("SHELL", "git")]
+
+
+def test_codex_output_mimicking_exec_shows_no_data():
+    p = tr.CodexParser()
+    text = tf.codex_exec("git log", output="exec\ncustomer42\nghp_DEMOTOKEN1234567\n")
+    calls, _ = codex_feed(p, text)
+    assert all(c.target in ("?", "git") for c in calls)
+    assert "customer42" not in repr(calls) and "ghp_" not in repr(calls)
+
+
+def test_codex_model_only_from_file_head():
+    head = tf.codex_header("gpt-6.2-astra").encode()
+    assert tr.codex_head_model(head) == "gpt-6.2-astra"
+    # A model line after the second rule is ignored, as is one beyond 4 KiB.
+    later = (head + b"model: evil-model\n").replace(b"model: gpt-6.2-astra\n", b"")
+    assert tr.codex_head_model(later) is None
+    far = b"x" * 5000 + head
+    assert tr.codex_head_model(far) is None
+    assert tr.codex_head_model(b"--------\nmodel: has space\n--------\n") is None
+
+
+def test_codex_unknown_format_yields_no_calls():
+    p = tr.CodexParser()
+    calls, results = codex_feed(p, "hello\nworld\n{}\nexecute order 66\n succeeded\n")
+    assert calls == [] and results == [] and p.tokens_out is None
+
+
+def test_codex_reset_continuation_drops_pending_command():
+    p = tr.CodexParser()
+    calls, _ = codex_feed(p, "exec\n")
+    assert calls == []
+    p.reset_continuation()
+    calls, _ = codex_feed(p, "customer42 --x in /work\n")
+    assert calls == []
+    p2 = tr.CodexParser()
+    codex_feed(p2, "apply_patch(auto_approved=true) exited 0 in 4ms:\n")
+    p2.reset_continuation()
+    calls, _ = codex_feed(p2, "A leaked.py\n")
+    assert calls == []
+
+
+def test_codex_parser_never_raises_on_random_bytes():
+    rng = random.Random(1234)
+    pieces = [
+        b"exec",
+        b"succeeded in 3ms:",
+        b"exited 1 in 2ms:",
+        b"apply_patch",
+        b"A x",
+    ]
+    pieces += [b"tokens used", b"12,3", b"\xff\xfe", b"--------", b"codex"]
+    for _ in range(500):
+        lines = [
+            rng.choice(pieces)
+            + bytes(rng.randrange(256) for _ in range(rng.randint(0, 5)))
+            for _ in range(rng.randint(1, 12))
+        ]
+        calls, results = tr.CodexParser().feed(lines, "t")
+        assert isinstance(calls, list) and isinstance(results, list)
+
+
+def test_codex_huge_token_count_is_ignored():
+    p = tr.CodexParser()
+    codex_feed(p, "tokens used\n" + "9" * 5000 + "\n")
+    assert p.tokens_out is None
+    codex_feed(p, "tokens used\n" + "9" * 18 + "\n")
+    assert p.tokens_out == int("9" * 18)

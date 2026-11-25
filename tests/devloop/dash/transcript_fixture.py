@@ -77,7 +77,7 @@ def codex_header(model="gpt-6.2-astra"):
     )
 
 
-def codex_exec(cmd, code=0, output="", quote="'"):
+def codex_exec(cmd, code=0, output="", quote='"'):
     """The real shape: a quoted `/bin/bash -lc` wrapper and a trailing directory."""
     status = " succeeded in 3ms:" if code == 0 else f" exited {code} in 3ms:"
     return (

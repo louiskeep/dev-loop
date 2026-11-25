@@ -217,3 +217,103 @@ def parse_claude_line(raw: bytes) -> ClaudeFacts | None:
                     facts.results.append((cid, b.get("is_error") is True))
         return facts
     return None
+
+
+# --- Codex text ------------------------------------------------------------------
+
+_DONE = re.compile(r"succeeded in \d+\s*ms:?")
+_EXITED = re.compile(r"exited (-?\d+) in \d+\s*ms:?")
+_PATCH_LINE = re.compile(r"([AMD]) \S")
+_DIRECTORY = re.compile(r" in /\S*$")
+_COUNT = re.compile(r"[\d,]+")
+_BLOCK_HEADS = ("codex", "thinking", "user")
+HEAD_BYTES = 4096
+
+
+def codex_head_model(head: bytes) -> str | None:
+    """The model line between the first two rules of the file head, never a tail."""
+    lines = head[:HEAD_BYTES].decode("utf-8", "replace").splitlines()
+    rules = [i for i, line in enumerate(lines) if line.strip() == "--------"]
+    if len(rules) < 2:
+        return None
+    for line in lines[rules[0] + 1 : rules[1]]:
+        if line.startswith("model:"):
+            return safe_model(line.partition(":")[2].strip())
+    return None
+
+
+class CodexParser:
+    """Codex `exec` text mixes commands with their output, so only block headers count.
+
+    Output that imitates a header can add a fake call, but a call can only carry an
+    allowlisted name, so the worst case is a wrong count.
+    """
+
+    def __init__(self):
+        self.tokens_out: int | None = None
+        self._n = 0
+        self.reset_continuation()
+
+    def reset_continuation(self) -> None:
+        """Forget half-read blocks after any gap in the byte stream."""
+        self._want_command = False
+        self._open: str | None = None
+        self._in_patch = False
+        self._want_tokens = False
+
+    def _next_id(self) -> str:
+        self._n += 1
+        return f"cx{self._n}"
+
+    def feed(self, lines: list, seen_at: str) -> tuple[list, list]:
+        calls: list = []
+        results: list = []
+        for raw in lines:
+            line = raw.decode("utf-8", "replace").strip()
+            if self._want_tokens:
+                self._want_tokens = False
+                if _COUNT.fullmatch(line):
+                    digits = line.replace(",", "")
+                    # Python refuses int() past 4300 digits; a real count is far shorter.
+                    ok = digits.isdigit() and len(digits) <= 18
+                    self.tokens_out = int(digits) if ok else None
+                    continue
+            if self._want_command:
+                if not line:
+                    continue
+                self._want_command = False
+                cid = self._next_id()
+                word = shell_word(_DIRECTORY.sub("", line))
+                calls.append(Call("SHELL", word, seen_at, cid))
+                self._open = cid
+                continue
+            if line == "exec":
+                self._want_command, self._in_patch = True, False
+                continue
+            done, exited = _DONE.fullmatch(line), _EXITED.fullmatch(line)
+            if done or exited:
+                if self._open is not None:
+                    failed = bool(exited) and exited.group(1) != "0"
+                    results.append((self._open, failed))
+                    self._open = None
+                self._in_patch = False
+                continue
+            if line.startswith("apply_patch") or line in (
+                "file update",
+                "file update:",
+            ):
+                self._in_patch = True
+                continue
+            if line == "tokens used":
+                self._want_tokens, self._in_patch = True, False
+                continue
+            if self._in_patch:
+                hit = _PATCH_LINE.match(line)
+                if hit:
+                    cid = self._next_id()
+                    tag = "WRITE" if hit.group(1) == "A" else "EDIT"
+                    calls.append(Call(tag, None, seen_at, cid))
+                    results.append((cid, False))
+                elif not line or line in _BLOCK_HEADS:
+                    self._in_patch = False
+        return calls, results
