@@ -391,15 +391,44 @@ def ask(
     return q
 
 
-def first_option(project, key):
-    """First option of the stored question for `key`, or None when there is none."""
+def ensure_hold_question(project, key):
+    """Make the hold's question offer `approve` and one other option.
+
+    The release option is the fixed word `approve`, never text an agent wrote, and the
+    check that the slice is really held happens under the same lock as the edit.
+    """
+    from . import slices
+
     path = _questions_path(project)
-    if not path.is_file():
-        return None
     with store.locked(_lock_for(project)):
-        _, qs, _, _ = _load_questions(path)
-    q = qs.get(key)
-    return q["options"][0] if q and q["options"] else None
+        s = _slice_for(project, key)
+        held = s and (
+            s["phase"] == "HELD"
+            or (s["phase"] == "PARKED" and s["park_reason"] in slices.OWNER_PARKS)
+        )
+        if not held:
+            return
+        before, qs, after, had = _load_questions(path)
+        q = qs.get(key)
+        if q is None:
+            q = qs[key] = {
+                "key": key,
+                "question": "Release the hold on this slice?",
+                "options": [slices.HOLD_RELEASE_OPTION, "keep-held"],
+                "recommended": "keep-held",
+                "wait": True,
+                "asked_at": store.now_iso(),
+                "applied": None,
+                "answer": None,
+            }
+        else:
+            if slices.HOLD_RELEASE_OPTION not in q["options"]:
+                q["options"] = q["options"] + [slices.HOLD_RELEASE_OPTION]
+            if len(q["options"]) < 2:
+                q["options"] = q["options"] + ["keep-held"]
+            # A new hold needs a fresh answer.
+            q["answer"] = q["applied"] = None
+        _save_questions(path, before, qs, after, had)
 
 
 def _lifts_hold(s, key, choice):

@@ -40,7 +40,7 @@ MAX_ROUNDS = 3
 # Parks that only the owner may lift.
 OWNER_PARKS = ("round-3", "failed-twice")
 HISTORY_KEEP = 200
-HOLD_DEFAULT_OPTION = "approve"
+HOLD_RELEASE_OPTION = "approve"
 
 # The phase a slice normally leaves through; the checklist and `move` agree on it.
 FORWARD = {
@@ -895,8 +895,6 @@ def _move(project, key, to, reason, via_merge=False):
         raise TransitionError("unknown phase")
     cfg = projmod.load_project(project)
     reason = str(reason)[:500]
-    # Read before the slice lock so the two locks are never nested.
-    hold_option = notes.first_option(project, key) or HOLD_DEFAULT_OPTION
     with _edit(project, key) as s:
         frm = s["phase"]
         if via_merge:
@@ -931,7 +929,8 @@ def _move(project, key, to, reason, via_merge=False):
             s["parked_from"], s["park_reason"] = parked_from, reason
             if to == "HELD" or reason in OWNER_PARKS:
                 # Only this question and this option may lift the hold.
-                s["hold_question"], s["hold_release_option"] = key, hold_option
+                s["hold_question"] = key
+                s["hold_release_option"] = HOLD_RELEASE_OPTION
         elif frm in ("PARKED", "HELD"):
             s["parked_from"] = s["park_reason"] = None
             s["owner_answered"] = False
@@ -947,6 +946,8 @@ def _move(project, key, to, reason, via_merge=False):
         s["history"] = (
             s["history"] + [{"at": now, "from": frm, "to": to, "reason": reason}]
         )[-HISTORY_KEEP:]
+    if to == "HELD" or (to == "PARKED" and reason in OWNER_PARKS):
+        notes.ensure_hold_question(project, key)
     store.append_event(
         project,
         "slice-moved",

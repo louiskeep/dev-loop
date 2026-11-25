@@ -226,7 +226,7 @@ def test_answer_is_refused_headless(proj, mk_slice, monkeypatch):
         notes.answer(proj, k, "no")
     assert slices.load(proj, k)["phase"] == "HELD"
     monkeypatch.delenv("DEVLOOP_HEADLESS")
-    notes.answer(proj, k, "yes")
+    notes.answer(proj, k, "approve")
     s = slices.load(proj, k)
     assert (s["phase"], s["risk"], s["waiting_on"]) == ("FRAME", "R2", None)
 
@@ -238,7 +238,7 @@ def test_owner_edit_of_the_answer_line_is_read_back(proj, mk_slice, home, monkey
     )
     slices.move(proj, k, "HELD", "R3 waits")
     page = home / "p" / "questions.md"
-    page.write_text(page.read_text().replace("- Answer:", "- Answer: yes"))
+    page.write_text(page.read_text().replace("- Answer:", "- Answer: approve"))
     monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
     assert notes.read_answers(proj) == []
     assert slices.load(proj, k)["phase"] == "HELD"
@@ -330,14 +330,33 @@ def test_wrong_choice_keeps_a_held_slice_held(proj, mk_slice):
     )
     slices.move(proj, k, "HELD", "R3 waits")
     s = slices.load(proj, k)
-    assert (s["hold_question"], s["hold_release_option"]) == (k, "yes")
+    assert (s["hold_question"], s["hold_release_option"]) == (k, "approve")
     notes.answer(proj, k, "no")
     assert slices.load(proj, k)["phase"] == "HELD"
     assert "- Answer: no" in (store.state_dir(proj) / "questions.md").read_text()
     s["hold_question"] = "OTHER--S1"
     slices._save(proj, s)
+    notes.answer(proj, k, "approve")
+    assert slices.load(proj, k)["phase"] == "HELD"
+
+
+def test_first_option_that_is_not_approve_does_not_release(proj, mk_slice):
+    k = mk_slice(proj, phase="FRAME", risk="R3", rulebooks=["a.md"])
+    notes.ask(
+        proj, k, question="Spend?", options=["yes", "no"], recommended="no", wait=True
+    )
+    slices.move(proj, k, "HELD", "R3 waits")
     notes.answer(proj, k, "yes")
     assert slices.load(proj, k)["phase"] == "HELD"
+    q = (store.state_dir(proj) / "questions.md").read_text()
+    assert "- Options: yes | no | approve" in q
+
+
+def test_system_creates_the_hold_question_with_approve(proj, mk_slice):
+    k = mk_slice(proj, phase="REMEDIATE", round=2)
+    slices.move(proj, k, "PARKED", "round-3")
+    q = (store.state_dir(proj) / "questions.md").read_text()
+    assert "- Options: approve | keep-held" in q
 
 
 def test_owner_park_needs_its_release_option(proj, mk_slice):
