@@ -677,8 +677,17 @@ def build_view(project, proc="/proc", now=None) -> dict:
     now = now or datetime.datetime.now(datetime.timezone.utc)
     cfg = projmod.load_project(project)
     ctx = _Ctx(project, cfg, now, proc)
-    merges = _try(lambda: slices.merge_records(project), ctx.bad, "merges", None)
-    closures = _try(lambda: slices.closure_records(project), ctx.bad, "closures", None)
+    raw_merges = _try(lambda: slices.merge_records(project), ctx.bad, "merges", None)
+    raw_closures = _try(
+        lambda: slices.closure_records(project), ctx.bad, "closures", None
+    )
+    merges, closures = status.checked_ledgers(raw_merges, raw_closures)
+    for name, raw, ok in (
+        ("merges", raw_merges, merges),
+        ("closures", raw_closures, closures),
+    ):
+        if raw is not None and ok is None:  # read fine, but its content is damaged
+            ctx.bad.append(name)
     needs = _needs_you(ctx)
     problems = _problems(ctx)
     counts = status.counts_from(merges, closures, now)

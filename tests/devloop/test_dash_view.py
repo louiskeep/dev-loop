@@ -469,10 +469,12 @@ def test_a_naive_merge_timestamp_counts_as_utc(proj):
     assert got["merged_week"] == 1
 
 
-def test_displayed_pools_equal_the_configured_slots(proj):
+def test_displayed_pools_follow_the_registry_order(proj, monkeypatch):
     from devloop import project as projmod
 
-    assert [s["pool"] for s in build(proj)["slots"]] == list(projmod.SLOTS)
+    order = tuple(reversed(projmod.SLOTS))
+    monkeypatch.setattr(projmod, "SLOTS", order)
+    assert [s["pool"] for s in build(proj)["slots"]] == list(order)
 
 
 def test_a_dashboard_read_never_creates_the_project_dir(proj, home):
@@ -484,10 +486,14 @@ def test_a_dashboard_read_never_creates_the_project_dir(proj, home):
     assert not (home / proj).exists()
 
 
-def test_tick_line_shows_every_configured_slot(proj):
+def test_tick_line_lists_the_slots_in_registry_order(proj, monkeypatch):
     from devloop import project as projmod
     from devloop import status
 
+    order = tuple(reversed(projmod.SLOTS))
+    monkeypatch.setattr(projmod, "SLOTS", order)
     cfg = projmod.load_project(proj)
     line = status.tick_line(proj, "model", "x")
-    assert all(f"{projmod.pool_label(cfg, s)} 0/" in line for s in projmod.SLOTS)
+    labels = [f"{projmod.pool_label(cfg, s)} 0/" for s in order]
+    assert [line.index(x) for x in labels] == sorted(line.index(x) for x in labels)
+    assert all(x in line for x in labels)
