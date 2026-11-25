@@ -281,7 +281,7 @@ def _card(c, now):
         f'<article class="card" data-card data-card-key="{e(c["key"])}" '
         f'data-risk="{e(c["risk"] or "")}" '
         f'data-attn="{attn}" data-text="{e(text)}">'
-        f'<div class="l1"><strong>{e(c["slice"])}</strong> {" ".join(chips)}{pr}</div>'
+        f'<div class="l1"><strong><a href="#slice={e(c["key"])}">{e(c["slice"])}</a></strong> {" ".join(chips)}{pr}</div>'
         f'<div class="l2">{_phase_strip(c)}<span class="muted">{e(c["owner"])}</span> '
         f"{_time(c['since'], now)} {_checklist(c)}</div></article>"
     )

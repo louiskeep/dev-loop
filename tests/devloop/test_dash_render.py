@@ -134,6 +134,21 @@ def test_memory_panel_words(proj, dash, tmp_path):
     assert "Low" in page and "headroom" in page and "reserved for recent starts" in page
 
 
+TAGS = (
+    "read",
+    "edit",
+    "write",
+    "shell",
+    "search",
+    "agent",
+    "web",
+    "plan",
+    "mcp",
+    "other",
+    "event",
+)
+
+
 def _tokens(block):
     return dict(re.findall(r"--([a-z-]+):\s*(#[0-9a-fA-F]{6})", block))
 
@@ -161,6 +176,8 @@ def test_css_tokens_meet_aa():
     for t in _themes():
         for state in ("ok", "warn", "bad", "info", "idle"):
             assert _ratio(t[f"{state}-fg"], t[f"{state}-bg"]) >= 4.5, state
+        for tag in TAGS:
+            assert _ratio(t[f"t-{tag}-fg"], t[f"t-{tag}-bg"]) >= 4.5, tag
         for fg in ("text", "muted", "accent"):
             for bg in ("surface", "bg"):
                 assert _ratio(t[fg], t[bg]) >= 4.5, (fg, bg)
@@ -170,6 +187,7 @@ def test_css_light_and_dark_define_the_same_tokens():
     light, dark_media, dark_attr = _themes()
     assert set(light) == set(dark_media) == set(dark_attr)
     assert dark_media == dark_attr
+    assert {f"t-{t}-{p}" for t in TAGS for p in ("fg", "bg")} <= set(light)
 
 
 def test_static_assets_have_no_inner_html_from_data():
@@ -287,3 +305,24 @@ def test_drawer_sources_capped_and_fallback_hooks(proj, dash):
         len(set(keys) - sources) >= 1
     )  # a card with no source falls back to its checklist
     assert 'id="drawer"' in page and 'id="drawer-body"' in page
+
+
+def test_phone_rules_present():
+    css = (WEB / "dash.css").read_text()
+    phone = css[css.index("@media (max-width: 640px)") :]
+    assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in phone  # KPI 3 by 2
+    assert ".wgrid { grid-template-columns: minmax(0, 1fr)" in phone  # one column
+    assert "text-overflow: ellipsis" in phone and "minmax(0, 1fr) auto" in phone
+    assert ".drawer { position: fixed; inset: 0" in phone
+    assert "@media (min-width: 1100px)" in css and "minmax(300px, 1fr)" in css
+    assert "width: 420px" in css
+    assert "overflow-x: hidden" not in css  # no hidden horizontal scroll to mask a bug
+
+
+def test_script_drives_the_drawer_without_inner_html():
+    js = (WEB / "dash.js").read_text()
+    assert "POLL_MS = 4000" in js
+    for name in ("openDrawer", "closeDrawer", "fillDrawer"):
+        assert f"function {name}" in js
+    assert "cloneNode(true)" in js and "This slice is no longer active." in js
+    assert "Escape" in js and "hashchange" in js

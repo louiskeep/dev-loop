@@ -1,7 +1,7 @@
 /* Polls /fragment and swaps the page body with parsed nodes. No framework. */
 (function () {
   "use strict";
-  var POLL_MS = 5000;
+  var POLL_MS = 4000;
   var STALE_MS = 60000;
   var skew = 0; // server clock minus local clock, from each Date header
   var etag = null;
@@ -112,7 +112,95 @@
     window.scrollTo(0, y);
     applyFilters();
     tickTimes();
+    fillDrawer();
   }
+
+  // Drawer: one shell outside #app-body. Its content is cloned from hidden sources that
+  // ride inside every fragment, so an open drawer follows each poll.
+  var lastFocus = null;
+  var NO_SLICE = "This slice is no longer active.";
+
+  function hashTarget() {
+    var m = /^#slice=([A-Za-z0-9._:-]+)$/.exec(location.hash);
+    return m ? { kind: "slice", key: m[1] } : null;
+  }
+  function note(text) {
+    var p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = text;
+    return p;
+  }
+  function cardFallback(key) {
+    var cards = document.querySelectorAll("[data-card-key]");
+    for (var i = 0; i < cards.length; i++) {
+      if (cards[i].getAttribute("data-card-key") === key) {
+        var list = cards[i].querySelector(".cl > ul");
+        var box = document.createElement("div");
+        var h = document.createElement("h3");
+        h.textContent = "Checklist";
+        box.appendChild(h);
+        box.appendChild(list ? list.cloneNode(true) : note("No checklist for this slice."));
+        return box;
+      }
+    }
+    return null;
+  }
+  function fillDrawer() {
+    var drawer = $("drawer");
+    var target = hashTarget();
+    if (!target) {
+      drawer.hidden = true;
+      document.body.classList.remove("drawer-open");
+      return;
+    }
+    var body = $("drawer-body");
+    var keep = body.scrollTop;
+    var source = document.getElementById("ds-" + target.key);
+    var parts = [];
+    if (source) {
+      for (var i = 0; i < source.childNodes.length; i++) {
+        parts.push(source.childNodes[i].cloneNode(true));
+      }
+    } else {
+      parts.push(cardFallback(target.key) || note(NO_SLICE));
+    }
+    $("drawer-title").textContent = target.key;
+    body.replaceChildren.apply(body, parts);
+    body.scrollTop = keep;
+    drawer.hidden = false;
+    document.body.classList.add("drawer-open");
+  }
+  function openDrawer(kind, key) {
+    lastFocus = document.activeElement;
+    location.hash = kind + "=" + key;
+  }
+  function closeDrawer() {
+    if (location.hash) {
+      try { history.replaceState(null, "", location.pathname + location.search); }
+      catch (err) { location.hash = ""; }
+    }
+    fillDrawer();
+    if (lastFocus && lastFocus.focus) { lastFocus.focus(); }
+    lastFocus = null;
+  }
+  $("drawer-close").addEventListener("click", closeDrawer);
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && !$("drawer").hidden) { closeDrawer(); }
+  });
+  window.addEventListener("hashchange", function () {
+    fillDrawer();
+    if (!$("drawer").hidden) { $("drawer-close").focus(); }
+  });
+  document.addEventListener("click", function (ev) {
+    var from = ev.target.closest ? ev.target : null;
+    if (!from) { return; }
+    var link = from.closest("a[href^='#slice=']");
+    if (link) { lastFocus = link; return; }
+    var btn = from.closest("[data-open-kind]");
+    if (btn) {
+      openDrawer(btn.getAttribute("data-open-kind"), btn.getAttribute("data-open-key"));
+    }
+  });
 
   function showStale() {
     $("stale").hidden = !(failures >= 2 || Date.now() - lastGood > STALE_MS);
@@ -145,6 +233,7 @@
     readFilters();
     applyFilters();
     tickTimes();
+    fillDrawer();
     setInterval(poll, POLL_MS);
     setInterval(tickTimes, 30000);
     setInterval(showStale, 5000);
