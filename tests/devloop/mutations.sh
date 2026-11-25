@@ -50,7 +50,7 @@ mutate "processed run id is never recorded" devloop/slices.py \
   '        s["processed_run_ids"] = (s["processed_run_ids"] + [run_id])[-500:]' '        pass' \
   $T/test_runs_apply.py::test_apply_replay_counts_once
 mutate "KINDS loses the test entry" devloop/runs.py \
-  '    "test": Kind("tester", 7200, 1200, "testexit", False, True),' '' \
+  '    "test": Kind("tester", 7200, 1200, "testexit", False, True, "script", "none"),' '' \
   $T/test_runs_dispatch.py::test_every_kind_has_reader_and_slot
 mutate "evidence key from the slice phase at apply time" devloop/apply.py \
   "ev_kind = f\"{req['purpose']}:{req['reviewer']}\"" \

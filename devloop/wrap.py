@@ -20,7 +20,7 @@ from .caps import TAIL_CHARS, detect_cap, detect_cap_text
 VERDICT = re.compile(r"VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
 SELF_VERDICT = re.compile(r"SELF-VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
 VERDICT_READERS = ("claude-verdict", "verdict", "selfverdict")
-CODEX_KINDS = ("codex-review", "codex-fix", "codex-builder")
+CODEX_KINDS = tuple(k for k, s in runs.KINDS.items() if s.harness == "codex")
 FAILING_BLOCK = "FAILING TEST IDS"
 MAX_FAILING = 200
 

@@ -19,20 +19,37 @@ from . import notes, slices, store
 from . import project as projmod
 
 Kind = collections.namedtuple(
-    "Kind", "slot deadline_s idle_s reader writes_worktree pinned"
+    "Kind",
+    "slot deadline_s idle_s reader writes_worktree pinned harness transcript",
 )
+HARNESSES = ("claude", "codex", "script")
+# Where a worker's activity is read from. `outside` means the launcher writes it
+# outside the state dir, so the dashboard cannot show it.
+TRANSCRIPTS = ("stream-json", "codex-text", "outside", "none")
 
-# One table maps every run kind to its slot, deadline and result reader.
+# One table maps every run kind to its slot, deadline, result reader and harness.
 KINDS = {
-    "planner": Kind("planner", 7200, 1200, "claude", True, False),
-    "builder": Kind("builder", 14400, 1200, "claude", True, False),
-    "codex-builder": Kind("builder", 14400, 3600, "exit", True, False),
-    "dennis": Kind("reviewer", 5400, 1200, "claude-verdict", False, True),
-    "codex-review": Kind("reviewer", 3600, 3600, "verdict", False, True),
-    "codex-fix": Kind("planner", 3600, 3600, "selfverdict", True, False),
-    "test": Kind("tester", 7200, 1200, "testexit", False, True),
-    "docs": Kind(None, 3600, 1200, "claude", True, False),
-    "duty": Kind(None, 3600, 1200, "exit", False, False),
+    "planner": Kind(
+        "planner", 7200, 1200, "claude", True, False, "claude", "stream-json"
+    ),
+    "builder": Kind(
+        "builder", 14400, 1200, "claude", True, False, "claude", "stream-json"
+    ),
+    "codex-builder": Kind(
+        "builder", 14400, 3600, "exit", True, False, "codex", "codex-text"
+    ),
+    "dennis": Kind(
+        "reviewer", 5400, 1200, "claude-verdict", False, True, "claude", "stream-json"
+    ),
+    "codex-review": Kind(
+        "reviewer", 3600, 3600, "verdict", False, True, "codex", "codex-text"
+    ),
+    "codex-fix": Kind(
+        "planner", 3600, 3600, "selfverdict", True, False, "codex", "outside"
+    ),
+    "test": Kind("tester", 7200, 1200, "testexit", False, True, "script", "none"),
+    "docs": Kind(None, 3600, 1200, "claude", True, False, "claude", "stream-json"),
+    "duty": Kind(None, 3600, 1200, "exit", False, False, "script", "none"),
 }
 REVIEW_KINDS = ("dennis", "codex-review", "codex-fix")
 # A run only makes sense in these phases; anything else is a stale or confused tick.

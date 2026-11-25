@@ -1,0 +1,219 @@
+"""Worker transcripts as safe facts: tool kind tags, allowlisted names, counts and times.
+
+Everything a transcript contributes to the dashboard passes through `safe_target` or
+`shell_word`. Prompts, tool results, model text and most tool input never leave this
+module; a value that is not on an allowlist reads `?`.
+"""
+
+import collections
+import dataclasses
+import json
+import re
+
+from .. import scrub
+
+MAX_LINE = 2097152  # 2 MiB: a longer line is dropped before parsing
+
+TOOL_TAGS = (
+    "READ",
+    "EDIT",
+    "WRITE",
+    "SHELL",
+    "SEARCH",
+    "AGENT",
+    "WEB",
+    "PLAN",
+    "MCP",
+    "OTHER",
+)
+
+TOOL_KINDS = {
+    "Read": "READ",
+    "NotebookRead": "READ",
+    "Edit": "EDIT",
+    "MultiEdit": "EDIT",
+    "NotebookEdit": "EDIT",
+    "Write": "WRITE",
+    "Bash": "SHELL",
+    "bash": "SHELL",
+    "BashOutput": "SHELL",
+    "Monitor": "SHELL",
+    "Grep": "SEARCH",
+    "Glob": "SEARCH",
+    "ToolSearch": "SEARCH",
+    "Task": "AGENT",
+    "Agent": "AGENT",
+    "WebFetch": "WEB",
+    "WebSearch": "WEB",
+    "TodoWrite": "PLAN",
+    "Skill": "PLAN",
+    "ExitPlanMode": "PLAN",
+}
+
+# The only command names a page may show. Anything else is data until proven otherwise.
+PUBLIC_COMMANDS = frozenset(
+    """git gh python python3 uv uvx pip pytest ruff mypy node npm npx pnpm make cargo go
+    rustc docker jq rg grep find fd ls cat sed head tail nl wc diff sort uniq mkdir cp mv
+    rm touch chmod echo printf sleep curl tar bash sh codex claude devloop-state
+    devloop-dash devloop-tick devloop-dispatch""".split()
+)
+
+Call = collections.namedtuple("Call", "tag target at call_id")
+
+_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,63}")
+_MODEL = re.compile(r"[a-z][a-z0-9.-]{1,48}")
+_WRAPPED = re.compile(r"(?:/(?:usr/)?bin/)?(?:ba)?sh -l?c '([^']*)'")
+_UNSAFE = re.compile(r"""['"\\$`<>|]""")
+_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+_WRAPPERS = ("env", "sudo", "nice", "nohup", "time", "timeout")
+_TIMEOUT_ARG = re.compile(r"\d+[smhd]?")
+_SEGMENT_END = re.compile(r";|\n")
+
+
+def safe_target(name: object) -> str:
+    """A file base name that passes the plain-ID rule, else `?`."""
+    if not isinstance(name, str):
+        return "?"
+    part = name.rsplit("/", 1)[-1]
+    if _NAME.fullmatch(part) and scrub.plain(part) == part:
+        return part
+    return "?"
+
+
+def safe_model(name: object) -> str | None:
+    if (
+        isinstance(name, str)
+        and _MODEL.fullmatch(name)
+        and not scrub._TOKEN.search(name)
+        and scrub.plain(name) == name
+    ):
+        return name
+    return None
+
+
+def shell_word(cmd: object) -> str:
+    """The command name of a shell line when it is on `PUBLIC_COMMANDS`, else `?`."""
+    if not isinstance(cmd, str):
+        return "?"
+    text = cmd[:400]
+    wrapped = _WRAPPED.fullmatch(text)
+    if wrapped:
+        text = wrapped.group(1)
+    for segment in text.split("&&")[:3]:
+        first = _SEGMENT_END.split(segment, 1)[0]
+        if _UNSAFE.search(first):
+            return "?"
+        tokens = first.split()
+        while tokens:
+            base = tokens[0].rsplit("/", 1)[-1]
+            if _ASSIGN.match(tokens[0]) or base in _WRAPPERS:
+                tokens.pop(0)
+                if base == "timeout" and tokens and _TIMEOUT_ARG.fullmatch(tokens[0]):
+                    tokens.pop(0)
+            else:
+                break
+        if not tokens:
+            return "?"
+        word = tokens[0].rsplit("/", 1)[-1]
+        if word == "cd":
+            continue
+        return word if word in PUBLIC_COMMANDS else "?"
+    return "?"
+
+
+# --- Claude stream-json ----------------------------------------------------------
+
+
+@dataclasses.dataclass
+class ClaudeFacts:
+    calls: list = dataclasses.field(default_factory=list)
+    results: list = dataclasses.field(default_factory=list)
+    model: str | None = None
+    usage: tuple | None = None
+
+
+def _tool_tag(name: object) -> str:
+    if not isinstance(name, str):
+        return "OTHER"
+    if name.startswith("mcp__"):
+        return "MCP"
+    return TOOL_KINDS.get(name, "OTHER")
+
+
+def _call_target(tag: str, name: str, inp: object):
+    inp = inp if isinstance(inp, dict) else {}
+    if tag in ("READ", "EDIT", "WRITE"):
+        return safe_target(inp.get("file_path") or inp.get("notebook_path"))
+    if tag == "SHELL":
+        return shell_word(inp.get("command"))
+    if tag in ("SEARCH", "WEB", "PLAN"):
+        return name
+    return None
+
+
+def _int(value) -> int:
+    return value if type(value) is int and value >= 0 else 0
+
+
+def _usage(msg: dict):
+    mid, usage = msg.get("id"), msg.get("usage")
+    if not isinstance(mid, str) or not isinstance(usage, dict):
+        return None
+    context = sum(
+        _int(usage.get(k))
+        for k in (
+            "input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        )
+    )
+    return (mid, _int(usage.get("output_tokens")), context)
+
+
+def parse_claude_line(raw: bytes) -> ClaudeFacts | None:
+    """Facts from one stream-json line, or None when the line carries none."""
+    if len(raw) > MAX_LINE:
+        return None
+    # Hook output and progress lines are large and never matter here.
+    if raw.startswith((b'{"type":"system"', b'{"type": "system"')) and (
+        b'"subtype":"init"' not in raw[:60] and b'"subtype": "init"' not in raw[:60]
+    ):
+        return None
+    try:
+        obj = json.loads(raw)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    kind = obj.get("type")
+    if kind == "system":
+        if obj.get("subtype") != "init":
+            return None
+        return ClaudeFacts(model=safe_model(obj.get("model")))
+    msg = obj.get("message")
+    if not isinstance(msg, dict):
+        return None
+    content = msg.get("content")
+    blocks = content if isinstance(content, list) else []
+    facts = ClaudeFacts()
+    if kind == "assistant":
+        facts.usage = _usage(msg)
+        for b in blocks:
+            if not isinstance(b, dict) or b.get("type") != "tool_use":
+                continue
+            cid, name = b.get("id"), b.get("name")
+            if not isinstance(cid, str) or not isinstance(name, str):
+                continue
+            tag = _tool_tag(name)
+            facts.calls.append(
+                Call(tag, _call_target(tag, name, b.get("input")), None, cid)
+            )
+        return facts
+    if kind == "user":
+        for b in blocks:
+            if isinstance(b, dict) and b.get("type") == "tool_result":
+                cid = b.get("tool_use_id")
+                if isinstance(cid, str):
+                    facts.results.append((cid, b.get("is_error") is True))
+        return facts
+    return None
