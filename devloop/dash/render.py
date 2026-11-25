@@ -348,16 +348,26 @@ def _progress(v, now):
 
 def _workers(v, now):
     rows = []
-    for w in v["workers"]:
+    for w in v["live"]:
+        doing = w["doing"]
+        what = (
+            f"{doing['tag']} {doing['target'] or ''}".strip() if doing else w["state"]
+        )
+        rows.append(
+            f"<tr><td>{e(w['role'])}</td><td><code>{e(w['key'])}</code></td>"
+            f"<td>{e(w['harness'])}</td><td>{_chip('info', '▶', 'Executing')}</td>"
+            f"<td>{e(what)}</td><td>{_time(w['started_at'], now)}</td></tr>"
+        )
+    for w in v["waiting_runs"]:
         icon, word, kind = WORKER_STATE[w["state"]]
         rows.append(
             f"<tr><td>{e(w['role'])}</td><td><code>{e(w['key'])}</code></td>"
-            f"<td>{e(w['node'])}</td><td>{_chip(kind, icon, word)}</td>"
+            f"<td></td><td>{_chip(kind, icon, word)}</td><td></td>"
             f"<td>{_time(w['started_at'], now)}</td></tr>"
         )
     table = (
-        "<table><thead><tr><th>Role</th><th>Slice</th><th>Node</th><th>State</th>"
-        f"<th>Started</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
+        "<table><thead><tr><th>Role</th><th>Slice</th><th>Kind</th><th>State</th>"
+        f"<th>Doing</th><th>Started</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
         if rows
         else '<p class="empty">No workers running.</p>'
     )

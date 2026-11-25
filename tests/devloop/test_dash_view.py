@@ -168,7 +168,9 @@ def test_pr_url_comes_from_config_slug(proj, dash):
 
 def test_exited_builder_and_lost_test_are_listed_by_state(proj, dash):
     v = build(proj)
-    states = {(w["role"], w["state"]) for w in v["workers"]}
+    states = {(w["role"], "executing") for w in v["live"]} | {
+        (w["role"], w["state"]) for w in v["waiting_runs"]
+    }
     assert states == {
         ("Developer", "executing"),
         ("Developer", "awaiting-apply"),
@@ -177,8 +179,6 @@ def test_exited_builder_and_lost_test_are_listed_by_state(proj, dash):
     # Neither unfinished run owns a card.
     assert card(v, dash["develop"])["owner"] == "Tech lead"
     assert card(v, dash["gate"])["owner"] == "Tech lead"
-    nodes = {w["node"] for w in v["workers"]}
-    assert nodes == {"local", "node-a"}
     used = {s["pool"]: s["used"] for s in v["slots"]}
     assert used == {"builder": 2, "tester": 1, "reviewer": 0, "planner": 0}
     assert v["counts"]["executing"] == 1
@@ -241,7 +241,8 @@ def test_non_integer_pr_in_the_ledger_is_dropped(proj, dash):
 def test_orphan_run_listed_without_card(proj, dash):
     put_run(proj, "builder.orphan", kind="builder", key="GONE--S", alive=True)
     v = build(proj)
-    assert any(w["key"] == "GONE--S" for w in v["workers"])
+    assert any(w["key"] == "GONE--S" for w in v["live"])
+    assert not any(w["slice_active"] for w in v["live"] if w["key"] == "GONE--S")
     assert all(c["key"] != "GONE--S" for r in v["rows"] for c in r["cards"])
 
 

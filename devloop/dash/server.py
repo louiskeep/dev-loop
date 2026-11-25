@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import render, view
+from . import render, transcript, view
 
 WEB = Path(__file__).parent / "web"
 CACHE_SECS = 2.0
@@ -46,11 +46,15 @@ class ViewCache:
         self._lock = threading.Lock()
         self._built = 0.0
         self._value = None
+        # One reader cache for the server's life, so a poll reads only new bytes.
+        self.transcripts = transcript.Cache()
 
     def get(self):
         with self._lock:
             if self._value is None or time.monotonic() - self._built > CACHE_SECS:
-                self._value = view.build_view(self.project, proc=self.proc)
+                self._value = view.build_view(
+                    self.project, proc=self.proc, cache=self.transcripts
+                )
                 self._built = time.monotonic()
             return self._value
 

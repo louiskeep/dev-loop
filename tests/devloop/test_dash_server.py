@@ -253,3 +253,16 @@ def test_make_server_installs_no_signal_handlers(proj, dash, monkeypatch):
     monkeypatch.setattr(signal, "signal", refuse)
     s = server.make_server(proj)
     s.server_close()
+
+
+def test_html_routes_serve_200_and_schema_2(srv):
+    """Every commit of the mission-control slice keeps both HTML routes serving."""
+    from devloop.dash import render
+
+    for path in ("/", "/fragment"):
+        status, headers, body = call(srv, path)
+        assert status == 200, path
+        text = body.decode()
+        for sid in render.SECTION_IDS:
+            assert f'id="{sid}"' in text, (path, sid)
+    assert json.loads(call(srv, "/api/state")[2])["schema"] == 2

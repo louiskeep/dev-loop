@@ -13,7 +13,7 @@ import re
 from .. import evidence, notes, runs, slices, snapshot, status, store
 from .. import project as projmod
 from ..scrub import plain, redact_secrets, scrub
-from . import memory
+from . import live, memory, transcript
 
 SCHEMA = 2
 OWNER_TEXT_LIMIT = 1000
@@ -26,6 +26,7 @@ RUN_STATES = ("executing", "awaiting-apply", "awaiting-release")
 SHIPPED_KINDS = ("merge", "row-close")
 MEMORY_STATES = ("ok", "tight", "low")
 CLASSES = ("tech", "product")
+TRANSCRIPT_STATES = ("live", "starting", "outside", "none", "unreadable")
 
 # The fixed wording table: every `word` value in a view must be one of these.
 WORDS = frozenset(
@@ -38,6 +39,9 @@ WORDS = frozenset(
         *SHIPPED_KINDS,
         *MEMORY_STATES,
         *CLASSES,
+        *TRANSCRIPT_STATES,
+        *runs.STATUSES,
+        *slices.VERDICTS,
         *evidence.CODES,
         *evidence.REASON_WORDS,
         *status.EVENT_KINDS,
@@ -139,13 +143,68 @@ VIEW_SCHEMA = {
     "rows": [
         {"row": "id", "oldest_at": "at?", "stuck": "bool", "cards": [_CARD]},
     ],
-    "workers": [
+    "kpi": {
+        "running": "int",
+        "slots": "int",
+        "needs_you": "int",
+        "merged_today": "int?",
+        "tools_per_min": "int",
+        "free_mb": "int?",
+        "memory_state": "word?",
+        "last_pass_at": "at?",
+    },
+    "live": [
         {
+            "ref": "id",
             "role": "label",
+            "icon": "icon",
             "key": "id",
-            "node": "id",
-            "state": "word",
+            "slice_active": "bool",
+            "phase": "word?",
+            "harness": "harness",
+            "model": "model?",
             "started_at": "at?",
+            "state": "word",
+            "doing": (
+                "null",
+                {"tag": "tag", "target": "target?", "at": "at?", "running": "bool"},
+            ),
+            "tools": "int",
+            "partial": "bool",
+            "errors": "int",
+            "tokens_out": "int?",
+            "context": "int?",
+            "spark": ["int"],
+        }
+    ],
+    "waiting_runs": [
+        {"role": "label", "key": "id", "state": "word", "started_at": "at?"}
+    ],
+    "feed": [
+        {
+            "at": "at",
+            "tag": "tag",
+            "target": "target?",
+            "role": "label?",
+            "key": "id?",
+            "words": "line?",
+        }
+    ],
+    "drawers": [
+        {
+            "key": "id",
+            "runs": [
+                {
+                    "ref": "id",
+                    "role": "label",
+                    "harness": "harness",
+                    "started_at": "at?",
+                    "status": "word?",
+                    "verdict": "word?",
+                }
+            ],
+            "calls": [{"at": "at?", "tag": "tag", "target": "target?"}],
+            "files": [{"name": "target", "edits": "int"}],
         }
     ],
     "nodes": [{"name": "id", "ok": "bool", "at": "at?"}],
@@ -211,6 +270,26 @@ def _scalar(kind, value, labels, where):
     if kind == "version":
         if not isinstance(value, str) or _VERSION.fullmatch(value) is None:
             raise ViewError(f"{where}: bad version")
+        return value
+    if kind == "tag":
+        if value not in transcript.TOOL_TAGS and value not in status.EVENT_TAGS:
+            raise ViewError(f"{where}: tag not in the fixed table")
+        return value
+    if kind == "target":
+        if transcript.safe_target(value) != value:
+            raise ViewError(f"{where}: target is not a plain name")
+        return value
+    if kind == "model":
+        if transcript.safe_model(value) != value:
+            raise ViewError(f"{where}: model is not a plain name")
+        return value
+    if kind == "icon":
+        if value not in live.ICON_IDS:
+            raise ViewError(f"{where}: unknown icon")
+        return value
+    if kind == "harness":
+        if value not in runs.HARNESSES:
+            raise ViewError(f"{where}: unknown harness")
         return value
     if kind == "owner_text":
         # The owner reads their own questions as written; only the page markers and
@@ -325,30 +404,48 @@ class _Ctx:
         self.events = status.events(project)[-200:]
         self.slices, bad_slices = slices.load_all(project)
         self.bad += bad_slices
+        self.history: dict = {}
         self.runs = self._runs()
         self.executing_by_key = {
             r["key"]: r["role"] for r in self.runs if r["state"] == "executing"
         }
 
+    iso = staticmethod(_iso)
+    when = staticmethod(_when)
+
     def _runs(self):
+        """One walk of `runs/`: slot holders, plus each active slice's recent history.
+
+        The history is chosen before the slot filter, so a finished run stays in its
+        slice's drawer after it is applied and holds no slot.
+        """
         out = []
+        active = {s["key"] for s in self.slices if s["phase"] in slices.ACTIVE}
         for rd, req in runs.iter_runs(self.project):
             try:
-                state = runs.run_state(rd, req)
-                if state is None:
+                if req.get("kind") not in runs.KINDS:
                     continue
-                out.append(
-                    {
-                        "role": projmod.role_label(self.cfg, req.get("kind")),
-                        "key": req.get("key"),
-                        "node": req.get("host") or "local",
-                        "state": state,
-                        "started_at": _iso(req.get("started_at")),
-                        "pgid": req.get("payload_pgid"),
-                    }
-                )
+                state = runs.run_state(rd, req)
+                rec = {
+                    "role": projmod.role_label(self.cfg, req.get("kind")),
+                    "key": req.get("key"),
+                    "node": req.get("host") or "local",
+                    "state": state,
+                    "started_at": _iso(req.get("started_at")),
+                    "pgid": req.get("payload_pgid"),
+                    "rd": rd,
+                    "req": req,
+                    "ref": live.ref_of(rd),
+                }
+                if rec["key"] in active:
+                    self.history.setdefault(rec["key"], []).append(rec)
+                if state is not None:
+                    out.append(rec)
             except (store.StoreError, KeyError, TypeError, ValueError, OSError):
                 continue
+        for key, recs in self.history.items():
+            recs.sort(key=lambda r: r["started_at"] or "", reverse=True)
+            self.history[key] = recs[: live.DRAWER_RUNS]
         return out
 
 
@@ -744,9 +841,10 @@ def _memory(ctx):
 # --- the view ---------------------------------------------------------------------
 
 
-def build_view(project, proc="/proc", now=None) -> dict:
+def build_view(project, proc="/proc", now=None, cache=None) -> dict:
     """The sealed view for one project. Raises ViewError when it breaks its schema."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
+    cache = cache or transcript.Cache()
     cfg = projmod.load_project(project)
     ctx = _Ctx(project, cfg, now, proc)
     merges = _try(lambda: slices.merge_records(project), ctx.bad, "merges", None)
@@ -772,10 +870,6 @@ def build_view(project, proc="/proc", now=None) -> dict:
         "needs_you": needs,
         "problems": problems,
         "rows": _rows_cache(ctx),
-        "workers": [
-            {k: r[k] for k in ("role", "key", "node", "state", "started_at")}
-            for r in ctx.runs
-        ],
         "nodes": _nodes(ctx),
         "slots": slots,
         "memory": _memory(ctx),
@@ -786,8 +880,16 @@ def build_view(project, proc="/proc", now=None) -> dict:
     view["problems"] = problems + _unreadable(ctx)
     view["counts"]["needs_you"] = len(view["needs_you"])
     view["counts"]["problems"] = len(view["problems"])
-    for w in view["workers"]:
-        w["key"] = w["key"] if w["key"] else "?"
+    drawer_keys = [c["key"] for row in view["rows"] for c in row["cards"]]
+    states = live.read_states(ctx, cache, drawer_keys)
+    now_s = int(now.timestamp())
+    view["live"] = live.live_cards(ctx, states, now_s)
+    view["waiting_runs"] = live.waiting_runs(ctx)
+    for w in view["waiting_runs"]:
+        w["key"] = w["key"] or "?"
+    view["feed"] = live.feed(ctx, cache)
+    view["drawers"] = live.drawers(ctx, states, drawer_keys)
+    view["kpi"] = live.kpi(ctx, view, states, now_s)
     sealed = _seal(view, VIEW_SCHEMA, _labels(cfg))
     sealed["version"] = version_of(sealed)
     return sealed

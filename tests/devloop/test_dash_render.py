@@ -67,7 +67,7 @@ def test_html_escapes_planted_markup(proj, dash):
     v["rows"][0]["cards"][0]["slice"] = bad
     v["rows"][0]["cards"][0]["owner"] = bad
     v["rows"][0]["cards"][0]["url"] = 'https://x/"><script>1</script>'
-    v["workers"][0]["role"] = bad
+    v["live"][0]["role"] = bad
     v["needs_you"][0]["key"] = bad
     v["activity"].append(
         {"at": v["tick"]["last_pass_at"], "kind": "merged", "words": bad}
