@@ -121,6 +121,8 @@ def _runs(args):
         print(runs.apply_run(p, args.run))
     elif args.cmd == "release":
         runs.release(p, args.run)
+    elif args.cmd == "discard":
+        runs.discard(p, args.run)
     elif args.cmd == "list":
         if args.live:
             for run_id, req in runs.live_runs(p):
@@ -203,6 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("resume")
     sub.add_parser("applied").add_argument("run")
     sub.add_parser("release").add_argument("run")
+    sub.add_parser("discard").add_argument("run")
     ls = sub.add_parser("list")
     ls.add_argument("--live", action="store_true")
     ls.add_argument("--writers", action="store_true")
@@ -218,7 +221,7 @@ def main(argv=None) -> int:
             getattr(slices, args.cmd)(
                 args.project, args.key, args.verdict, head=args.head
             )
-        elif args.cmd in ("applied", "release", "list"):
+        elif args.cmd in ("applied", "release", "discard", "list"):
             _runs(args)
         elif args.cmd in ("pause", "resume"):
             flag = store.state_dir(args.project) / "PAUSE"

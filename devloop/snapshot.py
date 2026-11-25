@@ -47,12 +47,35 @@ def _finished_unapplied(project):
     return [
         _run_summary(rd, req)
         for rd, req in runs.iter_runs(project)
-        if (rd / "exit").is_file() and not (rd / "applied").is_file()
+        if (rd / "exit").is_file() and not runs.is_done(rd)
     ]
 
 
+def held_tests(project):
+    """Ended test runs that still hold a tester slot until the node is checked."""
+    out = []
+    for rd, req in runs.iter_runs(project):
+        if (
+            req["kind"] == "test"
+            and (rd / "exit").is_file()
+            and runs.holds_slot(rd, req)
+        ):
+            ex = store.read_json(rd / "exit")
+            out.append(
+                {
+                    "id": rd.name,
+                    "host": req.get("host") or "-",
+                    "job": req.get("job") or "-",
+                    "reason": ex.get("reason"),
+                    "code": ex.get("code"),
+                    "age_min": int(_age(ex.get("ended_at") or req["started_at"]) // 60),
+                }
+            )
+    return out
+
+
 def _running_keys(project):
-    return {r["key"] for _, r in runs.live_runs(project)}
+    return {r.get("key") for _, r in runs.live_runs(project)}
 
 
 def next_command(project, s, checklist) -> str:
@@ -195,6 +218,19 @@ def build_snapshot(project) -> tuple:
     for s in active:
         inflight += _slice_block(project, s, running)
     sections.append(inflight if len(inflight) > 1 else inflight + ["- none"])
+    held = held_tests(project)
+    sections.append(
+        ["## Test runs holding a slot until release"]
+        + (
+            [
+                f"- {h['id']}: host {h['host']}, job {h['job']}, ended {h['reason']} "
+                f"code {h['code']}, {h['age_min']} min ago"
+                f"  -> check the node, then devloop-state {project} release {h['id']}"
+                for h in held
+            ]
+            or ["- none"]
+        )
+    )
     sections.append(
         [
             "## Free slots and memory",
@@ -255,9 +291,10 @@ def build_snapshot(project) -> tuple:
             for s in all_slices
         ],
         "runs": sorted(
-            (rd.name, (rd / "exit").is_file(), (rd / "applied").is_file())
+            (rd.name, (rd / "exit").is_file(), runs.is_done(rd))
             for rd, _ in runs.iter_runs(project)
         ),
+        "held_tests": sorted((h["id"], h["reason"], h["code"]) for h in held),
         "questions": sorted(q["key"] for q in qs),
         "problems": sorted((e["key"], e["count"]) for e in problems),
         "outputs": [(n, DIGITS.sub("", t)) for n, t in outputs],

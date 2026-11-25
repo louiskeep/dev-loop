@@ -121,6 +121,20 @@ mutate "a timeout counts as a cap" devloop/caps.py \
 mutate "codex cap text is ignored" devloop/caps.py \
   '    if CAP_TEXT.search(tail) and TRY_AGAIN.search(tail):' '    if False:' \
   $T/test_wrap.py::test_codex_usage_cap_text_sets_cap_until
+mutate "a rejected run still holds its slot" devloop/runs.py \
+  '    if (rd / "rejected").is_file():
+        return False
+    if spec.writes_worktree' '    if spec.writes_worktree' \
+  $T/test_runs.py::test_ledger_mismatch_rejects_the_run_and_frees_the_slot $T/test_runs.py::test_repaired_hash_mismatch_rejects_the_run_and_frees_the_worktree
+mutate "a rejected run is still collected" devloop/runs.py \
+  '            if (rd / "exit").is_file() and not is_done(rd):' '            if (rd / "exit").is_file() and not (rd / "applied").is_file():' \
+  $T/test_runs.py::test_ledger_mismatch_rejects_the_run_and_frees_the_slot
+mutate "refusal writes no rejected marker" devloop/runs.py \
+  '    (rd / "rejected").write_text(why)' '    pass' \
+  $T/test_runs.py::test_binding_mismatch_rejects_the_run_and_frees_the_slot
+mutate "held test runs are not listed" devloop/snapshot.py \
+  'if req["kind"] == "test" and (rd / "exit").is_file() and runs.holds_slot(rd, req):' 'if False:' \
+  $T/test_snapshot_status.py::test_snapshot_lists_test_runs_that_hold_a_slot
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

@@ -746,3 +746,101 @@ def test_tampered_repaired_copy_is_caught_by_the_gate_recompute(proj, ready, bri
     assert all(ok for _, ok in slices.exit_checklist(proj, key, "DEVELOP"))
     (store.run_dir(proj, r) / "repaired").write_text("Rules consulted: evil\n")
     assert not all(ok for _, ok in slices.exit_checklist(proj, key, "DEVELOP"))
+
+
+# --- permanent refusals close the run ---------------------------------------------
+
+
+def _events(home, kind):
+    path = home / "p" / "events.jsonl"
+    return [json.loads(x) for x in path.read_text().splitlines() if f'"{kind}"' in x]
+
+
+def test_ledger_mismatch_rejects_the_run_and_frees_the_slot(proj, ready, brief, home):
+    started = [
+        go(proj, brief, "test", ready("VERIFY")[0], level="t1") for _ in range(4)
+    ]
+    bad = started[0]
+    finish(
+        proj, bad, code=-1, reason="lost"
+    )  # a lost test would hold its slot for good
+    rd = store.run_dir(proj, bad)
+    forged = store.read_json(rd / "request.json")
+    forged["head"] = "ff"
+    store.write_json(rd / "request.json", forged)
+    with pytest.raises(runs.RunError, match="ledger"):
+        runs.apply_run(proj, bad)
+    assert (rd / "rejected").is_file()
+    assert _events(home, "apply-refused")[0]["why"] == "ledger"
+    assert bad not in [r for r, _ in runs.live_runs(proj)]
+    assert bad not in runs.collect(proj)
+    go(proj, brief, "test", ready("VERIFY")[0], level="t1")  # the slot is free again
+    assert runs.apply_run(proj, bad) == "rejected"  # terminal, no second event
+    assert len(_events(home, "apply-refused")) == 1
+
+
+def test_binding_mismatch_rejects_the_run_and_frees_the_slot(
+    proj, ready, brief, cfg_edit
+):
+    keys = [ready("REVIEW", risk="R2")[0] for _ in range(3)]
+    r1 = go(proj, brief, "dennis", keys[0], reviewer="dennis")
+    go(proj, brief, "dennis", keys[1], reviewer="dennis")
+    with pytest.raises(runs.Refused, match="reviewer slot"):
+        go(proj, brief, "dennis", keys[2], reviewer="dennis")
+    finish(proj, r1, result=res("DONE", "GO"))
+    cfg_edit(lambda c: c["reviewers"]["dennis"].update(kinds=["codex-review"]))
+    with pytest.raises(runs.RunError, match="do not match"):
+        runs.apply_run(proj, r1)
+    assert (store.run_dir(proj, r1) / "rejected").is_file()
+    assert slices.load(proj, keys[0])["evidence"] == {}
+    cfg_edit(lambda c: c["reviewers"]["dennis"].update(kinds=["dennis"]))
+    go(proj, brief, "dennis", keys[2], reviewer="dennis")
+
+
+def test_repaired_hash_mismatch_rejects_the_run_and_frees_the_worktree(
+    proj, ready, brief
+):
+    key, wt, r = _repair(proj, ready, brief)
+    other, _, _ = ready("PLAN", worktree=wt, plan_path="plan.md")
+    finish(proj, r, result=res("DONE", "GO"))
+    assert runs.writer_runs(proj)
+    (store.run_dir(proj, r) / "repaired").write_text("Rules consulted: evil\n")
+    with pytest.raises(runs.RunError, match="repaired copy"):
+        runs.apply_run(proj, r)
+    assert (store.run_dir(proj, r) / "rejected").is_file()
+    assert runs.writer_runs(proj) == [] and runs.live_runs(proj) == []
+    assert slices.load(proj, key)["evidence"].get("x") is None
+    go(proj, brief, "planner", other)  # the worktree reservation is gone
+
+
+def test_discard_frees_a_stuck_run(proj, ready, brief, home, monkeypatch):
+    key, wt, _ = ready()
+    r = go(proj, brief, "builder", key)
+    assert runs.writer_runs(proj)
+    monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
+    with pytest.raises(store.HeadlessRefused):
+        runs.discard(proj, r)
+    monkeypatch.delenv("DEVLOOP_HEADLESS")
+    runs.discard(proj, r)
+    rd = store.run_dir(proj, r)
+    assert store.read_json(rd / "exit")["reason"] == "discarded"
+    assert (rd / "rejected").read_text() == "discarded"
+    assert runs.writer_runs(proj) == [] and runs.live_runs(proj) == []
+    assert slices.load(proj, key)["run"] is None
+    assert _events(home, "apply-refused")[0]["why"] == "discarded"
+    go(proj, brief, "builder", key)
+
+
+def test_state_cli_discard_is_interactive_only(proj, ready, brief, home):
+    key, _, _ = ready()
+    r = go(proj, brief, "builder", key)
+    bin_ = Path(__file__).resolve().parents[2] / "bin" / "devloop-state"
+    env = {**os.environ, "DEVLOOP_HOME": str(home)}
+    headless = subprocess.run(
+        [str(bin_), "p", "discard", r],
+        capture_output=True,
+        text=True,
+        env={**env, "DEVLOOP_HEADLESS": "1"},
+    )
+    assert headless.returncode == 3
+    assert subprocess.run([str(bin_), "p", "discard", r], env=env).returncode == 0

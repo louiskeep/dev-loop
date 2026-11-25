@@ -63,6 +63,19 @@ class RunError(Exception):
     pass
 
 
+class Rejected(RunError):
+    """A permanent apply refusal: the run can never be applied, so it is closed."""
+
+    def __init__(self, why, message):
+        super().__init__(message)
+        self.why = why
+
+
+def is_done(rd) -> bool:
+    """Applied or rejected: nothing more will happen to this run."""
+    return (rd / "applied").is_file() or (rd / "rejected").is_file()
+
+
 # --- reading run directories --------------------------------------------------
 
 
@@ -191,6 +204,8 @@ def holds_slot(rd, req) -> bool:
     if spec is None:
         return False
     ended = (rd / "exit").is_file()
+    if (rd / "rejected").is_file():
+        return False
     if spec.writes_worktree and not (rd / "applied").is_file():
         return True  # reserved until applied, not only while the process lives
     if req["kind"] == "test":
@@ -206,8 +221,7 @@ def writer_runs(project) -> list:
     return [
         (rd.name, req)
         for rd, req in iter_runs(project)
-        if KINDS.get(req.get("kind"), KINDS["docs"]).writes_worktree
-        and not (rd / "applied").is_file()
+        if KINDS.get(req.get("kind"), KINDS["docs"]).writes_worktree and not is_done(rd)
     ]
 
 
@@ -237,7 +251,7 @@ def collect(project) -> list:
                 kill_payload(req)
                 create_exit(rd, code=-1, reason="lost")
                 remove_tree(req)
-            if (rd / "exit").is_file() and not (rd / "applied").is_file():
+            if (rd / "exit").is_file() and not is_done(rd):
                 done.append(rd.name)
     return done
 
@@ -594,7 +608,7 @@ def _check_admission(project, cfg, req, root):
             and r.get("key") == req["key"]
             and r.get("purpose") == "plan"
             and r.get("kind") in REVIEW_KINDS
-            and not (rd / "applied").is_file()
+            and not is_done(rd)
         ):
             raise Refused("another plan review is still open for this slice")
         if req["kind"] == "duty" and r.get("key") == req["key"] and r["kind"] == "duty":
@@ -856,9 +870,9 @@ def _check_binding(cfg, req):
         return
     spec = cfg["reviewers"].get(req.get("reviewer") or "")
     if spec is None or req["kind"] not in (spec.get("kinds") or [spec["kind"]]):
-        raise RunError("reviewer and kind do not match the config")
+        raise Rejected("binding", "reviewer and kind do not match the config")
     if req.get("purpose") not in ("plan", "code"):
-        raise RunError("review run has no purpose")
+        raise Rejected("binding", "review run has no purpose")
 
 
 def _mark_applied(rd, req):
@@ -882,8 +896,9 @@ def _install_repair(project, rd, req, s):
         return None, "missing"
     data = store.read_json(rj)
     if _sha_file(copy) != data.get("output_sha"):
-        store.append_event(project, "apply-refused", run=req["id"], why="repaired-copy")
-        raise RunError("the repaired copy does not match its recorded hash")
+        raise Rejected(
+            "repaired-copy", "the repaired copy does not match its recorded hash"
+        )
     plan = slices.plan_file(s)
     live = _sha_file(plan) if plan.is_file() else None
     if live == data["output_sha"]:
@@ -964,7 +979,49 @@ def _apply_evidence(project, key, run_id, req, res, s, ev_kind):
     )
 
 
+def _mark_rejected(project, run_id, why):
+    rd = store.run_dir(project, run_id)
+    (rd / "rejected").write_text(why)
+    store.append_event(project, "apply-refused", run=run_id, why=why)
+    try:
+        remove_tree(read_request(project, run_id))
+    except store.StoreError:
+        pass
+
+
 def apply_run(project, run_id) -> str:
+    """Apply a finished run. A permanent refusal closes the run with no effects."""
+    rd = store.run_dir(project, run_id)
+    if (rd / "rejected").is_file():
+        return "rejected"
+    try:
+        return _apply(project, run_id)
+    except Rejected as exc:
+        _mark_rejected(project, run_id, exc.why)
+        raise
+
+
+def discard(project, run_id) -> None:
+    """Owner only: close any stuck run, freeing its slot and worktree reservation."""
+    store.require_interactive("discard")
+    rd = store.run_dir(project, run_id)
+    req = read_request(project, run_id)
+    if not req:
+        raise RunError("no such run")
+    if not (rd / "exit").is_file():
+        kill_payload(req)
+        create_exit(rd, code=-1, reason="discarded")
+    if req.get("kind") != "duty":
+        try:
+            s = slices.load(project, slice_key_of(req))
+        except slices.SliceError:
+            s = None
+        if s and s["run"] == run_id:
+            slices.set_run(project, s["key"], None)
+    _mark_rejected(project, run_id, "discarded")
+
+
+def _apply(project, run_id) -> str:
     rd = store.run_dir(project, run_id)
     req = read_request(project, run_id)
     if not req:
@@ -978,8 +1035,7 @@ def apply_run(project, run_id) -> str:
     if (rd / "applied").is_file():
         return "already"
     if not store.request_matches_ledger(project, run_id):
-        store.append_event(project, "apply-refused", run=run_id, why="ledger")
-        raise RunError("the run request does not match the dispatch ledger")
+        raise Rejected("ledger", "the run request does not match the dispatch ledger")
     res = parse_result(rd, kind)
     reason = res.reason
 

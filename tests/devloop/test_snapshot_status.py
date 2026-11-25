@@ -1,5 +1,6 @@
 import datetime
 import json
+import os
 import sys
 
 import pytest
@@ -157,3 +158,57 @@ def test_summarize_uses_fixed_words_and_plain_ids(proj, n):
     text = status.summarize(proj, since)
     assert "merged CLI-1 s1" in text and "moved CLI-1 s1 to DOCUMENT" in text
     assert "secret" not in text and "?" in text
+
+
+def test_snapshot_lists_test_runs_that_hold_a_slot(proj, mk_slice, mk_run):
+    from devloop import runs
+
+    k = mk_slice(proj, phase="VERIFY", risk="R1", head="ab12cd34ef")
+    _, h0 = snapshot.build_snapshot(proj)
+    for rid, code, reason in (
+        ("t-lost", -1, "lost"),
+        ("t-five", 5, "exit"),
+        ("t-ok", 1, "exit"),
+    ):
+        d = mk_run(proj, rid, kind="test", key=k, head="ab12cd34ef", level="t1")
+        store.write_json(
+            d / "exit", {"code": code, "reason": reason, "ended_at": at(minutes=7)}
+        )
+        (d / "applied").unlink()
+        req = store.read_json(d / "request.json")
+        req.update(host="node-a", job=f"job-{rid}", started_at=at(minutes=9))
+        os.chmod(d / "request.json", 0o644)
+        store.write_json(d / "request.json", req)
+        store.register_request(proj, rid)
+    md, h1 = snapshot.build_snapshot(proj)
+    section = md.split("## Test runs holding a slot until release")[1].split("## ")[0]
+    assert f"devloop-state {proj} release t-lost" in section
+    assert f"devloop-state {proj} release t-five" in section
+    assert "t-ok" not in section  # a real failing result frees its slot
+    assert "host node-a, job job-t-lost, ended lost code -1, 7 min ago" in section
+    assert "code 5" in section
+    assert h1 != h0
+    runs.release(proj, "t-five")
+    assert (
+        "t-five"
+        not in snapshot.build_snapshot(proj)[0]
+        .split("## Free slots")[0]
+        .split("## Test runs holding")[1]
+    )
+
+
+def test_rejected_runs_are_not_listed_as_unapplied(proj, mk_slice, mk_run):
+    k = mk_slice(proj, phase="REVIEW", risk="R1", head="ab12cd34ef")
+    d = mk_run(
+        proj,
+        "r-rej",
+        kind="codex-review",
+        key=k,
+        head="ab12cd34ef",
+        reviewer="codex",
+        purpose="code",
+        applied=False,
+    )
+    assert "r-rej" in snapshot.build_snapshot(proj)[0]
+    (d / "rejected").write_text("ledger")
+    assert "applied r-rej" not in snapshot.build_snapshot(proj)[0]
