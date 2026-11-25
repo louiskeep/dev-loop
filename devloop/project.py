@@ -171,6 +171,11 @@ def _validate(cfg: dict, project: str) -> dict:
             for k in ("base", "dispatch_workflow", "gate_status", "changelog_glob"):
                 if k in spec and not isinstance(spec[k], str):
                     _fail(f"{where}.{k}", "must be str")
+            pins = spec.get("required_check_sources", {})
+            if not isinstance(pins, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in pins.items()
+            ):
+                _fail(f"{where}.required_check_sources", "must map check name to str")
             for k in ("required_checks", "verify_cmd"):
                 if k in spec and not _str_list(spec[k]):
                     _fail(f"{where}.{k}", "must be a list of str")

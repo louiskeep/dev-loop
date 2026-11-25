@@ -76,25 +76,46 @@ def _repo_settings(cfg, repo_name):
     return repo_cfg, rules, rules.get("base") or repo_cfg.get("base", "main")
 
 
+def _source_of(entry):
+    """Names that identify where a check came from: workflow, status context or app."""
+    app = entry.get("app") if isinstance(entry.get("app"), dict) else {}
+    return {
+        v
+        for v in (entry.get("workflowName"), entry.get("context"), app.get("slug"))
+        if v
+    }
+
+
 def _check_states(rollup, rules):
-    """Blocking checks: a required one that is not SUCCESS, or any other failed or pending."""
-    seen = {}
+    """Blocking checks. A required check passes only when it is present and every one
+    of its entries (from the pinned source, when one is set) is SUCCESS. Any other
+    check that is failed or pending refuses."""
+    by_name = {}
     for entry in rollup if isinstance(rollup, list) else []:
         name = entry.get("name") or entry.get("context")
-        state = str(entry.get("conclusion") or entry.get("state") or "").upper()
         if name:
-            seen[name] = state
+            by_name.setdefault(name, []).append(entry)
+
+    def state(entry):
+        return str(entry.get("conclusion") or entry.get("state") or "").upper()
+
     required = rules.get("required_checks", [])
-    problems = [
-        f"required check {name} is not SUCCESS"
-        for name in required
-        if seen.get(name) != "SUCCESS"
-    ]
-    problems += [
-        f"check {name} is {state or 'pending'}"
-        for name, state in seen.items()
-        if state not in OK_STATES and name not in required
-    ]
+    pins = rules.get("required_check_sources", {})
+    problems = []
+    for name in required:
+        entries = by_name.get(name, [])
+        if name in pins:
+            entries = [e for e in entries if pins[name] in _source_of(e)]
+        if not entries or any(state(e) != "SUCCESS" for e in entries):
+            where = f" from {pins[name]}" if name in pins else ""
+            problems.append(f"required check {name}{where} is not SUCCESS")
+    for name, entries in by_name.items():
+        if name in required:
+            continue
+        for e in entries:
+            if state(e) not in OK_STATES:
+                problems.append(f"check {name} is {state(e) or 'pending'}")
+                break
     return problems
 
 

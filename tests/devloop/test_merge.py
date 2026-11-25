@@ -328,19 +328,60 @@ def test_notify_says_merging_in_fixed_words(proj, gate, tmp_path):
     assert "Merging" in text and "PR 7" in text
 
 
-@pytest.mark.parametrize(
-    "command,denied",
-    [
-        ("gh pr merge 5 --squash", True),
-        ("gh -R o/r pr merge 5", True),
-        ("env gh pr merge 5", True),
-        ("cd x && gh pr merge 5", True),
-        ("gh pr view 5", False),
-        ("git status", False),
-    ],
-)
-def test_merge_guard_denies_gh_merge_when_headless(command, denied):
-    assert headless_merge_guard.blocked(command) is denied
+DENIED = [
+    "gh pr merge 5 --squash",
+    "gh -R o/r pr merge 5",
+    "gh pr --repo o/r merge 5",
+    "gh pr merge --auto 5",
+    "env gh pr merge 5",
+    "command gh pr merge 5",
+    "exec gh pr merge 5",
+    "sudo -u bob gh pr merge 5",
+    "timeout 60 gh pr merge 5",
+    "GH_TOKEN=x gh pr merge 5",
+    "/usr/bin/gh pr merge 5",
+    "cd x && gh pr merge 5",
+    "true; gh pr merge 5",
+    "echo hi | gh pr merge 5",
+    "bash -c 'gh pr merge 5'",
+    "echo $(gh pr merge 5)",
+    "gh api repos/o/r/pulls/5/merge -X PUT",
+    "gh api -X PUT /repos/o/r/pulls/12/merge",
+    "gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
+    "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { x } }'",
+    "gh alias set m 'pr merge'",
+    "gh -R o/r alias set m x",
+    "gh extension install o/r",
+    "gh ext install o/r",
+    "git push origin main",
+    "git push origin HEAD:main",
+    "env git push origin main",
+    "git push && gh pr view 1 && git push origin main",
+]
+ALLOWED = [
+    "gh pr view 5",
+    "gh -R o/r pr view 5 --json state",
+    "gh api repos/x/y/pulls/5",
+    "gh api repos/x/y/pulls/5/files",
+    "gh pr list",
+    "git status",
+    "git push origin feat/x",
+    "git push -u origin feat/x",
+    "env FOO=1 ls",
+    "timeout 5 sleep 1",
+    "echo gh pr merge is blocked",
+]
+
+
+@pytest.mark.parametrize("command", DENIED)
+def test_merge_guard_denies_gh_merge_when_headless(command):
+    assert headless_merge_guard.blocked(command) is True
+
+
+@pytest.mark.parametrize("command", ALLOWED)
+def test_merge_guard_allows_ordinary_commands(command, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    assert headless_merge_guard.blocked(command) is False
 
 
 def run_guard(command, headless):
@@ -359,6 +400,7 @@ def run_guard(command, headless):
 
 def test_merge_guard_only_acts_in_headless_sessions():
     assert run_guard("gh pr merge 5", True).returncode == 2
+    assert run_guard("git push origin main", True).returncode == 2
     assert run_guard("gh pr merge 5", False).returncode == 0
     assert run_guard("gh pr view 5", True).returncode == 0
 
@@ -367,3 +409,49 @@ def test_merge_guard_is_registered():
     hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text())
     cmds = [h["command"] for g in hooks["hooks"]["PreToolUse"] for h in g["hooks"]]
     assert any("headless_merge_guard" in c for c in cmds)
+
+
+def test_merge_refuses_duplicate_name_with_one_failure(proj, gate):
+    k = gate()
+    gate.set_gh(
+        statusCheckRollup=[
+            {"name": "ci", "conclusion": "SUCCESS"},
+            {"name": "ci", "conclusion": "FAILURE"},
+        ]
+    )
+    assert "required check ci" in merge.merge(proj, k).reason
+
+
+def test_merge_refuses_duplicate_non_required_failure(proj, gate):
+    k = gate()
+    gate.set_gh(
+        statusCheckRollup=[
+            {"name": "ci", "conclusion": "SUCCESS"},
+            {"name": "lint", "conclusion": "SUCCESS"},
+            {"name": "lint", "status": "IN_PROGRESS"},
+        ]
+    )
+    assert "check lint" in merge.merge(proj, k).reason
+
+
+def test_merge_pinned_source_must_match(proj, gate, cfg_edit):
+    cfg_edit(
+        lambda c: c["merge"]["repos"]["main"].update(
+            required_check_sources={"ci": "ci-workflow"}
+        )
+    )
+    k = gate()
+    gate.set_gh(
+        statusCheckRollup=[
+            {"name": "ci", "conclusion": "SUCCESS", "workflowName": "someone-else"}
+        ]
+    )
+    assert "from ci-workflow" in merge.merge(proj, k).reason
+    # An entry from another source is ignored, not counted against the pinned one.
+    gate.set_gh(
+        statusCheckRollup=[
+            {"name": "ci", "conclusion": "FAILURE", "workflowName": "someone-else"},
+            {"name": "ci", "conclusion": "SUCCESS", "workflowName": "ci-workflow"},
+        ]
+    )
+    assert merge.merge(proj, k).outcome == "merged"
