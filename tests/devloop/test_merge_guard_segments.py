@@ -43,6 +43,8 @@ WORKER_DENIED = [
     "echo 'unterminated",
     "bash <<EOF\ngh pr merge 5\nEOF",
     "sh <<'EOF'\nit's text\ngit push origin main\nEOF",
+    "cat <<'EOF' | bash\ngh pr merge 5\nEOF",
+    "bash <<EOF\ngh pr merge 5",
     "bash -s <<EOF\ndevloop-merge p k\nEOF",
     "if true; then gh pr merge 1; fi",
     "while true; do devloop-merge p k; done",

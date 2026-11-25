@@ -133,13 +133,17 @@ _HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
 
 
 def _feeds_shell(line: str) -> bool:
-    """True when the command that owns this heredoc is a shell reading it as a script."""
+    """True when a command on the line that owns this heredoc is a shell, so the body is
+    a script: `bash <<EOF`, or `cat <<EOF | bash`."""
     try:
-        tokens = shlex.split(line[: _HEREDOC.search(line).start()], posix=True)
-        i = _command_start(tokens)
-        return i < len(tokens) and os.path.basename(tokens[i]) in _SHELLS
+        for seg in _segments(line):
+            tokens = shlex.split(seg, posix=True)
+            i = _command_start(tokens)
+            if i < len(tokens) and os.path.basename(tokens[i]) in _SHELLS:
+                return True
     except (ValueError, _Unparseable):
-        return False
+        pass
+    return False
 
 
 def _strip_heredocs(command: str):
@@ -160,6 +164,8 @@ def _strip_heredocs(command: str):
         m = _HEREDOC.search(line)
         if m:
             end, body, shell = m.group(2), [], _feeds_shell(line)
+    if end is not None and shell:  # never terminated: the body runs to end of input
+        scripts.append("\n".join(body))
     return "\n".join(out), scripts
 
 
