@@ -195,12 +195,31 @@ def read_header(path, limit=None) -> dict:
     return out
 
 
-def append_event(project: str, kind: str, **fields) -> None:
+def _has_event(path, kind, field, value) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    for raw in text.splitlines():
+        try:
+            ev = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(ev, dict) and ev.get("kind") == kind and ev.get(field) == value:
+            return True
+    return False
+
+
+def append_event(project: str, kind: str, *, once=None, at=None, **fields) -> None:
+    """Append one event. `once=(field, value)` skips it when that event is already there,
+    checked under the same lock as the append, so a replayed step adds nothing."""
     if TOKEN.fullmatch(kind) is None:
         raise StoreError("bad event kind")
-    line = json.dumps({**fields, "at": now_iso(), "kind": kind}, sort_keys=True)
+    line = json.dumps({**fields, "at": at or now_iso(), "kind": kind}, sort_keys=True)
     path = state_dir(project) / "events.jsonl"
     with locked(path):
+        if once is not None and _has_event(path, kind, *once):
+            return
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
             fh.flush()

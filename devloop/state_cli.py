@@ -127,7 +127,7 @@ def _notes(args):
         )
         _out(q)
     elif args.cmd == "answer":
-        notes.answer(p, args.key, args.choice)
+        print(notes.answer(p, args.key, args.choice))
     elif args.cmd == "answers-sync":
         for key in notes.read_answers(p):
             print(key)

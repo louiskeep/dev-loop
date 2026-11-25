@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from devloop import notes, store
+from devloop import notes, slices, store
 
 STATE_BIN = str(Path(__file__).resolve().parents[3] / "bin" / "devloop-state")
 
@@ -192,3 +192,250 @@ def test_version_digest_fixtures(proj):
     assert notes.question_version(rec) == "dbf3bb5294c5e775"
     assert notes.question_version(rec) == store.canonical_digest(rec)
     assert notes.question_version({**rec, "answer": "B"}) != notes.question_version(rec)
+
+
+# --- Task 9b: answer rules, idempotent effects ---------------------------------------
+
+
+def version(proj, key="q1"):
+    return notes.question_version(stored(proj, key))
+
+
+def dash_answer(proj, key, choice, ver=None, **kw):
+    ver = version(proj, key) if ver is None else ver
+    return notes.answer(proj, key, choice, expect_version=ver, via="dashboard", **kw)
+
+
+def answered(home):
+    return [e for e in events(home) if e["kind"] == "question-answered"]
+
+
+def hold_slice(proj, mk_slice):
+    k = mk_slice(proj, phase="FRAME", risk="R3", rulebooks=["a.md"])
+    notes.ask(
+        proj, k, question="Spend?", options=["yes", "no"], recommended="no", wait=True
+    )
+    slices.move(proj, k, "HELD", "R3 waits")
+    return k
+
+
+def owner_park(proj, mk_slice):
+    k = mk_slice(proj, phase="REMEDIATE", round=2)
+    slices.move(proj, k, "PARKED", "failed-twice")
+    return k
+
+
+def on_lock(monkeypatch, proj, nth, action):
+    """Run `action` just before the nth acquisition of the questions lock."""
+    real, count = store.locked, [0]
+    lock = notes._lock_for(proj)
+
+    def locked(path):
+        if Path(path) == lock:
+            count[0] += 1
+            if count[0] == nth:
+                action()
+        return real(path)
+
+    monkeypatch.setattr(store, "locked", locked)
+    return real
+
+
+def test_other_answer_stored_and_validated(proj, home, mk_slice):
+    ask(proj)
+    notes.answer(proj, "q1", "other: use the slower path")
+    page = (home / "p" / "questions.md").read_text()
+    assert "- Answer: other: use the slower path" in page
+    assert stored(proj)["applied"] == "other: use the slower path"
+    for bad in ("other: ", "other: a\nb", "other: " + "x" * 501, "other:  x"):
+        ask(proj, "q2")
+        with pytest.raises(notes.NotesError):
+            notes.answer(proj, "q2", bad)
+        assert stored(proj, "q2")["answer"] is None
+    ask(proj, "q3")
+    notes.answer(proj, "q3", "other: " + "x" * 500)
+    k = hold_slice(proj, mk_slice)
+    with pytest.raises(notes.NotesError):
+        notes.answer(proj, f"hold:{k}", "other: release it")
+    assert slices.load(proj, k)["phase"] == "HELD"
+
+
+def test_answer_with_old_version_is_refused(proj, home):
+    ask(proj)
+    old = version(proj)
+    ask(proj, question="Pick again")
+    with pytest.raises(notes.AnswerStale, match="This question changed"):
+        dash_answer(proj, "q1", "A", old)
+    assert stored(proj)["answer"] is None and answered(home) == []
+
+
+def test_removed_option_on_reask_is_stale(proj, home):
+    ask(proj, options=["A", "B"])
+    old = version(proj)
+    ask(proj, options=["A", "C"])
+    with pytest.raises(notes.AnswerStale):
+        dash_answer(proj, "q1", "B", old)
+    assert stored(proj)["answer"] is None
+
+
+def test_unknown_key_is_gone(proj):
+    with pytest.raises(notes.AnswerGone, match="This question is gone"):
+        dash_answer(proj, "nope", "A", "0" * 16)
+
+
+def test_reask_between_check_and_lock_is_refused(proj, home, monkeypatch):
+    ask(proj)
+    old = version(proj)
+    on_lock(monkeypatch, proj, 1, lambda: ask(proj, question="Changed"))
+    with pytest.raises(notes.AnswerStale):
+        dash_answer(proj, "q1", "A", old)
+    q = stored(proj)
+    assert q["question"] == "Changed" and q["answer"] is None and q["decision"] is None
+    assert answered(home) == []
+
+
+def test_cli_answer_unchanged(proj, home):
+    ask(proj, options=["A", "B", "C"])
+    r = cli(home, "p", "answer", "q1", "B")
+    assert r.returncode == 0 and "Answer saved." in r.stdout
+    assert stored(proj)["applied"] == "B"
+    r = cli(home, "p", "answer", "q1", "B")
+    assert r.returncode == 0 and "Already answered." in r.stdout
+    assert cli(home, "p", "answer", "q1", "C").returncode == 0  # a CLI change, as today
+    assert stored(proj)["applied"] == "C"
+    assert cli(home, "p", "answer", "q1", "Z").returncode == 3
+    assert [e["via"] for e in answered(home)] == ["cli", "cli"]
+
+
+def test_override_of_tech_decision_records_owner_answer(proj, home):
+    ask(proj, klass="tech", recommended="A")
+    assert stored(proj)["applied"] == "A"
+    assert dash_answer(proj, "q1", "B") == notes.MSG_SAVED
+    q = stored(proj)
+    assert (q["answer"], q["applied"], q["recommended"]) == ("B", "B", "A")
+    assert q["decision"]["status"] == "done" and q["decision"]["source"] == "dashboard"
+    (ev,) = answered(home)
+    assert ev["via"] == "dashboard" and ev["decision"] == q["decision"]["id"]
+    assert ev["at"] == q["answered_at"]
+    dash_answer(proj, "q1", "A")  # override the override
+    assert stored(proj)["applied"] == "A" and len(answered(home)) == 2
+
+
+def test_duplicate_same_answer_is_already_answered(proj, home):
+    ask(proj)
+    first = version(proj)
+    dash_answer(proj, "q1", "A")
+    with pytest.raises(notes.AlreadyAnswered, match="Already answered"):
+        dash_answer(proj, "q1", "A")  # a fresh tab, same choice
+    with pytest.raises(notes.AlreadyAnswered):
+        dash_answer(proj, "q1", "A", first)  # the double click: the saved pair
+    with pytest.raises(notes.AlreadyAnswered):
+        dash_answer(proj, "q1", "B")  # a product answer is final from the page
+    assert len(answered(home)) == 1 and stored(proj)["applied"] == "A"
+
+
+def test_keep_held_then_approve(proj, home, mk_slice):
+    k = hold_slice(proj, mk_slice)
+    hk = f"hold:{k}"
+    dash_answer(proj, hk, "keep-held")
+    assert slices.load(proj, k)["phase"] == "HELD"
+    dash_answer(proj, hk, "approve")
+    assert slices.load(proj, k)["phase"] == "FRAME"
+    with pytest.raises(notes.AlreadyAnswered):
+        dash_answer(proj, hk, "keep-held")
+    assert [e["via"] for e in answered(home)] == ["dashboard", "dashboard"]
+
+
+def test_owner_park_keep_held_then_approve_resumes(proj, mk_slice):
+    k = owner_park(proj, mk_slice)
+    hk = f"hold:{k}"
+    dash_answer(proj, hk, "keep-held")
+    assert slices.load(proj, k)["owner_answered"] is False
+    with pytest.raises(slices.SliceError):
+        slices.move(proj, k, "REMEDIATE", "owner approved")
+    dash_answer(proj, hk, "approve")
+    assert slices.load(proj, k)["owner_answered"] is True
+    slices.move(proj, k, "REMEDIATE", "owner approved")
+    assert slices.load(proj, k)["phase"] == "REMEDIATE"
+
+
+def test_page_sync_rechecks_under_lock(proj, home, mk_slice, monkeypatch):
+    k = hold_slice(proj, mk_slice)
+    hk = f"hold:{k}"
+    page = home / "p" / "questions.md"
+    text = page.read_text()
+    cut = text.index(f"### {hk}")
+    page.write_text(
+        text[:cut] + text[cut:].replace("- Answer:", "- Answer: approve", 1)
+    )
+
+    def replace_question():
+        page.write_text(page.read_text().replace("Release the hold", "Free the hold"))
+
+    real_locked = on_lock(monkeypatch, proj, 2, replace_question)
+    assert notes.read_answers(proj) == []
+    assert slices.load(proj, k)["phase"] == "HELD" and answered(home) == []
+    assert stored(proj, hk)["decision"] is None
+    monkeypatch.setattr(store, "locked", real_locked)
+    assert notes.read_answers(proj) == [hk]  # the next sync sees the new version
+    assert slices.load(proj, k)["phase"] == "FRAME" and len(answered(home)) == 1
+
+
+def test_failed_effect_is_finished_on_retry(proj, home, mk_slice, monkeypatch):
+    k = hold_slice(proj, mk_slice)
+    hk = f"hold:{k}"
+    ver = version(proj, hk)
+    real = slices.release_hold
+
+    def boom(*a, **kw):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(slices, "release_hold", boom)
+    with pytest.raises(notes.AnswerPending, match="saved, but applying it did not"):
+        dash_answer(proj, hk, "approve", ver)
+    q = stored(proj, hk)
+    assert q["answer"] == "approve" and q["decision"]["status"] == "pending"
+    assert slices.load(proj, k)["phase"] == "HELD" and answered(home) == []
+    monkeypatch.setattr(slices, "release_hold", real)
+    assert dash_answer(proj, hk, "approve", ver) == notes.MSG_FINISHED
+    assert stored(proj, hk)["decision"]["status"] == "done"
+    assert slices.load(proj, k)["phase"] == "FRAME" and len(answered(home)) == 1
+    with pytest.raises(notes.AlreadyAnswered):
+        dash_answer(proj, hk, "approve", ver)
+
+
+@pytest.mark.parametrize("stop", ["before_append", "after_append"])
+@pytest.mark.parametrize("recover", ["retry", "sync"])
+def test_answer_event_once_across_append_failure(
+    proj, home, mk_slice, monkeypatch, stop, recover
+):
+    k = hold_slice(proj, mk_slice)
+    hk = f"hold:{k}"
+    ver = version(proj, hk)
+    real = store.append_event
+
+    def flaky(project, kind, **kw):
+        if kind != "question-answered":
+            return real(project, kind, **kw)
+        if stop == "after_append":
+            real(project, kind, **kw)
+        raise OSError("stop")
+
+    monkeypatch.setattr(store, "append_event", flaky)
+    with pytest.raises(notes.AnswerPending):
+        dash_answer(proj, hk, "approve", ver)
+    saved = stored(proj, hk)
+    monkeypatch.setattr(store, "append_event", real)
+    monkeypatch.setattr(store, "now_iso", lambda: "2099-01-01T00:00:00+00:00")
+    if recover == "retry":
+        assert dash_answer(proj, hk, "approve", ver) == notes.MSG_FINISHED
+    else:
+        assert notes.read_answers(proj) == [hk]
+    (ev,) = answered(home)
+    assert (
+        ev["decision"] == saved["decision"]["id"] == stored(proj, hk)["decision"]["id"]
+    )
+    assert ev["at"] == saved["answered_at"] and ev["via"] == "dashboard"
+    assert stored(proj, hk)["decision"]["status"] == "done"
+    assert stored(proj, hk)["answered_at"] == saved["answered_at"]
+    assert slices.load(proj, k)["phase"] == "FRAME"

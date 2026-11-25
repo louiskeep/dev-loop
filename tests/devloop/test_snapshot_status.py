@@ -233,3 +233,25 @@ def test_selfcheck_hint_carries_the_full_head(proj, mk_slice):
     mk_slice(proj, phase="SELF_CHECK", risk="R1", head=head)
     assert "selfcheck " in snapshot.build_snapshot(proj)[0]
     assert f"--head {head}" in snapshot.build_snapshot(proj)[0]
+
+
+def test_other_instruction_reaches_snapshot(proj):
+    from devloop import notes
+
+    notes.ask(proj, "q1", question="Pick", options=["A", "B"], recommended="A")
+    _, before = snapshot.build_snapshot(proj)
+    notes.answer(proj, "q1", "other: use the slower path")
+    snap = snapshot.build(proj)
+    assert snap.md.index("## Owner decisions") < snap.md.index("## Stale and failed")
+    assert "q1" in snap.md and "other: use the slower path" in snap.md
+    decision = notes.load_questions(notes.questions_path(proj))[1]["q1"]["decision"]
+    assert snap.decisions == {"q1": decision["id"]} and decision["id"] in snap.md
+    assert snap.digest != before
+    assert snapshot.build_snapshot(proj) == (snap.md, snap.digest)
+    # Once the tick has acknowledged it, the section and the digest term are gone.
+    store.write_json(
+        store.state_dir(proj) / "tick-state.json",
+        {"acked_decisions": {"q1": decision["id"]}},
+    )
+    after = snapshot.build(proj)
+    assert after.decisions == {} and "other: use the slower path" not in after.md

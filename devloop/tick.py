@@ -157,7 +157,8 @@ def _pass(project) -> str:
     if store.cap_active(project):
         status.write_status(project)
         return "capped"
-    md, digest = snapshot.build_snapshot(project)
+    snap = snapshot.build(project)
+    md, digest = snap.md, snap.digest
     last = state.get("last_model_at")
     fresh = (
         last is not None
@@ -166,16 +167,23 @@ def _pass(project) -> str:
     )
     # A finished run nobody applied yet holds its slot, so it always earns a model pass:
     # a worker can end during the model call and be saved in last_hash unseen.
+    # An owner decision no pass has seen also earns a model pass, even when the hash
+    # already includes it.
     if (
         digest == state.get("last_hash")
         and fresh
         and not snapshot.finished_unapplied(project)
+        and not snap.decisions
     ):
         status.write_status(project)
         return "skipped"
     outcome = _run_model(project, cfg, md)
     status.write_status(project)
     if outcome == "model":
+        # Acknowledge only what this prompt carried, and write it before the new hash is
+        # taken, so a decision made during the call is neither lost nor acknowledged.
+        state[snapshot.ACKED] = {**(state.get(snapshot.ACKED) or {}), **snap.decisions}
+        store.write_json(_state_file(project), state)
         state.update(
             last_hash=snapshot.build_snapshot(project)[1], last_model_at=store.now_iso()
         )

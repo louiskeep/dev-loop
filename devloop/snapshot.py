@@ -4,6 +4,7 @@ It is read-only. The hash covers state that should wake the model, not clocks, s
 unchanged loop skips the model call.
 """
 
+import collections
 import hashlib
 import json
 import re
@@ -19,6 +20,11 @@ STALE_SECS = 2 * 3600
 DEFAULT_CMD_CHARS = 4000
 NODE_LINES = 60
 DIGITS = re.compile(r"\d+")
+MAX_DECISIONS = 40
+ACKED = "acked_decisions"
+
+# One build: the page text, the digest, and the owner decisions the text carries.
+Snapshot = collections.namedtuple("Snapshot", "md digest decisions")
 
 
 def _age(iso) -> float:
@@ -158,12 +164,23 @@ def record_node_status(project, outputs) -> None:
     )
 
 
-def _questions(project):
+def _owner_decisions(project, qs_all):
+    """Owner answers the tick has not acknowledged yet: [(key, question, receipt)]."""
+    state = store.read_json(store.state_dir(project) / "tick-state.json")
+    acked = state.get(ACKED) or {}
+    out = [
+        (q["key"], q, q["decision"])
+        for q in qs_all.values()
+        if q["decision"]
+        and q["answer"] == q["decision"]["choice"]
+        and acked.get(q["key"]) != q["decision"]["id"]
+    ]
+    return out[:MAX_DECISIONS]
+
+
+def _all_questions(project):
     path = notes.questions_path(project)
-    if not path.is_file():
-        return []
-    _, qs, _, _ = notes.load_questions(path)
-    return [q for q in qs.values() if q["wait"] and not q["answer"]]
+    return notes.load_questions(path)[1] if path.is_file() else {}
 
 
 def _node_summary(cfg):
@@ -178,6 +195,12 @@ def _node_summary(cfg):
 
 
 def build_snapshot(project) -> tuple:
+    """The page text and its digest, for callers that need nothing else."""
+    snap = build(project)
+    return snap.md, snap.digest
+
+
+def build(project) -> Snapshot:
     cfg = projmod.load_project(project)
     running = _running_keys(project)
     all_slices = slices.list_slices(project)
@@ -189,7 +212,9 @@ def build_snapshot(project) -> tuple:
     ]
     finished = finished_unapplied(project)
     failed = [r for r in finished if r["status"] == "FAILED"]
-    qs = _questions(project)
+    every_question = _all_questions(project)
+    qs = [q for q in every_question.values() if q["wait"] and not q["answer"]]
+    decisions = _owner_decisions(project, every_question)
     sd = store.state_dir(project)
     problems = [
         e
@@ -206,6 +231,17 @@ def build_snapshot(project) -> tuple:
     mem_gb = runs.mem_available_kb() / 1024 / 1024
 
     sections = []
+    if decisions:
+        # First, so the cap never trims an owner's instruction.
+        sections.append(
+            ["## Owner decisions (not yet seen by a tick)"]
+            + [
+                f"- {key}: {scrub(q['question'], 200)} -> the owner answered: "
+                f"{r['choice']} (decision {r['id']}"
+                f"{', not applied yet' if r['status'] == notes.PENDING else ''})"
+                for key, q, r in decisions
+            ]
+        )
     sections.append(
         ["## Stale and failed"]
         + (
@@ -323,9 +359,10 @@ def build_snapshot(project) -> tuple:
         ),
         "closable": closable,
         "held_tests": sorted((h["id"], h["reason"], h["code"]) for h in held),
-        "questions": sorted(q["key"] for q in qs),
+        "questions": sorted((q["key"], notes.question_version(q)) for q in qs),
+        "decisions": sorted((key, r["id"]) for key, _q, r in decisions),
         "problems": sorted((e["key"], e["count"]) for e in problems),
         "outputs": [(n, DIGITS.sub("", t)) for n, t, _ok in outputs],
     }
     digest = hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest()
-    return md, digest
+    return Snapshot(md, digest, {key: r["id"] for key, _q, r in decisions})

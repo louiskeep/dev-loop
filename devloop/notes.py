@@ -8,6 +8,7 @@ editing a line in a page they already keep.
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 from pathlib import Path
@@ -652,26 +653,82 @@ def valid_choice(q, choice) -> bool:
     )
 
 
-def _apply_answer(project, key, choice):
+# --- answers -------------------------------------------------------------------
+#
+# An answer is saved first, with a receipt (a fresh decision ID, who sent it, which
+# version it answered, the choice, a digest of the question as asked, status pending).
+# Then the effects run in a fixed order: the slice change, the `question-answered` event
+# keyed by the decision ID, and last the receipt turns `done`. Every step skips work that
+# already happened, so a retry or the next sync finishes what a crash left.
+
+
+def _definition_digest(q):
+    fields = ("key", "asked_at", "klass", "wait", "question", "context", "detail")
+    return store.canonical_digest(
+        {
+            **{f: q.get(f) for f in fields},
+            "options": q["options"],
+            "recommended": q["recommended"],
+        }
+    )
+
+
+def _accepted(q):
+    """The choice the loop already holds as the owner's, or None."""
+    receipt = q["decision"]
+    if receipt:
+        return receipt["choice"]
+    return q["answer"] if q["answer"] == q["applied"] else None
+
+
+def _pending(q):
+    receipt = q["decision"]
+    return (
+        bool(receipt)
+        and receipt["status"] == PENDING
+        and q["answer"] == receipt["choice"]
+    )
+
+
+def _is_retry_of_current(q, version, choice):
+    """A dashboard post that repeats the saved (version, choice) of the current decision."""
+    r = q["decision"]
+    return bool(
+        r
+        and r["source"] == "dashboard"
+        and version is not None
+        and r["version"] == version
+        and r["choice"] == choice
+        and q["answer"] == choice
+        and r["digest"] == _definition_digest(q)
+    )
+
+
+def _may_replace(q, choice, via):
+    """A different choice after an owner decision."""
+    if via in ("cli", "page"):
+        return True
+    if q["klass"] == "tech":
+        return True
+    return q["key"].startswith(HOLD_PREFIX) and (
+        q["answer"] == KEEP_HELD and choice != KEEP_HELD
+    )
+
+
+def _effects(project, key, choice):
+    """The slice side of an answer. Each branch checks the slice, so a replay is safe."""
     from . import slices
 
-    path = questions_path(project)
-    with store.locked(_lock_for(project)):
-        before, qs, after, had = load_questions(path)
-        q = qs.get(key)
-        if q is None:
-            raise NotesError("no such question")
-        if not valid_choice(q, choice):
-            raise NotesError("answer must be one of the question's options")
-        q["answer"] = q["applied"] = choice
-        _save_questions(path, before, qs, after, had)
-    store.append_event(project, "question-answered", key=key)
     s = _slice_for(project, key)
     sk = key.removeprefix(HOLD_PREFIX)
     if s and _lifts_hold(s, key, choice):
         if s["phase"] == "HELD":
             slices.release_hold(project, sk)
-        elif s["phase"] == "PARKED" and s["park_reason"] in slices.OWNER_PARKS:
+        elif (
+            s["phase"] == "PARKED"
+            and s["park_reason"] in slices.OWNER_PARKS
+            and not s["owner_answered"]
+        ):
             slices.owner_answer(project, sk)
     elif (
         s
@@ -683,11 +740,96 @@ def _apply_answer(project, key, choice):
         slices.set_fields(project, sk, waiting_on=None)
 
 
-def answer(project: str, key: str, choice: str) -> None:
-    """Owner only: the headless tick may not answer its own questions."""
+def _finish(project, path, before, qs, after, had, q):
+    """Run the effects of a saved decision, then mark its receipt done. Caller holds the lock."""
+    receipt = q["decision"]
+    try:
+        _effects(project, q["key"], receipt["choice"])
+        store.append_event(
+            project,
+            "question-answered",
+            once=("decision", receipt["id"]),
+            at=q["answered_at"],
+            key=q["key"],
+            via=receipt["source"],
+            decision=receipt["id"],
+        )
+        q["decision"] = {**receipt, "status": DONE}
+        q["applied"] = receipt["choice"]
+        _save_questions(path, before, qs, after, had)
+    except Exception:  # noqa: BLE001  the answer is saved; say so and let a retry finish
+        raise AnswerPending(MSG_PENDING) from None
+
+
+def _apply_answer(project, key, choice, *, via, version=None, sync=None):
+    """Decide, save and apply one answer under the questions lock. Returns the message.
+
+    `sync` is the (version, answer) the caller saw on the page; when the record has since
+    changed, nothing is touched and None comes back.
+    """
+    path = questions_path(project)
+    with store.locked(_lock_for(project)):
+        before, qs, after, had = load_questions(path)
+        q = qs.get(key)
+        if q is None:
+            if sync is not None:
+                return None
+            raise AnswerGone(MSG_GONE)
+        if sync is not None:
+            if (question_version(q), q["answer"]) != sync:
+                return None
+            choice = q["answer"]
+        resume = False
+        if via == "dashboard" and _is_retry_of_current(q, version, choice):
+            if not _pending(q):
+                raise AlreadyAnswered(MSG_ALREADY)
+            resume = True
+        else:
+            if version is not None and version != question_version(q):
+                raise AnswerStale(MSG_STALE)
+            if not valid_choice(q, choice):
+                raise NotesError("answer must be one of the question's options")
+            accepted = _accepted(q)
+            if choice == accepted:
+                if not _pending(q):
+                    if via == "dashboard":
+                        raise AlreadyAnswered(MSG_ALREADY)
+                    return MSG_ALREADY
+                resume = True
+            elif accepted is not None and not _may_replace(q, choice, via):
+                raise AlreadyAnswered(MSG_ALREADY)
+            elif _pending(q):
+                # Settle the old decision before its receipt is replaced.
+                _finish(project, path, before, qs, after, had, q)
+        if not resume:
+            q["answer"] = choice
+            q["answered_at"] = store.now_iso()
+            q["decision"] = {
+                "id": secrets.token_hex(8),
+                "source": via,
+                "version": version,
+                "choice": choice,
+                "digest": _definition_digest(q),
+                "status": PENDING,
+            }
+            _save_questions(path, before, qs, after, had)
+        _finish(project, path, before, qs, after, had, q)
+        return MSG_FINISHED if resume else MSG_SAVED
+
+
+def answer(
+    project: str, key: str, choice: str, *, expect_version=None, via="cli"
+) -> str:
+    """Owner only: the headless tick may not answer its own questions. Returns the outcome."""
     store.require_interactive("answer")
     _key(key)
-    _apply_answer(project, key, choice)
+    return _apply_answer(project, key, choice, via=via, version=expect_version)
+
+
+def _sync_due(q):
+    if not q["answer"]:
+        return False
+    return _pending(q) or q["answer"] != _accepted(q)
 
 
 def read_answers(project: str) -> list:
@@ -697,12 +839,22 @@ def read_answers(project: str) -> list:
         _, qs, _, _ = load_questions(path)
     applied = []
     for key, q in qs.items():
-        if not q["answer"] or q["answer"] == q["applied"]:
+        if not _sync_due(q):
             continue
         gated = _slice_for(project, key)
         if store.is_headless() and gated and gated["phase"] in ("HELD", "PARKED"):
             continue  # releasing a held slice is interactive only
-        if not valid_choice(q, q["answer"]):
+        try:
+            done = _apply_answer(
+                project,
+                key,
+                q["answer"],
+                via="page",
+                sync=(question_version(q), q["answer"]),
+            )
+        except AnswerPending:
+            continue  # saved; the next sync finishes it
+        except NotesError:
             problem(
                 project,
                 f"answer-invalid-{key}",
@@ -710,6 +862,6 @@ def read_answers(project: str) -> list:
                 fix="write one of the listed options after Answer:",
             )
             continue
-        _apply_answer(project, key, q["answer"])
-        applied.append(key)
+        if done:
+            applied.append(key)
     return applied
