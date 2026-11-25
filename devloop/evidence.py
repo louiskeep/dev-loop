@@ -3,7 +3,7 @@
 import hashlib
 
 from . import project as projmod
-from . import slices, store
+from . import runs, slices, store
 
 
 def _tick_ok(s, kind):
@@ -179,10 +179,29 @@ def _builder_run_ok(project, s):
     return False
 
 
+def _outstanding(project, s):
+    """Run IDs that could still replace evidence for this head: a test or review that
+    is live, or finished but not applied. Their result is unknown, so the old GO cannot
+    be trusted. A covering full run that lists this slice counts the same."""
+    out = []
+    for rd, req in runs.iter_runs(project):
+        if runs.is_done(rd) or req.get("kind") not in _EVIDENCE_KINDS:
+            continue
+        mine = runs.slice_key_of(req) == s["key"] and req.get("head") == s["head"]
+        covers = req.get("covers") if isinstance(req.get("covers"), dict) else {}
+        code_run = req["kind"] == "test" or req.get("purpose") == "code"
+        if code_run and (mine or covers.get(s["key"]) == s["head"]):
+            out.append(rd.name)
+    return out
+
+
+_EVIDENCE_KINDS = ("test", "dennis", "codex-review", "codex-fix")
+
+
 def _gate_items(project, s, cfg):
     if not s["head"]:
         return [("head set", False)]
-    items = []
+    items = [("no test or review outstanding on head", not _outstanding(project, s))]
     sha = slices.plan_sha_or_none(s)
     items.append(
         (

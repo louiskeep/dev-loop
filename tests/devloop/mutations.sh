@@ -204,6 +204,9 @@ mutate "only exit 1 counts as a red test" devloop/apply.py \
         )
         if not red_test:' \
   $T/test_runs_apply.py::test_red_test_rerun_replaces_an_earlier_go
+mutate "gate ignores an unapplied rerun" devloop/evidence.py \
+  '        if runs.is_done(rd) or req.get("kind") not in _EVIDENCE_KINDS:' '        if True:' \
+  $T/test_merge.py::test_merge_refuses_while_a_rerun_for_the_head_is_unapplied
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

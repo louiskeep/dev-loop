@@ -890,3 +890,54 @@ def test_workflow_file_name_is_resolved_through_the_actions_api(proj, gate, cfg_
     calls = gate.gh_calls()
     assert any(c[:1] == ["api"] and ".path" in c for c in calls)
     assert all("path" not in c[c.index("--json") + 1] for c in calls if "--json" in c)
+
+
+@pytest.mark.parametrize(
+    "kind,extra",
+    [
+        ("test", {"level": "t1", "purpose": "code"}),
+        ("codex-review", {"reviewer": "codex", "purpose": "code"}),
+    ],
+)
+def test_merge_refuses_while_a_rerun_for_the_head_is_unapplied(
+    proj, gate, mk_run, kind, extra
+):
+    k = gate()
+    mk_run(
+        proj,
+        "rerun",
+        kind=kind,
+        key=k,
+        head=HEAD,
+        applied=False,
+        verdict="NO-GO",
+        **extra,
+    )
+    r = merge.merge(proj, k)
+    assert r.outcome == "refused" and "outstanding" in r.reason
+    assert not [c for c in gate.gh_calls() if c[:2] == ["pr", "merge"]]
+    d = store.run_dir(proj, "rerun")
+    (d / "applied").write_text("")
+    assert merge.merge(proj, k).outcome == "merged"
+
+
+def test_merge_refuses_while_a_covering_full_run_is_unapplied(proj, gate, mk_run):
+    k = gate()
+    mk_run(
+        proj,
+        "topfull",
+        kind="test",
+        key="TOP--S1",
+        head="b" * 40,
+        level="full",
+        covers={k: HEAD},
+        applied=False,
+    )
+    assert "outstanding" in merge.merge(proj, k).reason
+
+
+def test_red_rerun_after_green_blocks_merge_through_apply(proj, gate, mk_run):
+    k = gate()
+    assert not slices.validate_gate(proj, k)
+    slices.record_evidence(proj, k, "t1", "NO-GO", "t1-red", head=HEAD)
+    assert any("t1" in p for p in slices.validate_gate(proj, k))
