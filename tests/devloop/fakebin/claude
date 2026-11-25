@@ -15,6 +15,11 @@ if log:
         fh.write(json.dumps({"tool": "claude", "argv": argv, "cwd": os.getcwd(),
                              "stdin": stdin,
                              "env": {k: os.environ.get(k) for k in ("DEVLOOP_HEADLESS", "DEVLOOP_RUN_DIR")}}) + "\n")
+if argv[:1] == ["agents"]:
+    if os.environ.get("FAKE_AGENTS_EXIT"):
+        sys.exit(int(os.environ["FAKE_AGENTS_EXIT"]))
+    print(os.environ.get("FAKE_AGENTS", "dennis\nplanner"))
+    sys.exit(0)
 mode = os.environ.get("FAKE_CLAUDE_MODE", "result")
 if mode == "sleep":
     time.sleep(float(os.environ.get("FAKE_SLEEP", "60")))

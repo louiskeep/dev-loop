@@ -132,6 +132,35 @@ def test_install_replaces_atomically(tmp_path):
     assert (h / ".claude" / "skills" / "dev-loop").is_symlink()
 
 
+def test_installed_skill_files_come_from_the_installed_version(tmp_path):
+    h = tmp_path / "h"
+    h.mkdir()
+    out = subprocess.run(
+        [str(ROOT / "bin" / "devloop-install"), str(tmp_path / "bin")],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=run_env(h),
+    )
+    assert out.returncode == 0, out.stderr
+    lib = (h / ".local" / "share" / "devloop" / "lib").resolve()
+    assert (lib / "skills" / "dev-loop" / "TICK.md").is_file()
+    where = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from devloop import store; print(store.skill_dir())",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={**run_env(h), "PYTHONPATH": str(lib)},
+    )
+    assert Path(where.stdout.strip()) == lib / "skills" / "dev-loop", where.stderr
+    link = h / ".claude" / "skills" / "dev-loop"
+    assert link.resolve() == lib / "skills" / "dev-loop"
+
+
 def test_install_never_replaces_a_real_skill_folder(tmp_path):
     h = tmp_path / "h"
     real = h / ".claude" / "skills" / "dev-loop"
@@ -242,6 +271,24 @@ def test_check_names_each_problem(proj, ready_cfg, cfg_edit, tmp_path):
         "snapshot_cmds[0]",
     ):
         assert needle in bad, needle
+
+
+def test_check_fails_when_a_dennis_agent_is_missing(
+    proj, ready_cfg, cfg_edit, monkeypatch
+):
+    cfg_edit(
+        lambda c: c["reviewers"].update(ghost={"kind": "dennis", "kinds": ["dennis"]})
+    )
+    results = check.run_checks(proj)
+    assert (True, "agents: reviewer agent dennis exists") in results
+    assert (False, "agents: reviewer agent ghost not found") in results
+
+
+def test_check_only_warns_when_claude_cannot_list_agents(proj, ready_cfg, monkeypatch):
+    monkeypatch.setenv("FAKE_AGENTS_EXIT", "2")
+    results = check.run_checks(proj)
+    assert all(ok for ok, _ in results)
+    assert any("could not list claude agents" in m for _, m in results)
 
 
 def test_check_cli_exit_code(proj, ready_cfg, home, cfg_edit):

@@ -21,10 +21,10 @@
     "planner": 2
   },
   "models": {
-    "tick": "claude-opus-4-5",
-    "planner": "claude-opus-4-5",
-    "builder": "claude-sonnet-4-5",
-    "reviewer": "claude-opus-4-5"
+    "tick": "claude-opus-5-5",
+    "planner": "claude-opus-5-5",
+    "builder": "claude-sonnet-5-5",
+    "reviewer": "claude-opus-5-5"
   },
   "reviews": {
     "R0": {

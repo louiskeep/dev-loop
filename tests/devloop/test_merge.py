@@ -492,3 +492,70 @@ def test_merge_pinned_source_must_match(proj, gate, cfg_edit):
         ]
     )
     assert merge.merge(proj, k).outcome == "merged"
+
+
+def test_closed_pr_clears_the_flags_and_refuses_with_a_fixed_reason(proj, gate):
+    k = gate()
+    gate.set_gh(on_merge={"state": "CLOSED"})
+    r = merge.merge(proj, k)
+    assert r.outcome == "refused" and "closed, not merged" in r.reason
+    s = slices.load(proj, k)
+    assert (
+        s["phase"] == "GATE"
+        and s["merge_unknown"] is False
+        and s["merge_attempt"] is None
+    )
+
+
+def test_closed_pr_found_while_reconciling_an_unknown_state(proj, gate):
+    k = gate()
+    gate.set_gh(on_merge={"fail_view": True})
+    assert merge.merge(proj, k).outcome == "unknown"
+    gate.set_gh(fail_view=False, state="CLOSED")
+    r = merge.merge(proj, k)
+    assert r.outcome == "refused" and "closed, not merged" in r.reason
+    s = slices.load(proj, k)
+    assert s["merge_unknown"] is False and s["merge_attempt"] is None
+
+
+def test_merged_into_the_wrong_base_refuses_and_clears_the_flags(proj, gate):
+    k = gate()
+    gate.set_gh(on_merge={"state": "MERGED", "baseRefName": "release"})
+    r = merge.merge(proj, k)
+    assert r.outcome == "refused" and "another base" in r.reason
+    s = slices.load(proj, k)
+    assert (
+        s["phase"] == "GATE"
+        and s["merge_unknown"] is False
+        and s["merge_attempt"] is None
+    )
+
+
+def test_plan_edited_after_the_merge_still_finishes_the_move(
+    proj, gate, tmp_path, monkeypatch
+):
+    k = gate()
+    real = merge._confirm
+
+    def confirm_then_edit(*a, **kw):
+        state = real(*a, **kw)
+        (tmp_path / "plan.md").write_text("Rules consulted: edited after the merge\n")
+        return state
+
+    monkeypatch.setattr(merge, "_confirm", confirm_then_edit)
+    assert merge.merge(proj, k).outcome == "merged"
+    assert slices.load(proj, k)["phase"] == "DOCUMENT"
+
+
+def test_merge_reset_is_interactive_and_clears_the_flags(proj, gate, monkeypatch):
+    k = gate()
+    s = slices.load(proj, k)
+    s["merge_unknown"], s["merge_attempt"] = True, {"pr": 7}
+    slices._save(proj, s)
+    monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
+    with pytest.raises(store.HeadlessRefused):
+        slices.merge_reset(proj, k)
+    monkeypatch.delenv("DEVLOOP_HEADLESS")
+    slices.merge_reset(proj, k)
+    s = slices.load(proj, k)
+    assert s["merge_unknown"] is False and s["merge_attempt"] is None

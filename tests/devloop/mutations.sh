@@ -146,6 +146,14 @@ mutate "builder failures keyed by head" devloop/runs.py \
 mutate "markdown is not stripped from the verdict" devloop/wrap.py \
   '    m = rx.fullmatch(_plain_line(lines[-1])) if lines else None' '    m = rx.fullmatch(lines[-1]) if lines else None' \
   $T/test_wrap.py::test_markdown_around_the_verdict_line_is_stripped
+mutate "a closed PR is read as unknown" devloop/merge.py \
+  '    return {"OPEN": "open", "CLOSED": "closed"}.get(state, "unknown")' '    return {"OPEN": "open"}.get(state, "unknown")' \
+  $T/test_merge.py::test_closed_pr_clears_the_flags_and_refuses_with_a_fixed_reason
+mutate "merge move re-checks the gate" devloop/slices.py \
+  '            if via_merge
+            else [name' '            if False
+            else [name' \
+  $T/test_merge.py::test_plan_edited_after_the_merge_still_finishes_the_move
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

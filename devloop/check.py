@@ -1,6 +1,7 @@
 """`devloop-state PROJECT check`: everything a first tick needs, checked before it runs."""
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -45,6 +46,43 @@ def _run(argv, timeout):
     except (OSError, subprocess.SubprocessError):
         return False
     return r.returncode == 0
+
+
+def _agent_checks(cfg):
+    """Each dennis-kind reviewer runs `claude --agent NAME`; the agent must exist."""
+    names = [n for n, s in cfg["reviewers"].items() if s.get("kind") == "dennis"]
+    if not names:
+        return []
+    try:
+        r = subprocess.run(
+            ["claude", "agents"],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+        listing = r.stdout if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        listing = None
+    if listing is None:
+        # An older claude has no `agents` command: warn, do not fail the setup.
+        return [
+            (True, f"agents: could not list claude agents; check {n} by hand")
+            for n in names
+        ]
+    return [
+        (
+            bool(re.search(rf"(?<![\w-]){re.escape(n)}(?![\w-])", listing)),
+            f"agents: reviewer agent {n} "
+            + (
+                "exists"
+                if re.search(rf"(?<![\w-]){re.escape(n)}(?![\w-])", listing)
+                else "not found"
+            ),
+        )
+        for n in names
+    ]
 
 
 def run_checks(project) -> list:
@@ -107,6 +145,7 @@ def run_checks(project) -> list:
                 else "notify.env_file: missing or readable by others",
             )
         )
+    out += _agent_checks(cfg)
     out.append((_run(["gh", "auth", "status"], 30), "gh: authenticated"))
     for host in (cfg.get("nodes") or {}).get("hosts", []):
         out.append(

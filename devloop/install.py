@@ -32,6 +32,13 @@ def install_package(repo: Path) -> Path:
         version / "devloop",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
+    # The skill files ride in the same version, so a checkout edit or a branch switch
+    # cannot change the tick's instructions under a running cron.
+    shutil.copytree(
+        repo / "skills" / "dev-loop",
+        version / "skills" / "dev-loop",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
     _swap_link(root / "lib", version)
     return version
 
@@ -48,12 +55,12 @@ def install_bins(repo: Path, bin_dir: Path) -> list:
     return done
 
 
-def link_skill(repo: Path) -> str:
+def link_skill(version: Path) -> str:
     link = Path.home() / ".claude" / "skills" / "dev-loop"
     link.parent.mkdir(parents=True, exist_ok=True)
     if link.exists() and not link.is_symlink():
         return "skill folder exists and is not a link; left alone"
-    _swap_link(link, repo / "skills" / "dev-loop")
+    _swap_link(link, version / "skills" / "dev-loop")
     return "skill linked"
 
 
@@ -66,7 +73,7 @@ def main(argv=None) -> int:
     if not (repo / "devloop" / "__init__.py").is_file() or not (repo / "bin").is_dir():
         print("REFUSED: run devloop-install from a plugin checkout", file=sys.stderr)
         return 3
-    install_package(repo)
+    version = install_package(repo)
     names = install_bins(repo, Path(args[0]))
-    print(f"installed {len(names)} commands to {args[0]}; {link_skill(repo)}")
+    print(f"installed {len(names)} commands to {args[0]}; {link_skill(version)}")
     return 0

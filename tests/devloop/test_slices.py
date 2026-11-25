@@ -177,12 +177,16 @@ def test_gate_to_document_only_through_merge(proj, ready):
     assert slices.finish_merge(proj, k, "merged")["phase"] == "DOCUMENT"
 
 
-def test_finish_merge_rechecks_the_evidence(proj, ready):
+def test_finish_merge_does_not_recheck_evidence_after_github_confirmed(proj, ready):
     k = ready("R1")
     slices.move(proj, k, "GATE", "x")
-    slices.set_fields(proj, k, head="b2")
-    with pytest.raises(slices.TransitionError):
-        slices.finish_merge(proj, k, "merged")
+    slices.set_fields(proj, k, head="b2")  # evidence no longer matches the head
+    assert slices.finish_merge(proj, k, "merged")["phase"] == "DOCUMENT"
+    k2 = ready("R1")
+    slices.move(proj, k2, "GATE", "x")
+    slices.set_fields(proj, k2, head="b2")
+    with pytest.raises(slices.TransitionError):  # a plain move still re-checks
+        slices.move(proj, k2, "DOCUMENT", "x")
 
 
 def test_move_back_to_frame_starts_a_new_lineage(proj, ready):

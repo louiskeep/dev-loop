@@ -274,18 +274,40 @@ def _preflight(project, cfg, s, view):
 
 
 def _confirm(cfg, repo_name, pr, base, head):
-    """merged | open | unknown, from GitHub."""
+    """merged | open | closed | mismatch | unknown, from GitHub.
+
+    closed is a CLOSED PR. mismatch is a MERGED PR that went to another base or at
+    another head, which is not the merge this slice asked for.
+    """
     repo_cfg, _, _ = _repo_settings(cfg, repo_name)
     view = _view(repo_cfg, pr, "state,headRefOid,baseRefName")
     if view is None:
         return "unknown"
-    if (
-        view.get("state") == "MERGED"
-        and view.get("baseRefName") == base
-        and _same_head(view.get("headRefOid"), head)
-    ):
-        return "merged"
-    return "open" if view.get("state") == "OPEN" else "unknown"
+    state = view.get("state")
+    if state == "MERGED":
+        if view.get("baseRefName") == base and _same_head(view.get("headRefOid"), head):
+            return "merged"
+        return "mismatch"
+    return {"OPEN": "open", "CLOSED": "closed"}.get(state, "unknown")
+
+
+_DEAD_REASONS = {
+    "closed": "the PR is closed, not merged; reopen it or make a new PR",
+    "mismatch": "the PR merged into another base or at another head",
+}
+
+
+def _dead(project, key, state):
+    """A final answer from GitHub that is not our merge: clear the flags and refuse."""
+    slices.set_merge_state(project, key, attempt=None, unknown=False)
+    notes.problem(
+        project,
+        "merge-pr-dead",
+        impact="the slice's PR cannot be merged as it stands",
+        fix="read the PR on GitHub, then fix the slice's PR or head",
+    )
+    store.append_event(project, "merge-pr-dead", key=key, state=state)
+    return _result("refused", _DEAD_REASONS[state])
 
 
 def _finish(project, key, s):
@@ -325,6 +347,8 @@ def merge(project, key) -> MergeResult:
             return _finish(project, key, s)
         if state == "unknown":
             return _result("unknown", "merge state is still unknown; no retry")
+        if state in _DEAD_REASONS:
+            return _dead(project, key, state)
         slices.set_merge_state(project, key, attempt=None, unknown=False)
         if s["merge_unknown"]:
             return _result("refused", "state read OPEN; the flag is clear, call again")
@@ -368,6 +392,8 @@ def merge(project, key) -> MergeResult:
     state = _confirm(cfg, s["repo"], s["pr"], base, s["head"])
     if state == "merged":
         return _finish(project, key, s)
+    if state in _DEAD_REASONS:
+        return _dead(project, key, state)
     if state == "open":
         slices.set_merge_state(project, key, attempt=None)
         return _result(

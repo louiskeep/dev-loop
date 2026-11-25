@@ -609,6 +609,13 @@ def set_merge_state(project: str, key: str, *, attempt=..., unknown=None) -> Non
             s["merge_unknown"] = bool(unknown)
 
 
+def merge_reset(project: str, key: str) -> None:
+    """Owner only: clear a stuck merge attempt or unknown-state flag after reading the PR."""
+    store.require_interactive("merge-reset")
+    set_merge_state(project, key, attempt=None, unknown=False)
+    store.append_event(project, "merge-reset", key=key)
+
+
 def board_merged(project: str, key: str, pr) -> None:
     """Tell the board a PR merged. The words are fixed; no model text reaches the board."""
     s = load(project, key)
@@ -1042,7 +1049,13 @@ def _move(project, key, to, reason, via_merge=False):
                 raise TransitionError(
                     "the owner must answer first (devloop-state answer)"
                 )
-        missing = [name for name, ok in _checks(project, s, cfg, to) if not ok]
+        # GitHub already confirmed the merge, so a plan or evidence edit made after it
+        # must not strand the slice at GATE.
+        missing = (
+            []
+            if via_merge
+            else [name for name, ok in _checks(project, s, cfg, to) if not ok]
+        )
         if missing:
             raise TransitionError("; ".join(missing))
 
