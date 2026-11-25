@@ -341,7 +341,7 @@ def _check_memory(project, cfg, kind):
     kind's own estimate, would drop below the floor."""
     free_mb = mem_available_kb() / 1024
     floor_mb = cfg.get("min_free_gb", 2.5) * 1024
-    held = runs.reserved_mb(cfg) + projmod.memory_mb(cfg, kind)
+    held = runs.reserved_mb() + projmod.memory_mb(cfg, kind)
     if free_mb - held < floor_mb:
         raise runs.Refused("memory is below the floor")
 

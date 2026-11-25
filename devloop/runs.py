@@ -264,30 +264,61 @@ def _project_names():
     )
 
 
-def reserved_mb(cfg, now=None) -> int:
+def _frozen_requests(name):
+    """(run dir, request) for each run of a project, read from the frozen request only.
+
+    The process facts in proc.json are not needed to know what a run reserved, and a
+    damaged one must not hide a reservation from every other project's admission.
+    """
+    root = _runs_dir(name)
+    for rd in sorted(root.iterdir()) if root.is_dir() else []:
+        if not rd.is_dir():
+            continue
+        try:
+            req = store.read_json(rd / "request.json")
+        except store.StoreError:
+            continue
+        if req:
+            yield rd, req
+
+
+def _utc(moment):
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=datetime.timezone.utc)
+    return moment
+
+
+def reserved_mb(now=None) -> int:
     """Memory that runs started in the last five minutes may still claim, on this host.
 
     MemAvailable is host-wide, so every project under the state root counts. A worker's
     memory is not in MemAvailable until it has grown, so admission and the dashboard both
     subtract these reservations. A run that has ended holds nothing. The amount is the one
-    frozen into the run at dispatch; a run from before that field falls back to `cfg`.
+    frozen into the run at dispatch; a run from before that field uses its own project's
+    estimate, never the caller's. Times without an offset are read as UTC.
     """
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = _utc(now or datetime.datetime.now(datetime.timezone.utc))
     cutoff = now - datetime.timedelta(seconds=RESERVE_WINDOW_S)
     total = 0
     for name in _project_names():
-        for rd, req in iter_runs(name):
+        owner_cfg = None
+        for rd, req in _frozen_requests(name):
             try:
-                started = datetime.datetime.fromisoformat(req["started_at"])
+                started = _utc(datetime.datetime.fromisoformat(req["started_at"]))
             except (KeyError, ValueError, TypeError):
                 continue
-            if started >= cutoff and not (rd / "exit").is_file():
-                frozen = req.get("memory_mb")
-                total += (
-                    frozen
-                    if type(frozen) is int and frozen >= 0
-                    else projmod.memory_mb(cfg, req.get("kind"))
-                )
+            if started < cutoff or (rd / "exit").is_file():
+                continue
+            frozen = req.get("memory_mb")
+            if type(frozen) is int and frozen >= 0:
+                total += frozen
+                continue
+            if owner_cfg is None:
+                try:
+                    owner_cfg = projmod.load_project(name)
+                except (projmod.ConfigError, store.StoreError, OSError):
+                    owner_cfg = {}  # an unreadable config still reserves the default
+            total += projmod.memory_mb(owner_cfg, req.get("kind"))
     return total
 
 
