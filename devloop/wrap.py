@@ -13,6 +13,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from . import githooks
 from . import project as projmod
 from . import push, runs, store
 from .caps import TAIL_CHARS, detect_cap, detect_cap_text
@@ -273,6 +274,8 @@ def run(project, run_id) -> int:
     )
     if req["kind"] in CODEX_KINDS:
         env["CODEX_LAST_MSG"] = req["last_msg"]
+    if req.get("cwd"):  # every worker, Claude or not, pushes through the guard hooks
+        env = githooks.protect_env(env, rd / "githooks", req["cwd"])
     store.out_dir(rd).mkdir(exist_ok=True)
     me = os.getpid()
     runs.update_request(
