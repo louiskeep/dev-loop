@@ -372,3 +372,18 @@ def test_example_codex_builder_argv_has_all_four_arguments():
     argv = cfg["reviewers"]["codex"]["argv"]["codex-builder"]
     assert argv == ["codex-builder", "{worktree}", "{brief}", "{out}", "{label}"]
     assert "codex-builder" in cfg["reviewers"]["codex"]["kinds"]
+
+
+@pytest.mark.parametrize("arg", ["--help", "-h", "-x"])
+def test_install_flag_prints_usage_and_installs_nothing(tmp_path, arg):
+    h = tmp_path / "h"
+    h.mkdir()
+    out = subprocess.run(
+        [str(ROOT / "bin" / "devloop-install"), arg],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=run_env(h),
+    )
+    assert out.returncode == 2 and "usage" in out.stderr
+    assert not list(tmp_path.glob("--*")) and not (h / ".local").exists()

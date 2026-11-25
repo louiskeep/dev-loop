@@ -66,7 +66,7 @@ def link_skill(version: Path) -> str:
 
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) != 1:
+    if len(args) != 1 or args[0].startswith("-"):
         print("usage: devloop-install BIN_DIR", file=sys.stderr)
         return 2
     repo = store.package_root()
