@@ -303,8 +303,8 @@ def _validate(cfg: dict, project: str) -> dict:
             _fail(f"memory_mb.{key}", "unknown kind")
         if not _int(mb) or mb < 0:
             _fail(f"memory_mb.{key}", "must be an integer >= 0")
-    cap = cfg.get("max_dispatch_per_tick")
-    if cap is not None and (not _int(cap) or cap < 1):
+    cap = cfg.get("max_dispatch_per_tick", 1)
+    if not _int(cap) or cap < 1:
         _fail("max_dispatch_per_tick", "must be an integer >= 1")
     dash = _opt(cfg, "dash", dict)
     if dash is not None:

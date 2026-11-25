@@ -59,6 +59,7 @@ def test_codex_kinds_get_no_claude_flags(proj, ready, brief):
         {"memory_mb": {"builder": True}},
         {"max_dispatch_per_tick": 0},
         {"max_dispatch_per_tick": "4"},
+        {"max_dispatch_per_tick": None},
     ],
 )
 def test_limit_config_is_validated(proj, cfg_edit, bad):
@@ -174,3 +175,28 @@ def test_dispatch_freezes_the_reservation_amount(
     assert runs.read_request(proj, first)["memory_mb"] == 600
     cfg_edit(lambda c: c.update(memory_mb={"builder": 1}))  # cannot shrink a live hold
     assert runs.reserved_mb(projmod.load_project(proj)) == 600
+
+
+def test_a_configured_claude_reviewer_command_gets_the_mcp_policy(
+    proj, ready, brief, cfg_edit
+):
+    cfg_edit(
+        lambda c: c["reviewers"]["dennis"].update(
+            argv={"dennis": ["claude", "-p", "--agent", "dennis", "--model", "opus"]}
+        )
+    )
+    d = go(proj, brief, "dennis", ready("REVIEW", risk="R2")[0], reviewer="dennis")
+    argv = _argv(proj, d)
+    assert _has_empty_mcp(argv) and argv.index("--mcp-config") > argv.index("-p")
+    assert argv.count("--mcp-config") == 1
+
+
+def test_a_configured_command_that_names_its_own_mcp_config_is_kept(
+    proj, ready, brief, cfg_edit
+):
+    own = ["claude", "-p", "--strict-mcp-config", "--mcp-config", "/x.json"]
+    cfg_edit(lambda c: c["reviewers"]["dennis"].update(argv={"dennis": own}))
+    d = go(proj, brief, "dennis", ready("REVIEW", risk="R2")[0], reviewer="dennis")
+    assert (
+        _argv(proj, d)[: len(own)] == own and _argv(proj, d).count("--mcp-config") == 1
+    )

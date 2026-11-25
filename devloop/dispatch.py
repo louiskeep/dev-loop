@@ -125,6 +125,23 @@ def _claude_argv(cfg, kind, model, *extra):
     ]
 
 
+def _with_mcp_policy(cfg, kind, argv):
+    """Any `claude -p` command, built here or configured, starts under the MCP policy."""
+    if not argv or os.path.basename(argv[0]) != "claude":
+        return argv
+    at = next((i for i, a in enumerate(argv) if a in ("-p", "--print")), None)
+    if at is None:
+        return argv
+    flags = projmod.mcp_args(cfg, kind)
+    have = {"--strict-mcp-config", "--mcp-config"} & set(argv)
+    extra = []
+    if "--strict-mcp-config" not in have:
+        extra.append(flags[0])
+    if "--mcp-config" not in have:
+        extra += flags[1:]
+    return argv[: at + 1] + extra + argv[at + 1 :]
+
+
 def _duty_name(cfg, key):
     m = runs.DUTY_KEY.fullmatch(key)
     if not m:
@@ -506,7 +523,9 @@ def _freeze(project, req, s, rd, run_id, retry_of, body):
         "last_msg": req["last_msg"],
         "label": req["job"],
     }
-    req["argv"] = _fill(req.pop("argv_t"), mapping)
+    req["argv"] = _with_mcp_policy(
+        projmod.load_project(project), kind, _fill(req.pop("argv_t"), mapping)
+    )
     store.write_text(
         rd / "brief.md",
         build_brief(project, req["key"], kind, body, plan_copy=req.get("plan_copy")),
