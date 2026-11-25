@@ -943,3 +943,42 @@ def test_close_retry_after_a_crash_checks_the_board_before_posting_again(
     shown.write_text("Closed today: 0. Slices merged today: 0.")
     assert slices.row_close(proj, "ROW2") is True
     assert "close ROW2" in log.read_text()
+
+
+def test_import_uses_the_merge_base_and_slug(
+    proj, tmp_path, monkeypatch, fakebin, cfg_edit
+):
+    plan = tmp_path / "plan.md"
+    plan.write_text("Rules consulted: x\n")
+    log = tmp_path / "gh.log"
+    monkeypatch.setenv("FAKE_GH_LOG", str(log))
+    cfg_edit(
+        lambda c: (
+            c["repos"][0].update(base="main"),
+            c.update(merge={"allowed": True, "repos": {"main": {"base": "develop"}}}),
+        )
+    )
+    kw = dict(
+        repo="main",
+        risk="R2",
+        rulebooks=["a.md"],
+        worktree=str(tmp_path / "wt"),
+        branch="feat/x",
+        pr=7,
+        head="a" * 40,
+        plan_path=str(plan),
+        purpose="p",
+    )
+    monkeypatch.setenv("FAKE_GH_STATE", "MERGED")
+    monkeypatch.setenv(
+        "FAKE_GH_BASE", "main"
+    )  # merged, but not into the effective base
+    assert slices.import_slice(proj, "I1", "S1", phase="GATE", **kw)["phase"] == "PLAN"
+    monkeypatch.setenv("FAKE_GH_BASE", "develop")
+    assert (
+        slices.import_slice(proj, "I2", "S1", phase="GATE", **kw)["phase"] == "DOCUMENT"
+    )
+    calls = [json.loads(x) for x in log.read_text().splitlines()]
+    assert all(
+        c[c.index("-R") + 1] == "own/main" for c in calls if c[:2] == ["pr", "view"]
+    )

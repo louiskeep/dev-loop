@@ -7,7 +7,6 @@ flock, so a refused move leaves the file byte for byte as it was.
 import contextlib
 import copy
 import hashlib
-import json
 import re
 import subprocess
 from pathlib import Path
@@ -344,25 +343,6 @@ def new_slice(project: str, row: str, slice_id: str, *, repo: str, risk=None) ->
     return _create(project, row, slice_id, repo, risk)
 
 
-def _pr_state(repo_path, pr):
-    data = None
-    try:
-        r = subprocess.run(
-            ["gh", "pr", "view", str(pr), "--json", "state,baseRefName,headRefOid"],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            timeout=60,
-            check=False,
-        )
-        if r.returncode == 0:
-            data = json.loads(r.stdout)
-    except (OSError, subprocess.SubprocessError, ValueError):
-        pass
-    return data if isinstance(data, dict) else None
-
-
 def import_slice(
     project: str,
     row: str,
@@ -393,15 +373,11 @@ def import_slice(
 
     merged = False
     if pr is not None and head:
-        state = _pr_state(repo_cfg["path"], pr)
-        oid = (state or {}).get("headRefOid", "")
-        merged = bool(
-            state
-            and state.get("state") == "MERGED"
-            and state.get("baseRefName") == repo_cfg.get("base", "main")
-            and isinstance(oid, str)
-            and (oid == head or (len(head) >= 7 and oid.startswith(head)))
-        )
+        # The same repository slug, effective base and PR identity check the merge uses.
+        from . import merge
+
+        base = merge.repo_settings(cfg, repo)[2]
+        merged = merge.confirm_pr(cfg, repo, pr, base, head) == "merged"
 
     if merged:
         target = "DOCUMENT"

@@ -555,14 +555,14 @@ def test_plan_edited_after_the_merge_still_finishes_the_move(
     proj, gate, tmp_path, monkeypatch
 ):
     k = gate()
-    real = merge._confirm
+    real = merge.confirm_pr
 
     def confirm_then_edit(*a, **kw):
         state = real(*a, **kw)
         (tmp_path / "plan.md").write_text("Rules consulted: edited after the merge\n")
         return state
 
-    monkeypatch.setattr(merge, "_confirm", confirm_then_edit)
+    monkeypatch.setattr(merge, "confirm_pr", confirm_then_edit)
     assert merge.merge(proj, k).outcome == "merged"
     assert slices.load(proj, k)["phase"] == "DOCUMENT"
 

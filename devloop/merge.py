@@ -80,7 +80,7 @@ def _same_head(oid, head):
     )
 
 
-def _repo_settings(cfg, repo_name):
+def repo_settings(cfg, repo_name):
     repo_cfg = next(r for r in cfg["repos"] if r["name"] == repo_name)
     rules = (cfg.get("merge") or {}).get("repos", {}).get(repo_name, {})
     return repo_cfg, rules, rules.get("base") or repo_cfg.get("base", "main")
@@ -304,7 +304,7 @@ def _gate_dispatch(repo_cfg, rules, rollup, s, cfg):
 
 def _preflight(project, cfg, s, view):
     """Every check before the merge call. Returns a refusal reason or None."""
-    repo_cfg, rules, base = _repo_settings(cfg, s["repo"])
+    repo_cfg, rules, base = repo_settings(cfg, s["repo"])
     if view is None:
         return "GitHub did not report the PR"
     if view.get("baseRefName") != base:
@@ -336,13 +336,13 @@ def _preflight(project, cfg, s, view):
     return None
 
 
-def _confirm(cfg, repo_name, pr, base, head):
+def confirm_pr(cfg, repo_name, pr, base, head):
     """merged | open | closed | mismatch | unknown, from GitHub.
 
     closed is a CLOSED PR. mismatch is a MERGED PR that went to another base or at
     another head, which is not the merge this slice asked for.
     """
-    repo_cfg, _, _ = _repo_settings(cfg, repo_name)
+    repo_cfg, _, _ = repo_settings(cfg, repo_name)
     view = _view(repo_cfg, pr, "state,headRefOid,baseRefName")
     if view is None:
         return "unknown"
@@ -378,7 +378,7 @@ def _finish(project, cfg, key, info):
     s = slices.load(project, key)
     ident = {
         "repo": info["repo"],
-        "slug": _slug(_repo_settings(cfg, info["repo"])[0]),
+        "slug": _slug(repo_settings(cfg, info["repo"])[0]),
         "pr": info["pr"],
         "head": info["head"],
     }
@@ -417,10 +417,10 @@ def merge(project, key) -> MergeResult:
         info = attempt or {
             "repo": s["repo"],
             "pr": s["pr"],
-            "base": _repo_settings(cfg, s["repo"])[2],
+            "base": repo_settings(cfg, s["repo"])[2],
             "head": s["head"],
         }
-        state = _confirm(cfg, info["repo"], info["pr"], info["base"], info["head"])
+        state = confirm_pr(cfg, info["repo"], info["pr"], info["base"], info["head"])
         if state == "merged":
             return _finish(project, cfg, key, info)
         if state == "unknown":
@@ -440,7 +440,7 @@ def merge(project, key) -> MergeResult:
     problems = slices.validate_gate(project, key)
     if problems:
         return _result("refused", "; ".join(problems))
-    repo_cfg, _, base = _repo_settings(cfg, s["repo"])
+    repo_cfg, _, base = repo_settings(cfg, s["repo"])
     view = _view(
         repo_cfg,
         s["pr"],
@@ -467,7 +467,7 @@ def merge(project, key) -> MergeResult:
         "--match-head-commit",
         s["head"],
     )
-    state = _confirm(cfg, s["repo"], s["pr"], base, s["head"])
+    state = confirm_pr(cfg, s["repo"], s["pr"], base, s["head"])
     if state == "merged":
         return _finish(
             project, cfg, key, {"repo": s["repo"], "pr": s["pr"], "head": s["head"]}
