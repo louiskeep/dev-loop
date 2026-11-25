@@ -1,0 +1,150 @@
+"""Command line for `devloop-state`: the only way the tick model changes slice state."""
+
+import argparse
+import json
+import sys
+
+from . import project as projmod
+from . import slices, store
+
+REFUSALS = (
+    slices.SliceError,
+    projmod.ConfigError,
+    store.StoreError,
+    store.HeadlessRefused,
+)
+
+
+def _out(obj):
+    print(json.dumps(obj, indent=2, sort_keys=True))
+
+
+def _slice(args):
+    p = args.project
+    if args.action == "new":
+        _out(slices.new_slice(p, args.row, args.slice, repo=args.repo, risk=args.risk))
+    elif args.action == "set":
+        fields = {}
+        for name in (
+            "worktree",
+            "branch",
+            "pr",
+            "head",
+            "plan_path",
+            "purpose",
+            "next_action",
+        ):
+            value = getattr(args, name)
+            if value is not None:
+                fields[name] = value
+        for name in ("waiting_on", "risk"):
+            value = getattr(args, name)
+            if value is not None:
+                fields[name] = value
+        if args.rulebook:
+            fields["rulebooks"] = args.rulebook
+        if args.full_suite_required:
+            fields["full_suite_required"] = True
+        _out(slices.set_fields(p, args.key, **fields))
+    elif args.action == "move":
+        _out(slices.move(p, args.key, args.phase, args.reason))
+    elif args.action == "show":
+        _out(slices.load(p, args.key))
+    elif args.action == "list":
+        for s in slices.list_slices(p):
+            print(f"{s['key']} {s['phase']}")
+    elif args.action == "import":
+        _out(
+            slices.import_slice(
+                p,
+                args.row,
+                args.slice,
+                repo=args.repo,
+                risk=args.risk,
+                rulebooks=args.rulebook or [],
+                worktree=args.worktree,
+                branch=args.branch,
+                pr=args.pr,
+                head=args.head,
+                plan_path=args.plan_path,
+                purpose=args.purpose,
+                phase=args.phase,
+                plan_approved=args.plan_approved,
+            )
+        )
+
+
+def _event(args):
+    fields = {}
+    for pair in args.pairs:
+        name, sep, value = pair.partition("=")
+        if not sep or store.TOKEN.fullmatch(name) is None or name in ("at", "kind"):
+            raise store.StoreError("event fields are k=v with a plain key")
+        fields[name] = value
+    store.append_event(args.project, args.kind, **fields)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="devloop-state")
+    ap.add_argument("project")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    sl = sub.add_parser("slice").add_subparsers(dest="action", required=True)
+    n = sl.add_parser("new")
+    n.add_argument("row")
+    n.add_argument("slice")
+    n.add_argument("--repo", required=True)
+    n.add_argument("--risk")
+    st = sl.add_parser("set")
+    st.add_argument("key")
+    for flag in ("worktree", "branch", "head", "plan-path", "purpose", "next-action"):
+        st.add_argument(f"--{flag}")
+    st.add_argument("--pr", type=int)
+    st.add_argument("--waiting-on")
+    st.add_argument("--risk")
+    st.add_argument("--rulebook", action="append")
+    st.add_argument("--full-suite-required", action="store_true")
+    mv = sl.add_parser("move")
+    mv.add_argument("key")
+    mv.add_argument("phase")
+    mv.add_argument("--reason", required=True)
+    sl.add_parser("show").add_argument("key")
+    sl.add_parser("list")
+    im = sl.add_parser("import")
+    im.add_argument("row")
+    im.add_argument("slice")
+    im.add_argument("--repo", required=True)
+    im.add_argument("--risk")
+    im.add_argument("--rulebook", action="append")
+    for flag in ("worktree", "branch", "head", "plan-path", "purpose"):
+        im.add_argument(f"--{flag}")
+    im.add_argument("--pr", type=int)
+    im.add_argument("--phase", required=True)
+    im.add_argument("--plan-approved", action="store_true")
+
+    for name, verdicts in (("selfcheck", ("GO", "NO-GO")), ("docs", ("GO",))):
+        c = sub.add_parser(name)
+        c.add_argument("key")
+        c.add_argument("verdict", choices=verdicts)
+        c.add_argument("--head", required=True)
+    ev = sub.add_parser("event")
+    ev.add_argument("kind")
+    ev.add_argument("pairs", nargs="*")
+    return ap
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        if args.cmd == "slice":
+            _slice(args)
+        elif args.cmd in ("selfcheck", "docs"):
+            getattr(slices, args.cmd)(
+                args.project, args.key, args.verdict, head=args.head
+            )
+        elif args.cmd == "event":
+            _event(args)
+    except REFUSALS as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 3
+    return 0

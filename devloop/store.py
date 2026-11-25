@@ -46,6 +46,12 @@ def state_dir(project: str) -> Path:
     return d
 
 
+def run_dir(project: str, run_id: str) -> Path:
+    if not isinstance(run_id, str) or TOKEN.fullmatch(run_id) is None:
+        raise StoreError("bad run id")
+    return state_dir(project) / "runs" / run_id
+
+
 def now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat(
         timespec="microseconds"

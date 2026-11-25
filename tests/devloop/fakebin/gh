@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Fake `gh pr view`: state comes from the FAKE_GH_* environment."""
+import json
+import os
+
+print(
+    json.dumps(
+        {
+            "state": os.environ.get("FAKE_GH_STATE", "OPEN"),
+            "baseRefName": os.environ.get("FAKE_GH_BASE", "main"),
+            "headRefOid": os.environ.get("FAKE_GH_HEAD", "a" * 40),
+        }
+    )
+)
