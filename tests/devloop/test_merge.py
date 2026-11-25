@@ -352,34 +352,45 @@ DENIED = [
     "echo $(gh pr merge 5)",
     "gh api repos/o/r/pulls/5/merge -X PUT",
     "gh api -X PUT /repos/o/r/pulls/12/merge",
-    "gh api repos/o/r/pulls/5 --method PATCH",
-    "gh api repos/o/r/issues/5/comments -f body=x",
-    "gh api repos/o/r/issues/5/comments -F body=x",
-    "gh api repos/o/r/x --input body.json",
     "gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'",
     "gh api graphql -f query='mutation { enablePullRequestAutoMerge(input: {}) { x } }'",
     "curl -X POST https://api.github.com/repos/o/r/merges",
     "curl https://api.github.com/repos/o/r/git/refs/heads/main",
-    "gh alias set m 'pr merge'",
-    "gh extension install o/r",
     "git push origin main",
-    "git push origin feat/x",
+    "git push origin HEAD:main",
+    "git push origin :main",
+    "git push origin +main",
+    "git push -u origin main",
+    "git push --all",
+    "git push --mirror origin",
+    "git -C /x push origin main",
     "env git push origin main",
-    "git status && git push",
+    "git status && git push origin refs/heads/main",
+    "bash -c 'git push origin main'",
     "devloop-merge x; gh pr merge 1",
-    "devloop-merge x && git push",
+    "devloop-merge x && git push origin main",
     "devloop-merge $(gh pr merge 1)",
 ]
 ALLOWED = [
     "gh pr view 5",
-    "gh -R o/r pr view 5 --json state,mergeStateStatus",
+    "gh -R o/r pr view 5 --json state,mergeStateStatus,mergeable",
     "gh pr list",
     "gh run list",
     "gh api repos/x/y/pulls/5",
     "gh api repos/x/y/pulls/5/files",
     "gh api -X GET repos/x/y/pulls/5",
+    "gh alias list",
     "git status",
-    "git log --oneline",
+    "git log --oneline --merges",
+    "git push -u origin feat/x",
+    "git push --force-with-lease origin feat/x",
+    "git push origin HEAD:feat/x",
+    "git push origin HEAD",
+    "git push",
+    "git push origin",
+    'gh pr create --title "add guard" --body "please merge when green"',
+    "echo merge the thing",
+    'git commit -m "merge main into the branch"',
     "env FOO=1 ls",
     "devloop-merge proj ROW--S1",
     "/home/someone/bin/devloop-merge proj ROW--S1",
@@ -392,8 +403,22 @@ def test_merge_guard_denies_in_headless_mode(command):
 
 
 @pytest.mark.parametrize("command", ALLOWED)
-def test_merge_guard_allows_reads_and_devloop_merge(command):
+def test_merge_guard_allows_reads_feature_pushes_and_devloop_merge(command):
     assert headless_merge_guard.blocked(command) is False
+
+
+def _repo_on(tmp_path, branch):
+    subprocess.run(["git", "init", "-q", "-b", branch, str(tmp_path)], check=True)
+    return tmp_path
+
+
+def test_bare_push_is_denied_only_on_the_base_branch(tmp_path):
+    main = _repo_on(tmp_path / "a", "main")
+    feat = _repo_on(tmp_path / "b", "feat/x")
+    assert headless_merge_guard.blocked("git push", main) is True
+    assert headless_merge_guard.blocked("git push origin", main) is True
+    assert headless_merge_guard.blocked("git push", feat) is False
+    assert headless_merge_guard.blocked("git push origin feat/x", main) is False
 
 
 def run_guard(command, headless):

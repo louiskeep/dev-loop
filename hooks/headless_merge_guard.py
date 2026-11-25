@@ -1,14 +1,15 @@
-"""PreToolUse hook: in a headless dev-loop session, merges and pushes go through devloop-merge.
+"""PreToolUse hook: in a headless dev-loop session, merges and base-branch pushes go through devloop-merge.
 
-Threat model: this stops a headless model from merging or pushing by accident; it does
-not stop a hostile one.
+Threat model: this stops a headless model from merging or pushing to the base branch by
+accident; it does not stop a hostile one.
 
-The rule is one fail-closed text match over the raw command, so no wrapper, option order
-or shell form needs its own parser. A command is denied when its text (any case) has:
-a `gh` word with merge, alias or extension, or with `api` and a write flag or graphql; a
-`git` word with `push`; or mergePullRequest, enablePullRequestAutoMerge, /merges or
-git/refs. The one exception is a command that is exactly one `devloop-merge` call with
-no shell metacharacters, which is how the tick merges.
+One text match over the raw command, so no wrapper or shell form needs its own parser.
+Denied: `gh ... pr ... merge` (any option order), the merge and auto-merge API calls
+(`pulls/N/merge`, mergePullRequest, enablePullRequestAutoMerge, /merges, git/refs), and a
+`git push` that targets the base branch (an explicit `main` refspec, `--all`, `--mirror`,
+or a bare push while the current branch is the base). Feature-branch pushes and any text
+that merely says "merge" stay allowed. The one exception to all of it is a command that is
+exactly one `devloop-merge` call with no shell metacharacters, which is how the tick merges.
 """
 
 from __future__ import annotations
@@ -16,39 +17,65 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 
 REASON = "devloop: merge only through devloop-merge, which checks the gate first"
 
-_GH = re.compile(r"\bgh\b")
-_GIT = re.compile(r"\bgit\b")
-_PUSH = re.compile(r"\bpush\b")
-_GH_WORDS = re.compile(r"\b(merge|alias|extension)\b")
-_API = re.compile(r"\bapi\b")
-_API_WRITE = re.compile(
-    r"(?:(?:-x|--method)[\s=]+(?!get\b)\S"  # a method other than GET
-    r"|(?<![\w-])(?:-f|--field|--raw-field|--input)(?![\w-])"  # body flags (-F lowers to -f)
-    r"|\bgraphql\b)"
+_OPT = r"(?:\s+(?:-R|--repo|--hostname)(?:\s+|=)\S+|\s+-\S+)*"
+_GH_PR_MERGE = re.compile(rf"\bgh\b{_OPT}\s+pr{_OPT}\s+merge\b", re.IGNORECASE)
+_ANYWHERE = re.compile(
+    r"mergepullrequest|enablepullrequestautomerge|/merges|git/refs|pulls/\d+/merge\b"
 )
-_ANYWHERE = re.compile(r"mergepullrequest|enablepullrequestautomerge|/merges|git/refs")
+_GIT_PUSH = re.compile(r"\bgit\b(?:\s+-\S+(?:\s+[^\s-]\S*)?)*?\s+push\b([^;&|`\n)]*)")
 _METACHARS = re.compile(r"[;&|`<>\n]|\$\(")
 _ONLY_MERGE_CMD = re.compile(r"\s*(?:/[^\s]*/)?devloop-merge(?:\s+[^\s]+)*\s*")
 
 
-def blocked(command: str) -> bool:
+def _base_branches() -> list[str]:
+    raw = os.environ.get("DEVLOOP_BASE_BRANCHES", "main,master")
+    return [b.strip() for b in raw.split(",") if b.strip()]
+
+
+def _current_branch(cwd):
+    """Current branch by symbolic-ref, so a repo with no commits yet still answers."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(cwd), "symbolic-ref", "--short", "-q", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.strip() or None
+
+
+def _push_targets_base(args: str, cwd) -> bool:
+    base = _base_branches()
+    tokens = [t.strip("'\"") for t in args.split()]
+    if any(t in ("--all", "--mirror") for t in tokens):
+        return True
+    positional = [t for t in tokens if t and not t.startswith("-")]
+    if len(positional) <= 1:
+        # A bare push goes where the current branch tracks; unknown means allow.
+        branch = _current_branch(cwd) if cwd else None
+        return branch in base
+    for spec in positional[1:]:
+        dst = spec.lstrip("+").split(":", 1)[-1] if ":" in spec else spec.lstrip("+")
+        if dst.removeprefix("refs/heads/") in base:
+            return True
+    return False
+
+
+def blocked(command: str, cwd=None) -> bool:
     if _ONLY_MERGE_CMD.fullmatch(command) and not _METACHARS.search(command):
         return False
     text = command.lower()
-    if _ANYWHERE.search(text):
+    if _ANYWHERE.search(text) or _GH_PR_MERGE.search(text):
         return True
-    if _GIT.search(text) and _PUSH.search(text):
-        return True
-    if _GH.search(text):
-        if _GH_WORDS.search(text):
-            return True
-        if _API.search(text) and _API_WRITE.search(text):
-            return True
-    return False
+    return any(_push_targets_base(m.group(1), cwd) for m in _GIT_PUSH.finditer(text))
 
 
 def main() -> int:
@@ -60,7 +87,7 @@ def main() -> int:
         return 0
     if event.get("tool_name") != "Bash":
         return 0
-    if not blocked(event.get("tool_input", {}).get("command", "")):
+    if not blocked(event.get("tool_input", {}).get("command", ""), event.get("cwd")):
         return 0
     print(
         json.dumps(

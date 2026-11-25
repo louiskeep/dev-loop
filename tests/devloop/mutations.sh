@@ -77,9 +77,17 @@ mutate "PR head is never compared" devloop/merge.py \
 mutate "an unknown merge state is retried" devloop/merge.py \
   'if attempt or s["merge_unknown"]:' 'if attempt:' \
   $T/test_merge.py::test_merge_unknown_state_no_retry
-mutate "merge guard forgets the merge word" hooks/headless_merge_guard.py \
-  '_GH_WORDS = re.compile(r"\b(merge|alias|extension)\b")' '_GH_WORDS = re.compile(r"\b(alias|extension)\b")' \
+mutate "merge guard forgets gh pr merge" hooks/headless_merge_guard.py \
+  'if _ANYWHERE.search(text) or _GH_PR_MERGE.search(text):' 'if _ANYWHERE.search(text):' \
   $T/test_merge.py::test_merge_guard_denies_in_headless_mode
+mutate "merge guard blocks every git push" hooks/headless_merge_guard.py \
+  '    return any(_push_targets_base(m.group(1), cwd) for m in _GIT_PUSH.finditer(text))' \
+  '    return bool(_GIT_PUSH.search(text))' \
+  $T/test_merge.py::test_merge_guard_allows_reads_feature_pushes_and_devloop_merge
+mutate "merge guard blocks any text with merge" hooks/headless_merge_guard.py \
+  '    return any(_push_targets_base(m.group(1), cwd) for m in _GIT_PUSH.finditer(text))' \
+  '    return "merge" in text or any(_push_targets_base(m.group(1), cwd) for m in _GIT_PUSH.finditer(text))' \
+  $T/test_merge.py::test_merge_guard_allows_reads_feature_pushes_and_devloop_merge
 mutate "request ledger always matches" devloop/store.py \
   'return want is not None and want == request_digest(run_dir(project, run_id))' 'return True' \
   $T/test_runs.py::test_payload_that_rewrites_request_gets_no_evidence
