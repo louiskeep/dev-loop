@@ -36,6 +36,7 @@ An R3 slice goes to HELD with a question. Only the owner releases it.
 - tests were written before the code they cover [judgment]
 - lint and format are clean, and commits follow the project's message rule [judgment]
 - the changelog has an entry when the repo keeps one [judgment]
+- a ratchet, cap or allowlist grows only by the ratchet rule in Scenarios [judgment]
 
 ### SELF_CHECK
 
@@ -148,7 +149,8 @@ An owner question is open. Do not work around it.
 | A node is idle and work is queued | Dispatch the queued work to fill the slot. | `devloop-dispatch ...` |
 | Memory is low | Dispatch nothing new. Wait for the next tick. | none |
 | An R3 action is needed | Ask the owner and wait. Never act on it. | `devloop-state P ask KEY ... --wait` |
-| The owner overruled a default | Read the answer. Adjust the slice. | `devloop-state P answers-sync` |
+| The owner overruled a default | Read the answer. An `other: TEXT` answer is the owner's instruction: follow it. Adjust the slice. | `devloop-state P answers-sync` |
+| Fix needs a ratchet, cap or allowlist to grow | Tech when a planned fix (a roadmap row, plan or logged follow-up) will retire the entry, or the entry is a legitimate registry site: ask it as a tech question and name that fix in the detail. With no fix planned, log one first. When the same class has needed entries in 3 or more places, add no entry and send it to an Architect tech review for a central handler. | `devloop-state P ask KEY ... --class tech` |
 | A repair conflict is reported | The plan changed during the repair. Nothing was installed. Dispatch the repair again. | `devloop-dispatch P codex-fix ...` |
 | A test looks flaky | Rerun it once on the same head. If it differs, record a problem. Never edit the test to pass. | `devloop-state P problem flaky-... ...` |
 | An imported slice shows a mismatch | Re-check the head and the plan. Run one builder pass or re-import with `--plan-approved`. | `devloop-state P slice show KEY` |

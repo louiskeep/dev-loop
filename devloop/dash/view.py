@@ -638,6 +638,9 @@ def _question_fields(ctx, q):
     return {
         "answer_key": q["key"],
         "question": _owner_text(q["question"]),
+        "detail": _owner_text(q["detail"]),
+        "klass": q["klass"],
+        "version": notes.question_version(q),
         "options": options,
         "option_ok": option_ok,
         "recommended": _owner_text(q["recommended"]),

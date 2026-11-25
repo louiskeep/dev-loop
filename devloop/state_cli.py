@@ -122,6 +122,8 @@ def _notes(args):
             options=args.option,
             recommended=args.recommended,
             wait=args.wait,
+            detail=args.detail,
+            klass=args.klass,
         )
         _out(q)
     elif args.cmd == "answer":
@@ -213,7 +215,9 @@ def build_parser() -> argparse.ArgumentParser:
     aq.add_argument("--question", required=True)
     aq.add_argument("--option", action="append", required=True)
     aq.add_argument("--recommended", required=True)
-    aq.add_argument("--wait", action="store_true")
+    aq.add_argument("--wait", action="store_true", help="force a product question")
+    aq.add_argument("--detail", default="")
+    aq.add_argument("--class", dest="klass", choices=notes.KLASSES, default="product")
     an = sub.add_parser("answer")
     an.add_argument("key")
     an.add_argument("choice")

@@ -526,11 +526,13 @@ def test_owner_question_shown_in_full_with_real_hint(proj, home):
     )
     v = build(proj)
     q = next(n for n in v["needs_you"] if n["key"] == "q-full")
+    path = notes.questions_path(proj)
+    rec = notes.load_questions(path)[1]["q-full"]
     assert q["question"] == " ".join(long_q.split())
     assert q["options"] == ["hunter2", "use the slower path", "/etc/shadow"]
     assert q["recommended"] == "hunter2"
     assert q["answer_key"] == "q-full" and q["detail"] is None
-    assert q["klass"] == "product" and q["version"] is None
+    assert q["klass"] == "product" and q["version"] == notes.question_version(rec)
     page = render.render_page(v)
     text = html.unescape(page)
     assert "hunter2" in text

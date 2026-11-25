@@ -196,6 +196,12 @@ EVENTS = {
     "question-defaulted": EventDesc(
         lambda e, cfg: f"used the default for question {e.get('key')}", "DECIDED"
     ),
+    "question-decided": EventDesc(
+        lambda e, cfg: f"Tech lead decided question {e.get('key')}", "DECIDED"
+    ),
+    "question-answered": EventDesc(
+        lambda e, cfg: f"you answered question {e.get('key')}", "ANSWERED"
+    ),
     "question-waiting": EventDesc(
         lambda e, cfg: f"waiting on your answer to {e.get('key')}", "QUESTION"
     ),
