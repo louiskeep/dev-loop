@@ -120,14 +120,11 @@ def test_new_head_clears_evidence(proj, ready):
         slices.move(proj, k, "GATE", "x")
 
 
-def test_round_three_parks(proj, mk_slice):
+def test_rounds_count_and_never_park(proj, mk_slice):
     k = mk_slice(proj, phase="REVIEW")
-    assert slices.move(proj, k, "REMEDIATE", "x")["round"] == 1
-    force_phase(proj, k, "REVIEW")
-    assert slices.move(proj, k, "REMEDIATE", "x")["round"] == 2
-    force_phase(proj, k, "REVIEW")
-    s = slices.move(proj, k, "REMEDIATE", "x")
-    assert (s["phase"], s["park_reason"], s["round"]) == ("PARKED", "round-3", 3)
+    for n in range(1, 4):
+        assert slices.move(proj, k, "REMEDIATE", "x")["round"] == n
+        force_phase(proj, k, "REVIEW")
 
 
 def test_rebase_at_gate_costs_no_round(proj, mk_slice):
@@ -781,7 +778,7 @@ def test_headless_cannot_clear_a_hold(proj, mk_slice, monkeypatch):
     assert slices.load(proj, k)["phase"] == "HELD"
 
 
-@pytest.mark.parametrize("reason", ["round-3", "failed-twice"])
+@pytest.mark.parametrize("reason", ["failed-twice"])
 def test_owner_parks_leave_only_after_an_interactive_answer(
     proj, mk_slice, monkeypatch, reason
 ):

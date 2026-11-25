@@ -34,9 +34,13 @@ RISKS = ("R0", "R1", "R2", "R3")
 TIERS = ("R0", "R1", "R2")
 VERDICTS = ("GO", "GO-WITH-FIXES", "NO-GO")
 TICK_KINDS = ("selfcheck", "docs")
-MAX_ROUNDS = 3
+# Review rounds never park a slice. A round is one REVIEW to REMEDIATE move. Rounds 1 to
+# 3 are fixed by the Claude builder, rounds 4 to 6 by Codex, and the move that would be
+# round 7 sends the slice back to PLAN to redesign.
+CODEX_ROUNDS_FROM = 4
+REDESIGN_AT = 7
 # Parks that only the owner may lift.
-OWNER_PARKS = ("round-3", "failed-twice")
+OWNER_PARKS = ("failed-twice",)
 HISTORY_KEEP = 200
 HOLD_RELEASE_OPTION = "approve"
 
@@ -732,8 +736,11 @@ def _move(project, key, to, reason, via_merge=False, ident=None):
             s["approved_plan_sha"] = plan_sha(s)
         if (frm, to) == ("REVIEW", "REMEDIATE"):
             s["round"] += 1
-            if s["round"] >= MAX_ROUNDS:
-                to, reason, parked_from = "PARKED", "round-3", "REMEDIATE"
+            if s["round"] >= REDESIGN_AT:
+                # Six rounds did not converge: change the plan, keep the PR and worktree.
+                to, reason = "PLAN", "redesign"
+                s["round"], s["plan_rounds"] = 0, {}
+                s["plan_frozen"], s["approved_plan_sha"] = False, None
         if to in ("PARKED", "HELD"):
             s["parked_from"], s["park_reason"] = parked_from, reason
             if to == "HELD" or reason in OWNER_PARKS:
@@ -748,7 +755,7 @@ def _move(project, key, to, reason, via_merge=False, ident=None):
             s["approved_plan_sha"], s["plan_frozen"] = None, False
             if not store.is_headless():
                 # A new lineage earns every review again. Only an interactive
-                # reframe may reset the counts: a headless one could dodge round 3.
+                # reframe may reset the counts: a headless one could dodge the round ladder.
                 s["round"], s["plan_rounds"], s["evidence"] = 0, {}, {}
         now = store.now_iso()
         s["phase"], s["last_moved_at"] = to, now

@@ -65,7 +65,8 @@
       "kind": "codex-review",
       "kinds": [
         "codex-review",
-        "codex-fix"
+        "codex-fix",
+        "codex-builder"
       ],
       "argv": {
         "codex-review": [
@@ -80,6 +81,11 @@
           "{run_id}",
           "{brief}",
           "{plan}"
+        ],
+        "codex-builder": [
+          "codex-builder",
+          "{worktree}",
+          "{brief}"
         ]
       },
       "repair_out": "/path/to/cache/{run_id}/{plan_name}"

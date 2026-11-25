@@ -571,3 +571,8 @@ The skill folder `skills/dev-loop/` holds the tick prompt (`TICK.md`), the playb
 (`PLAYBOOK.md`), the brief template and an example `project.json`. Project settings live
 in `~/.local/state/devloop/PROJECT/project.json`. Nothing private is stored in the plugin.
 Tests: `pytest tests/devloop`.
+
+### Follow-ups
+
+- Group the 23 modules under `devloop/` into subpackages (run lifecycle, slice state),
+  keeping the CLI and the public imports.

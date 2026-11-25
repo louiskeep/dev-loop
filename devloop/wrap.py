@@ -20,7 +20,7 @@ from .caps import TAIL_CHARS, detect_cap, detect_cap_text
 VERDICT = re.compile(r"VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
 SELF_VERDICT = re.compile(r"SELF-VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
 VERDICT_READERS = ("claude-verdict", "verdict", "selfverdict")
-CODEX_KINDS = ("codex-review", "codex-fix")
+CODEX_KINDS = ("codex-review", "codex-fix", "codex-builder")
 FAILING_BLOCK = "FAILING TEST IDS"
 MAX_FAILING = 200
 
@@ -133,6 +133,21 @@ def _failing_ids(rd):
     return ids[:MAX_FAILING]
 
 
+def _worktree_head(req):
+    try:
+        r = subprocess.run(
+            ["git", "-C", req["worktree"], "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
 def _write_result(rd, req, code, reason):
     """Build result.md for kinds whose tool cannot write one. Claude workers do it."""
     reader = req["reader"]
@@ -152,7 +167,10 @@ def _write_result(rd, req, code, reason):
         found = _verdict_found(req, rd) if ok and code == 0 else None
         if found:
             status, verdict = "DONE", found
-    text = f"status: {status}\nhead: {req.get('head') or ''}\nverdict: {verdict}\n"
+    head = req.get("head") or ""
+    if req["kind"] == "codex-builder":
+        head = _worktree_head(req) or head  # the commit Codex finished on
+    text = f"status: {status}\nhead: {head}\nverdict: {verdict}\n"
     text += f"tests: exit {code}\n---\n{body}\n"
     store.write_text(store.out_dir(rd) / "result.md", text)
 

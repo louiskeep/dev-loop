@@ -149,8 +149,8 @@ def _fail_key(req, reason=""):
     keyed by the artifact they read. A clean exit with no verdict line counts apart.
     """
     kind = req["kind"]
-    if kind == "builder":
-        base = f"builder:{req.get('lineage')}"
+    if kind in ("builder", "codex-builder"):
+        base = f"{kind}:{req.get('lineage')}"
     elif kind in ("planner", "codex-fix"):
         base = f"{kind}:{req.get('plan_path')}"
     else:

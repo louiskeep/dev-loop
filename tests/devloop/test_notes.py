@@ -379,9 +379,11 @@ def test_agent_option_called_approve_does_not_release(proj, mk_slice):
 
 def test_owner_park_needs_the_hold_question(proj, mk_slice):
     k = mk_slice(proj, phase="REMEDIATE", round=2)
-    slices.move(proj, k, "PARKED", "round-3")
+    slices.move(proj, k, "PARKED", "failed-twice")
     page = (store.state_dir(proj) / "questions.md").read_text()
-    assert "(reason: round-3)?" in page and "- Options: approve | keep-held" in page
+    assert (
+        "(reason: failed-twice)?" in page and "- Options: approve | keep-held" in page
+    )
     notes.answer(proj, f"hold:{k}", "keep-held")
     assert slices.load(proj, k)["owner_answered"] is False
     notes.answer(proj, f"hold:{k}", "approve")
@@ -418,7 +420,7 @@ def test_tick_recreates_a_hold_question_lost_to_a_crash(proj, mk_slice):
     from devloop import tick
 
     k = mk_slice(proj, phase="REMEDIATE", round=2)
-    slices.move(proj, k, "PARKED", "round-3")
+    slices.move(proj, k, "PARKED", "failed-twice")
     page = store.state_dir(proj) / "questions.md"
     page.unlink()  # the crash: slice committed, question never written
     with pytest.raises(notes.NotesError):
@@ -431,7 +433,7 @@ def test_tick_recreates_a_hold_question_lost_to_a_crash(proj, mk_slice):
 
 def test_reconcile_keeps_an_existing_answer(proj, mk_slice):
     k = mk_slice(proj, phase="REMEDIATE", round=2)
-    slices.move(proj, k, "PARKED", "round-3")
+    slices.move(proj, k, "PARKED", "failed-twice")
     notes.answer(proj, f"hold:{k}", "keep-held")
     before = (store.state_dir(proj) / "questions.md").read_text()
     assert notes.reconcile_hold_questions(proj) == []

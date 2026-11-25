@@ -56,6 +56,8 @@ slice head.
 
 ### REVIEW
 
+On a failed review, triage the findings first (see REMEDIATE). Then move to REMEDIATE.
+
 - code review GO on head, one entry per reviewer in the roster [code]
 - t2 GO on head, when the project configures a t2 level [code]
 - full suite GO on head, when `full_suite_required` is set [code]
@@ -68,7 +70,24 @@ slice head.
 - each finding has a root-cause fix and a regression test [judgment]
 - the slice returns through SELF_CHECK and VERIFY before it is reviewed again [judgment]
 
-The third review round on one artifact parks the slice. Only the owner lifts that park.
+Review rounds never park a slice. A round is one REVIEW to REMEDIATE move.
+
+| Round | Who fixes | Dispatch |
+|-------|-----------|----------|
+| 1 to 3 | the Claude builder | `devloop-dispatch PROJECT builder KEY` |
+| 4 to 6 | Codex | `devloop-dispatch PROJECT codex-builder KEY` |
+| 7 | nobody: the slice goes back to PLAN with reason `redesign` | none |
+
+After round 6 fails review, the next move out of REVIEW goes to PLAN instead of REMEDIATE.
+The round count resets to 0 and the plan lineage starts again: the planner may revise the
+plan or write a new plan path. The PR and the worktree stay. A dispatch of the wrong fixer
+for the round is refused.
+
+Before you dispatch a fixer, triage each finding against the project's threat model and
+the V1 bar. Both are named in the project tick doc. A finding outside that scope is not
+sent to the fixer. Log it as a follow-up with `devloop-state PROJECT problem` or in the
+project's V2 log. A finding that says a change does not use the central registry goes to
+the fixer as a root-cause fix through that registry.
 
 ### GATE
 
@@ -94,8 +113,8 @@ Nothing is left to do. The row closes when its last roadmap slice is DONE.
 
 ### PARKED
 
-A parked slice names its reason. `round-3` and `failed-twice` wait for the owner. Other
-parks resume to the recorded phase.
+A parked slice names its reason. `failed-twice` waits for the owner. Other parks resume to
+the recorded phase. Review rounds never park a slice.
 
 ### HELD
 
@@ -145,6 +164,13 @@ design. End with a result file.
 Work only in the given worktree and branch. Write the named tests first and run them red.
 Run T0 per edit and T1 per commit. Lint and format before each commit. Do not weaken an
 agreed test. Do not push to the base branch. Hand back the head SHA you finished on.
+
+### codex-builder
+
+Codex fixes the review findings in the given worktree for review round 4 to 6. Fix each
+finding at its root and add a regression test for it. Run T0 per edit and T1 per commit.
+Commit on the slice branch. Do not weaken an agreed test and do not push to the base
+branch.
 
 ### dennis
 

@@ -66,8 +66,9 @@ needs.
 
 ## Failures
 
-A failed run gets one retry on the same head. A second failure parks the slice. A third
-review round on one artifact parks it. Parked slices wait for the owner. Say so in the
+A failed run gets one retry on the same head. A second failure parks the slice. Review
+rounds never park a slice: rounds 4 to 6 go to the Codex fixer and a failed round 6 sends
+the slice back to PLAN to redesign. Parked slices wait for the owner. Say so in the
 tick log.
 
 ## Limits

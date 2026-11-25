@@ -210,6 +210,12 @@ mutate "gate ignores an unapplied rerun" devloop/evidence.py \
 mutate "a pin hides a red check of the same name" devloop/merge.py \
   '            if id(e) not in satisfying and state(e) not in OK_STATES:' '            if e["name"] not in required and state(e) not in OK_STATES:' \
   $T/test_merge.py::test_merge_pinned_source_must_match
+mutate "round seven still goes to remediate" devloop/slices.py \
+  '            if s["round"] >= REDESIGN_AT:' '            if False:' \
+  $T/test_runs_rounds.py::test_seventh_round_redesigns_the_plan_and_nothing_parks
+mutate "builder allowed after round three" devloop/dispatch.py \
+  '        if kind == "builder" and late:' '        if False:' \
+  $T/test_runs_rounds.py::test_rounds_four_to_six_are_fixed_by_codex
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

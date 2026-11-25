@@ -55,7 +55,13 @@ def config(proj, cfg_edit, tmp_path):
         c["reviewers"]["codex"]["argv"] = {
             "codex-review": ["codex-review", "{worktree}", "{brief}", "{out}"],
             "codex-fix": ["codex-fix", "{run_id}", "{brief}", "{plan}"],
+            "codex-builder": ["codex-builder", "{worktree}", "{brief}"],
         }
+        c["reviewers"]["codex"]["kinds"] = [
+            "codex-review",
+            "codex-fix",
+            "codex-builder",
+        ]
         c["reviewers"]["codex"]["repair_out"] = (
             str(tmp_path / "fixcache") + "/{run_id}/{plan_name}"
         )

@@ -164,7 +164,7 @@ def _builder_run_ok(project, s):
             req = store.read_json(rd / "request.json")
         except store.StoreError:
             unreadable = True
-        if unreadable or req.get("kind") != "builder":
+        if unreadable or req.get("kind") not in ("builder", "codex-builder"):
             continue
         if (req.get("row"), req.get("slice")) != (s["row"], s["slice"]):
             continue

@@ -33,6 +33,10 @@ two owner additions on 2026-11-25 recorded below (node directory, rules parity).
 
 ## Review record
 
+- Owner call 2026-11-25 (supersedes the round-3 park below): review rounds never park a
+  slice. Rounds 1 to 3 are fixed by the Claude builder, rounds 4 to 6 by Codex
+  (`codex-builder`), and the move that would be round 7 goes to PLAN with reason `redesign`.
+  Parks stay only for run failures and holds.
 - Dennis round 1 (2026-11-25, head 395120c): GO-WITH-FIXES, 12 HIGH, 10 MEDIUM, 6 LOW. All
   HIGH and MEDIUM items are folded into the tasks below; LOW items taken except the Slack
   volume note (owner asked for a line per tick). M10 (a second state store beside

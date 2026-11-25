@@ -96,7 +96,11 @@ def next_command(project, s, checklist) -> str:
         "SELF_CHECK": f"read the diff, then devloop-state {project} selfcheck {key} GO --head {s['head'] or '<head>'}",
         "VERIFY": f"devloop-dispatch {project} test {key} --level t1 --brief ...",
         "REVIEW": f"devloop-dispatch {project} dennis|codex-review {key} --brief ...",
-        "REMEDIATE": f"devloop-dispatch {project} builder {key} --brief ...",
+        "REMEDIATE": (
+            f"devloop-dispatch {project} "
+            + ("codex-builder" if s["round"] >= slices.CODEX_ROUNDS_FROM else "builder")
+            + f" {key} --brief ..."
+        ),
         "GATE": f"devloop-merge {project} {key}",
         "DOCUMENT": f"devloop-dispatch {project} docs {key} --brief ...",
     }

@@ -24,6 +24,7 @@ Kind = collections.namedtuple(
 KINDS = {
     "planner": Kind("planner", 7200, 1200, "claude", True, False),
     "builder": Kind("builder", 14400, 1200, "claude", True, False),
+    "codex-builder": Kind("builder", 14400, 3600, "exit", True, False),
     "dennis": Kind("reviewer", 5400, 1200, "claude-verdict", False, True),
     "codex-review": Kind("reviewer", 3600, 3600, "verdict", False, True),
     "codex-fix": Kind("planner", 3600, 3600, "selfverdict", True, False),
@@ -37,6 +38,7 @@ KIND_PHASES = {
     "planner": ("PLAN",),
     "codex-fix": ("PLAN",),
     "builder": ("DEVELOP", "REMEDIATE"),
+    "codex-builder": ("REMEDIATE",),
     "dennis": ("PLAN", "REVIEW"),
     "codex-review": ("PLAN", "REVIEW"),
     "test": ("VERIFY", "REVIEW"),

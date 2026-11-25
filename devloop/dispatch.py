@@ -280,6 +280,15 @@ def _prepare(project, cfg, kind, key, worktree, reviewer, level, select, covers)
     req["lineage"] = f"{s['round']}:{s['last_moved_at']}"
     if s["phase"] not in runs.KIND_PHASES[kind]:
         raise runs.Refused(f"{kind} does not run in {s['phase']}")
+    # The fixer follows the round ladder: Claude for rounds 1 to 3, Codex for 4 to 6.
+    if s["phase"] == "REMEDIATE":
+        late = s["round"] >= slices.CODEX_ROUNDS_FROM
+        if kind == "builder" and late:
+            raise runs.Refused(
+                "rounds 4 and up are fixed by codex-builder, not builder"
+            )
+        if kind == "codex-builder" and not late:
+            raise runs.Refused("codex-builder is for review round 4 and up")
     wt = worktree or s["worktree"]
     if not wt or not Path(wt).is_dir():
         raise runs.Refused("no worktree")
@@ -288,6 +297,11 @@ def _prepare(project, cfg, kind, key, worktree, reviewer, level, select, covers)
         _prepare_review(project, cfg, s, req, kind, reviewer, wt)
     elif kind == "test":
         _prepare_test(project, cfg, s, req, level, select, covers, wt)
+    elif kind == "codex-builder":
+        argv = ((cfg["reviewers"].get("codex") or {}).get("argv") or {}).get(kind)
+        if not argv:
+            raise runs.Refused("no command configured for codex-builder")
+        req.update(argv_t=list(argv), head=s["head"], purpose="code")
     else:
         role = "builder" if kind == "builder" else "planner"
         model = cfg["models"][role]
@@ -567,7 +581,7 @@ def build_brief(project, key, kind, body, plan_copy=None) -> str:
         "standing_rules": cfg.get("brief_extra") or "",
         "node_directory": (
             (cfg.get("nodes") or {}).get("directory") or ""
-            if kind in ("builder", "test")
+            if kind in ("builder", "codex-builder", "test")
             else ""
         ),
         "lessons": "\n".join(
