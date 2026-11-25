@@ -324,3 +324,22 @@ def test_playbook_and_skill_files_exist():
     for name in ("SKILL.md", "TICK.md", "PLAYBOOK.md", "brief-template.md"):
         assert (SKILL / name).is_file()
     assert store.skill_dir() == SKILL
+
+
+def test_notify_command_scrubs_and_cuts(
+    proj, home, cfg_edit, fakebin, tmp_path, monkeypatch
+):
+    log = tmp_path / "n.log"
+    monkeypatch.setenv("FAKE_NOTIFY_LOG", str(log))
+    cfg_edit(lambda c: c.update(notify={"cmd": [str(fakebin / "notify")]}))
+    state = ROOT / "bin" / "devloop-state"
+    text = "token ghp_abcdefghijklmnop1234567 " + "x" * 600
+    r = subprocess.run(
+        [str(state), "p", "notify", text],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "DEVLOOP_HOME": str(home), "DEVLOOP_HEADLESS": "1"},
+    )
+    assert r.returncode == 0, r.stderr
+    sent = log.read_text()
+    assert "ghp_" not in sent and len(sent.split("\t", 1)[1].strip()) <= 300

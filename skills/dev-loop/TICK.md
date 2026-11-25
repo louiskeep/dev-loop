@@ -7,6 +7,9 @@ worker. Never do it yourself in this session.
 
 ## Rules for this session
 
+- To tell the owner something, run `devloop-state PROJECT notify "TEXT"`. It scrubs the text,
+  cuts it to 300 characters and sends it through the project's notify command. Never call a
+  notify script yourself.
 - Change state only with `devloop-state`, `devloop-dispatch` and `devloop-merge`. Never
   edit state files by hand.
 - Never merge any other way. A direct `gh pr merge` is blocked.

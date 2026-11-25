@@ -991,3 +991,15 @@ def test_third_no_verdict_after_a_resume_is_owner_gated(proj, ready, brief):
     assert (s["phase"], s["park_reason"]) == ("PARKED", "failed-twice")
     with pytest.raises(slices.TransitionError, match="owner"):
         slices.move(proj, key, "REVIEW", "tick resume")
+
+
+def test_test_argv_label_is_unique_per_run(proj, ready, brief, cfg_edit):
+    cfg_edit(lambda c: c["tests"]["t1"].update(argv=["runner", "--label", "{label}"]))
+    key, _, _ = ready("VERIFY")
+    first = go(proj, brief, "test", key, level="t1")
+    finish(proj, first, code=255, reason="infra", result=res("FAILED"))
+    runs.apply_run(proj, first)
+    second = go(proj, brief, "test", key, level="t1")
+    a = runs.read_request(proj, first)["argv"]
+    b = runs.read_request(proj, second)["argv"]
+    assert a[-1] != b[-1] and a[-1].endswith(first) and b[-1].endswith(second)

@@ -67,6 +67,11 @@ def _success(conclusion):
     return isinstance(conclusion, str) and conclusion.lower() == "success"
 
 
+def _skipped(conclusion):
+    """Real gate runs skip some jobs (a fast path, a proof job); a skip is not a failure."""
+    return isinstance(conclusion, str) and conclusion.lower() == "skipped"
+
+
 def _same_head(oid, head):
     return (
         isinstance(oid, str)
@@ -122,6 +127,28 @@ def _check_states(rollup, rules):
                 problems.append(f"check {name} is {state(e) or 'pending'}")
                 break
     return problems
+
+
+def _git_ok(repo_cfg, *args, timeout=300):
+    return (
+        subprocess.run(
+            ["git", "-C", repo_cfg["path"], *args],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def _up_to_date(repo_cfg, base, head):
+    """The head must contain the current base tip. Returns a refusal reason or None."""
+    if not _git_ok(repo_cfg, "fetch", "origin", base):
+        return "could not fetch the base branch to check the PR is up to date"
+    if not _git_ok(repo_cfg, "merge-base", "--is-ancestor", f"origin/{base}", head):
+        return "the PR head does not contain the latest base branch"
+    return None
 
 
 def _verify_cmd(project, cfg, repo_cfg, rules, base, head):
@@ -220,7 +247,7 @@ def _gate_dispatch(repo_cfg, rules, rollup, s, cfg):
         "-R",
         _slug(repo_cfg),
         "--json",
-        "event,headSha,workflowName,createdAt,conclusion,jobs",
+        "event,headSha,workflowName,path,createdAt,conclusion,jobs",
     )
     try:
         run = json.loads(out) if rc == 0 else {}
@@ -235,12 +262,16 @@ def _gate_dispatch(repo_cfg, rules, rollup, s, cfg):
     )
     created, final_at = _iso(run.get("createdAt")), _iso(final_go)
     bad = (
-        run.get("workflowName") != wf
+        wf not in (run.get("workflowName"), Path(run.get("path") or "").name)
         or run.get("event") != "workflow_dispatch"
         or not _same_head(run.get("headSha"), s["head"])
         or not _success(run.get("conclusion"))
         or not run.get("jobs")
-        or any(not _success(j.get("conclusion")) for j in run["jobs"])
+        or not any(_success(j.get("conclusion")) for j in run["jobs"])
+        or any(
+            not (_success(j.get("conclusion")) or _skipped(j.get("conclusion")))
+            for j in run["jobs"]
+        )
         or created is None
         or final_at is None
         or created <= final_at
@@ -269,10 +300,13 @@ def _preflight(project, cfg, s, view):
     why = _verify_cmd(project, cfg, repo_cfg, rules, base, s["head"])
     if why:
         return why
-    if (cfg.get("merge") or {}).get("require_up_to_date") and view.get(
-        "mergeStateStatus"
-    ) not in ("CLEAN", "HAS_HOOKS"):
-        return "the PR is not up to date with its base"
+    if (cfg.get("merge") or {}).get("require_up_to_date"):
+        if view.get("mergeStateStatus") not in ("CLEAN", "HAS_HOOKS"):
+            return "the PR is not up to date with its base"
+        # GitHub reports BEHIND only under strict branch protection, so check it here.
+        why = _up_to_date(repo_cfg, base, s["head"])
+        if why:
+            return why
     glob = rules.get("changelog_glob")
     if glob and not any(
         fnmatch.fnmatch(f.get("path", ""), glob) for f in view.get("files") or []

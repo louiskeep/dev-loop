@@ -201,3 +201,9 @@ failing id against the baseline", not "suite green". A new head needs new eviden
 - The row is closed when its last slice is DONE.
 - Problems and lessons from this slice are recorded.
 - The worktree is cleaned up only when it holds no work that is not pushed.
+
+## Telling the owner
+
+A docs worker or any other worker that needs to send a message runs
+`devloop-state PROJECT notify "TEXT"`. The text is scrubbed and cut to 300 characters, then
+sent through the notify command in `project.json`. Do not call a notify script directly.

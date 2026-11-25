@@ -225,6 +225,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("release").add_argument("run")
     sub.add_parser("discard").add_argument("run")
     sub.add_parser("merge-reset").add_argument("key")
+    sub.add_parser("notify").add_argument("text")
     ls = sub.add_parser("list")
     ls.add_argument("--live", action="store_true")
     ls.add_argument("--writers", action="store_true")
@@ -257,6 +258,9 @@ def main(argv=None) -> int:
             return 0 if all(ok for ok, _ in results) else 3
         elif args.cmd == "event":
             _event(args)
+        elif args.cmd == "notify":
+            # notes.notify scrubs and cuts to 300 characters before it sends.
+            notes.notify(args.project, args.text, limit=300)
         else:
             _notes(args)
     except REFUSALS as exc:

@@ -181,6 +181,9 @@ mutate "board call repeats on replay" devloop/slices.py \
 mutate "merge identity not checked" devloop/slices.py \
   '                if (s["repo"], s["pr"], s["head"]) != (' '                if False and (s["repo"], s["pr"], s["head"]) != (' \
   $T/test_merge.py::test_finish_refuses_when_the_slice_no_longer_matches_the_confirmed_merge
+mutate "up-to-date skips the ancestor check" devloop/merge.py \
+  '    if not _git_ok(repo_cfg, "merge-base", "--is-ancestor", f"origin/{base}", head):' '    if False:' \
+  $T/test_merge.py::test_up_to_date_needs_the_base_tip_in_the_head
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

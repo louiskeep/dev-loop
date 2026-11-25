@@ -205,8 +205,9 @@ def test_merge_refuses_wrong_base(proj, gate):
     assert "does not target main" in merge.merge(proj, k).reason
 
 
-def test_merge_refuses_unknown_merge_state(proj, gate, cfg_edit):
+def test_merge_refuses_unknown_merge_state(proj, gate, cfg_edit, monkeypatch):
     cfg_edit(lambda c: c["merge"].update(require_up_to_date=True))
+    monkeypatch.setattr(merge, "_up_to_date", lambda *a: None)
     k = gate()
     gate.set_gh(mergeStateStatus="UNKNOWN")
     assert merge.merge(proj, k).outcome == "refused"
@@ -243,7 +244,7 @@ def test_merge_refuses_gate_dispatch_before_codex_go(proj, gate, cfg_edit):
     def edit(c):
         c["reviews"]["R0"]["code"] = ["codex"]
         c["merge"]["repos"]["main"].update(
-            dispatch_workflow="gate", gate_status="gate-run"
+            dispatch_workflow="gate.yml", gate_status="gate-run"
         )
 
     cfg_edit(edit)
@@ -257,11 +258,16 @@ def test_merge_refuses_gate_dispatch_before_codex_go(proj, gate, cfg_edit):
         },
     ]
     run = {
-        "workflowName": "gate",
+        "workflowName": "Gate",
+        "path": ".github/workflows/gate.yml",
         "event": "workflow_dispatch",
         "headSha": HEAD,
         "conclusion": "success",
-        "jobs": [{"conclusion": "success"}],
+        "jobs": [
+            {"conclusion": "success"},
+            {"conclusion": "skipped"},
+            {"conclusion": "skipped"},
+        ],
         "createdAt": "2000-01-01T00:00:00Z",
     }
     gate.set_gh(statusCheckRollup=roll, run=run)
@@ -607,7 +613,7 @@ def test_gate_run_failure_conclusion_is_still_refused(proj, gate, cfg_edit):
     def edit(c):
         c["reviews"]["R0"]["code"] = ["codex"]
         c["merge"]["repos"]["main"].update(
-            dispatch_workflow="gate", gate_status="gate-run"
+            dispatch_workflow="gate.yml", gate_status="gate-run"
         )
 
     cfg_edit(edit)
@@ -621,7 +627,8 @@ def test_gate_run_failure_conclusion_is_still_refused(proj, gate, cfg_edit):
         },
     ]
     run = {
-        "workflowName": "gate",
+        "workflowName": "Gate",
+        "path": ".github/workflows/gate.yml",
         "event": "workflow_dispatch",
         "headSha": HEAD,
         "conclusion": "failure",
@@ -741,3 +748,108 @@ def test_finish_refuses_when_the_slice_no_longer_matches_the_confirmed_merge(
     with pytest.raises(slices.TransitionError, match="current PR and head"):
         slices.finish_merge(proj, k, ident=ident)
     assert slices.load(proj, k)["phase"] == "GATE" and not slices.merge_records(proj)
+
+
+def _dispatch_cfg(cfg_edit, wf):
+    def edit(c):
+        c["reviews"]["R0"]["code"] = ["codex"]
+        c["merge"]["repos"]["main"].update(dispatch_workflow=wf, gate_status="gate-run")
+
+    cfg_edit(edit)
+
+
+def _green_run(**over):
+    run = {
+        "workflowName": "Gate",
+        "path": ".github/workflows/gate.yml",
+        "event": "workflow_dispatch",
+        "headSha": HEAD,
+        "conclusion": "success",
+        "jobs": [{"conclusion": "success"}, {"conclusion": "skipped"}],
+        "createdAt": "2999-01-01T00:00:00Z",
+    }
+    run.update(over)
+    roll = [
+        {"name": "ci", "conclusion": "SUCCESS"},
+        {
+            "name": "gate-run",
+            "conclusion": "SUCCESS",
+            "targetUrl": "https://x/actions/runs/9",
+        },
+    ]
+    return roll, run
+
+
+@pytest.mark.parametrize(
+    "wf,ok", [("gate.yml", True), ("Gate", True), ("other.yml", False)]
+)
+def test_gate_workflow_matches_file_name_or_display_name(proj, gate, cfg_edit, wf, ok):
+    _dispatch_cfg(cfg_edit, wf)
+    k = gate()
+    roll, run = _green_run()
+    gate.set_gh(statusCheckRollup=roll, run=run)
+    assert (merge.merge(proj, k).outcome == "merged") is ok
+
+
+def test_gate_run_with_only_skipped_jobs_or_a_failed_job_is_refused(
+    proj, gate, cfg_edit
+):
+    _dispatch_cfg(cfg_edit, "gate.yml")
+    k = gate()
+    for jobs in (
+        [{"conclusion": "skipped"}],
+        [{"conclusion": "success"}, {"conclusion": "failure"}],
+    ):
+        roll, run = _green_run(jobs=jobs)
+        gate.set_gh(statusCheckRollup=roll, run=run)
+        assert merge.merge(proj, k).outcome == "refused"
+
+
+def test_up_to_date_needs_the_base_tip_in_the_head(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _origin(repo, tmp_path)
+    cfg = {"path": str(repo)}
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
+
+    def g(*a):
+        return subprocess.run(
+            ["git", "-C", str(repo), *a],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        ).stdout.strip()
+
+    old = g("rev-parse", "HEAD")
+    g("checkout", "-q", "-b", "feat")
+    g("commit", "-q", "--allow-empty", "-m", "feature")
+    head = g("rev-parse", "HEAD")
+    assert merge._up_to_date(cfg, "main", head) is None
+    g("checkout", "-q", "main")
+    g("commit", "-q", "--allow-empty", "-m", "base moved")
+    g("push", "-q", "origin", "main")
+    assert "latest base" in merge._up_to_date(cfg, "main", head)
+    assert merge._up_to_date(cfg, "main", g("rev-parse", "HEAD")) is None
+    assert "could not fetch" in merge._up_to_date({"path": str(tmp_path)}, "main", old)
+
+
+def test_merge_preflight_runs_the_ancestor_check_when_required(
+    proj, gate, cfg_edit, monkeypatch
+):
+    cfg_edit(lambda c: c["merge"].update(require_up_to_date=True))
+    monkeypatch.setattr(
+        merge,
+        "_up_to_date",
+        lambda *a: "the PR head does not contain the latest base branch",
+    )
+    k = gate()
+    gate.set_gh(mergeStateStatus="CLEAN")
+    r = merge.merge(proj, k)
+    assert r.outcome == "refused" and "latest base" in r.reason
