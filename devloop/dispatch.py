@@ -1,6 +1,5 @@
 """Dispatch: admission, argv, the frozen request, launch and the worker brief."""
 
-import datetime
 import hashlib
 import shutil
 import os
@@ -314,27 +313,13 @@ def _prepare(project, cfg, kind, key, worktree, reviewer, level, select, covers)
     return req, s
 
 
-RESERVE_WINDOW_S = 300
-
-
 def _check_memory(project, cfg, kind):
     """Refuse when free memory, less what recent starts still have to claim and this
-    kind's own estimate, would drop below the floor. A worker's memory is not in
-    MemAvailable until it has grown, so a burst of starts needs the reservations."""
-    reserved = 0
-    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
-        seconds=RESERVE_WINDOW_S
-    )
-    for rd, r in runs.iter_runs(project):
-        try:
-            started = datetime.datetime.fromisoformat(r["started_at"])
-        except (KeyError, ValueError, TypeError):
-            continue
-        if started >= cutoff and not (rd / "exit").is_file():
-            reserved += projmod.memory_mb(cfg, r["kind"])
+    kind's own estimate, would drop below the floor."""
     free_mb = mem_available_kb() / 1024
     floor_mb = cfg.get("min_free_gb", 2.5) * 1024
-    if free_mb - reserved - projmod.memory_mb(cfg, kind) < floor_mb:
+    held = runs.reserved_mb(project, cfg) + projmod.memory_mb(cfg, kind)
+    if free_mb - held < floor_mb:
         raise runs.Refused("memory is below the floor")
 
 

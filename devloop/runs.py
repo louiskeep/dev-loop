@@ -6,6 +6,7 @@ through `apply_run`, which reads the frozen request, never the slice's phase.
 """
 
 import collections
+import datetime
 import hashlib
 import os
 import re
@@ -15,6 +16,7 @@ import subprocess
 from pathlib import Path
 
 from . import notes, slices, store
+from . import project as projmod
 
 Kind = collections.namedtuple(
     "Kind", "slot deadline_s idle_s reader writes_worktree pinned"
@@ -248,6 +250,28 @@ def slot_usage(project) -> dict:
             slot = KINDS[req["kind"]].slot or "other"
             used[slot] = used.get(slot, 0) + 1
     return used
+
+
+RESERVE_WINDOW_S = 300
+
+
+def reserved_mb(project, cfg, now=None) -> int:
+    """Memory that runs started in the last five minutes may still claim.
+
+    A worker's memory is not in MemAvailable until it has grown, so admission and the
+    dashboard both subtract these reservations. A run that has ended holds nothing.
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    cutoff = now - datetime.timedelta(seconds=RESERVE_WINDOW_S)
+    total = 0
+    for rd, req in iter_runs(project):
+        try:
+            started = datetime.datetime.fromisoformat(req["started_at"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if started >= cutoff and not (rd / "exit").is_file():
+            total += projmod.memory_mb(cfg, req.get("kind"))
+    return total
 
 
 def live_runs(project) -> list:

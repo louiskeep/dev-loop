@@ -279,6 +279,20 @@ def list_slices(project: str) -> list:
     return out
 
 
+def load_all(project: str):
+    """Every slice that loads, plus the file stems of those that do not.
+
+    The dashboard reads this way so one damaged file cannot hide the healthy ones.
+    """
+    good, bad = [], []
+    for path in sorted(_slices_dir(project).glob("*.json")):
+        try:
+            good.append(load(project, path.stem))
+        except (SliceError, store.StoreError):
+            bad.append(path.stem)
+    return good, bad
+
+
 def _blank(row, slice_id, repo, risk) -> dict:
     return {
         "schema_version": SCHEMA_VERSION,

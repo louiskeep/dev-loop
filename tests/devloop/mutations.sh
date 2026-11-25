@@ -283,7 +283,7 @@ mutate "tick starts workers with the user MCP servers" devloop/project.py \
   '    return ["--strict-mcp-config", "--mcp-config", path or NO_MCP]' '    return []' \
   $T/test_runs_limits.py::test_claude_workers_start_with_no_mcp_servers
 mutate "memory admission ignores recent reservations" devloop/dispatch.py \
-  '    if free_mb - reserved - projmod.memory_mb(cfg, kind) < floor_mb:' '    if free_mb - projmod.memory_mb(cfg, kind) < floor_mb:' \
+  '    held = runs.reserved_mb(project, cfg) + projmod.memory_mb(cfg, kind)' '    held = projmod.memory_mb(cfg, kind)' \
   $T/test_runs_limits.py::test_burst_of_dispatches_stops_at_the_reservation
 mutate "tick dispatch limit is never enforced" devloop/dispatch.py \
   '    if made >= projmod.max_dispatch_per_tick(cfg):' '    if False:' \

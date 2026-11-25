@@ -26,7 +26,7 @@ def clock(dt=None) -> str:
     return dt.astimezone(CHICAGO).strftime("%H:%M %Z")
 
 
-def _events(project):
+def events(project):
     path = store.state_dir(project) / "events.jsonl"
     out = []
     try:
@@ -186,7 +186,7 @@ def summarize(project, since: str, limit=6) -> str:
     """Fixed words per event kind, from events after `since`; counts when there are many."""
     cfg = projmod.load_project(project)
     parts = []
-    for ev in _events(project):
+    for ev in events(project):
         words = event_words(ev, cfg) if ev["at"] > since else None
         if words:
             parts.append(words)
