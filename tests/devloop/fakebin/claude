@@ -14,7 +14,7 @@ if log:
     with open(log, "a") as fh:
         fh.write(json.dumps({"tool": "claude", "argv": argv, "cwd": os.getcwd(),
                              "stdin": stdin,
-                             "env": {k: os.environ.get(k) for k in ("DEVLOOP_HEADLESS", "DEVLOOP_RUN_DIR")}}) + "\n")
+                             "env": {k: os.environ.get(k) for k in ("DEVLOOP_HEADLESS", "DEVLOOP_RUN_DIR", "DEVLOOP_BASE_BRANCHES")}}) + "\n")
 if argv[:1] == ["agents"]:
     if os.environ.get("FAKE_AGENTS_EXIT"):
         sys.exit(int(os.environ["FAKE_AGENTS_EXIT"]))

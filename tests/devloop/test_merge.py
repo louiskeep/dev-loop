@@ -579,3 +579,22 @@ def test_push_reads_the_branch_from_cd_or_dash_c(tmp_path):
     assert (
         headless_merge_guard.blocked(f"git -C {feat} push origin HEAD", main) is False
     )
+
+
+def test_push_to_a_configured_base_is_denied(tmp_path, monkeypatch):
+    feat = _repo_on(tmp_path / "b", "feat/x")
+    monkeypatch.setenv("DEVLOOP_BASE_BRANCHES", "develop,main")
+    assert headless_merge_guard.blocked("git push origin HEAD:develop", feat) is True
+    assert headless_merge_guard.blocked("git push origin develop", feat) is True
+    assert headless_merge_guard.blocked("git push origin HEAD:refs/heads/develop", feat)
+    assert headless_merge_guard.blocked("git push origin HEAD", feat) is False
+    dev = _repo_on(tmp_path / "c", "develop")
+    assert headless_merge_guard.blocked("git push origin HEAD", dev) is True
+
+
+def test_base_branches_come_from_the_project_config(proj):
+    from devloop import project as projmod
+
+    cfg = projmod.load_project(proj)
+    cfg["merge"] = {"repos": {"main": {"base": "develop"}}}
+    assert projmod.base_branches(cfg) == "develop,main"

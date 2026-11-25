@@ -92,7 +92,12 @@ def _model_call(project, cfg, prompt):
         "stream-json",
         "--verbose",
     ]
-    env = dict(os.environ, DEVLOOP_HEADLESS="1", DEVLOOP_PROJECT=project)
+    env = dict(
+        os.environ,
+        DEVLOOP_HEADLESS="1",
+        DEVLOOP_PROJECT=project,
+        DEVLOOP_BASE_BRANCHES=projmod.base_branches(projmod.load_project(project)),
+    )
     try:
         r = subprocess.run(
             argv,

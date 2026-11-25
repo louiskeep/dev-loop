@@ -165,6 +165,10 @@ mutate "a red test is a failed run" devloop/runs.py \
 mutate "a selection earns t2 or full" devloop/runs.py \
   '    if select and level in ("t2", "full"):' '    if False:' \
   $T/test_runs.py::test_selection_is_refused_for_t2_and_full_but_not_t1
+mutate "guard ignores configured bases" devloop/project.py \
+  '    names = {"main"}' '    return "main"
+    names = {"main"}' \
+  $T/test_tick.py::test_tick_session_gets_the_configured_base_branches
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

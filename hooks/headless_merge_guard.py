@@ -21,6 +21,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    from . import gate_guard
+except ImportError:  # run standalone: python hooks/headless_merge_guard.py
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import gate_guard
+
 REASON = "devloop: merge only through devloop-merge, which checks the gate first"
 
 _OPT = r"(?:\s+(?:-R|--repo|--hostname)(?:\s+|=)\S+|\s+-\S+)*"
@@ -69,6 +75,7 @@ def _repo_dir(command: str, prefix: str, cwd):
 def _push_targets_base(args: str, cwd) -> bool:
     base = _base_branches()
     tokens = [t.strip("'\"") for t in args.split()]
+    # `HEAD:main` always names main; a bare `HEAD` is the current branch.
     if any(t in ("--all", "--mirror") for t in tokens):
         return True
     positional = [t for t in tokens if t and not t.startswith("-")]
@@ -76,12 +83,9 @@ def _push_targets_base(args: str, cwd) -> bool:
         # A bare push goes where the current branch tracks; unknown means allow.
         branch = _current_branch(cwd) if cwd else None
         return branch in base
+    current = _current_branch(cwd) if cwd else None
     for spec in positional[1:]:
-        dst = spec.lstrip("+").split(":", 1)[-1] if ":" in spec else spec.lstrip("+")
-        dst = dst.removeprefix("refs/heads/")
-        if dst in ("head", "@"):  # the current branch, whatever it is named
-            dst = (_current_branch(cwd) if cwd else None) or ""
-        if dst in base:
+        if gate_guard.push_destination(spec, current) in base:
             return True
     return False
 
@@ -94,7 +98,8 @@ def blocked(command: str, cwd=None) -> bool:
         return True
     return any(
         _push_targets_base(
-            m.group(1), _repo_dir(command, command[m.start() : m.start(1)], cwd)
+            command[m.start(1) : m.end(1)],
+            _repo_dir(command, command[m.start() : m.start(1)], cwd),
         )
         for m in _GIT_PUSH.finditer(text)
     )

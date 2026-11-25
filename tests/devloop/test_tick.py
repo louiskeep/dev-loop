@@ -260,3 +260,14 @@ def test_tick_launcher_runs(proj, home, tmp_path, fakebin):
         },
     )
     assert out.returncode == 0, out.stderr
+
+
+def test_tick_session_gets_the_configured_base_branches(proj, cfg_edit, tmp_path):
+    cfg_edit(
+        lambda c: c.update(
+            merge={"allowed": True, "repos": {"main": {"base": "develop"}}}
+        )
+    )
+    tick.tick(proj)
+    env = claude_calls(tmp_path)[0]["env"]
+    assert env["DEVLOOP_BASE_BRANCHES"] == "develop,main"

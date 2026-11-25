@@ -13,6 +13,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from . import project as projmod
 from . import runs, store
 from .caps import TAIL_CHARS, detect_cap, detect_cap_text
 
@@ -228,6 +229,7 @@ def run(project, run_id) -> int:
         DEVLOOP_PROJECT=project,
         DEVLOOP_RUN=run_id,
         DEVLOOP_RUN_DIR=str(store.out_dir(rd)),
+        DEVLOOP_BASE_BRANCHES=projmod.base_branches(projmod.load_project(project)),
     )
     if req["kind"] in CODEX_KINDS:
         env["CODEX_LAST_MSG"] = req["last_msg"]

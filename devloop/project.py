@@ -228,3 +228,14 @@ def load_project(project: str) -> dict:
     if bad or not isinstance(cfg, dict):
         raise ConfigError("project.json: not a JSON object")
     return _validate(cfg, project)
+
+
+def base_branches(cfg) -> str:
+    """Comma list the headless merge guard treats as base branches: main plus every
+    configured base, so a project on `develop` is guarded the same way."""
+    names = {"main"}
+    names.update(r["base"] for r in cfg.get("repos", []) if r.get("base"))
+    for rules in ((cfg.get("merge") or {}).get("repos") or {}).values():
+        if rules.get("base"):
+            names.add(rules["base"])
+    return ",".join(sorted(names))

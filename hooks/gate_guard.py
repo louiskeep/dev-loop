@@ -97,6 +97,19 @@ def _strip_heads(ref: str) -> str:
     return ref.removeprefix("refs/heads/")
 
 
+def push_destination(refspec: str, current_branch: str | None) -> str:
+    """The remote branch a push refspec writes, or "" when it cannot be told.
+
+    Shared with the headless merge guard so both read destinations the same way.
+    """
+    refspec = refspec.lstrip("+")
+    colon = ":" in refspec
+    dst = _strip_heads(refspec.split(":", 1)[1] if colon else refspec)
+    if dst in ("HEAD", "@"):
+        return "" if colon else (current_branch or "")
+    return dst
+
+
 def _mentions_family(tokens: list[str]) -> bool:
     return bool(_FAMILY & set(tokens)) or ("pr" in tokens and "merge" in tokens)
 
