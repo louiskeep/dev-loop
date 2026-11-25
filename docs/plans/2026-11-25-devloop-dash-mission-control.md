@@ -131,57 +131,82 @@ page, reading `~/.codex/sessions` or any file outside the project's state dir, a
   for non-hold questions. Holds accept only their two options and render only those two.
   The tick treats an `other:` answer as the owner's instruction (TICK and PLAYBOOK
   wording, Task 9).
-- **Managed markers are refused**: no persisted question field (question, context, detail,
-  options, recommended, answer) may contain `BLOCK_START` or `BLOCK_END`
-  (`devloop/notes.py:19`); a single check in `notes._line` (used by `ask` and by answer
-  validation) raises `NotesError("text may not contain the questions page markers")`, so
-  the page parser (`devloop/notes.py:222`) never sees repeated markers.
+- **Managed markers**: `notes._split_page` matches `BLOCK_START` and `BLOCK_END` only
+  on whole lines, preserving text outside the block and rejecting unpaired, reversed or
+  repeated delimiter lines. A marker inside `- Answer: ...` is field text. One
+  question-field check rejects either marker in question, context, detail, options,
+  recommendation or answer. Use it for question writes and page-answer validation.
+  Keep the shared `notes._line` behavior for problems and lessons.
 - **Question version**: one shared pure function, `store.canonical_digest(obj) -> str`
   (16 hex of sha256 over sorted, compact JSON), extracted from `view.version_of`
   (`devloop/dash/view.py:221`). `version_of` keeps its payload (the view without its own
   `version`); `notes.question_version(q)` passes the stored record. Fixtures pin both
   outputs. A dashboard answer carries the version; the CLI passes none.
-- **Answer rules** (`notes._apply_answer`, all under the questions lock, in this order):
-  1. Unknown key: "This question is gone. Reload."
-  2. Invalid choice (not an option, bad `other:` text, `other:` on a hold, a managed
-     marker): the fixed `NotesError` message.
-  3. The record's current answer equals the choice: if its effect is still pending
-     (`applied != answer`), finish the effect (rule 6) and report "Finished applying your
-     answer."; otherwise "Already answered." with no change (a dashboard duplicate).
-  4. `expect_version` given and different from the current record: "This question changed.
-     Reload to see the new version."
-  5. A different answer on a record that already has one is allowed only when the record is
-     a tech decision (override), a hold answered `keep-held` (now `approve`), or the caller
-     is the CLI or page sync (today's behavior). Otherwise "Already answered."
-  6. Commit order, each step idempotent: save `answer` and `answered_at` with `applied`
-     unchanged; apply the slice effect (release the hold only if still HELD; clear
-     `waiting_on` only if it still names this question); set `applied = answer`; append
-     the event. A failure after the first save reports "Your answer was saved, but applying
-     it did not finish. Retry to finish." and a retry (rule 3) or the next page sync
-     (`answer != applied`) completes it without a second decision.
-  Page sync (`read_answers`, `devloop/notes.py:555`) passes the answer and version it
-  observed; rules 3 and 4 recheck them under the lock.
-- **The tick sees owner decisions**: the snapshot's question section
-  (`devloop/snapshot.py:161`) also lists owner answers whose `answered_at` is newer than
-  the last model pass or whose effect is pending (key, answer text, version), and the
-  digest (`devloop/snapshot.py:315`) includes `(key, version)` for open and recently
-  answered questions, so an override or an `other:` instruction defeats the skip check
-  (`devloop/tick.py:169`).
+- **Answer rules** (`notes._apply_answer`, under the questions lock, in order):
+  1. Reload the record by key. A missing key gives "This question is gone. Reload."
+  2. Page sync must match both its observed version and its observed answer to the
+     reloaded record before validation, retry or slice effects. A mismatch leaves the
+     replacement untouched. For dashboard requests only, recognize a retry of the
+     current decision by its saved (submitted question version, choice) pair. The receipt
+     must be a dashboard receipt for this question definition and current answer (rule 5).
+     Resume a pending match or report "Already answered." for a completed match.
+     For any other versioned request, require the submitted version to equal the reloaded version. A version
+     mismatch gives "This question changed. Reload to see the new version.", even when
+     the re-ask removed that option.
+  3. Validate the choice against this record (listed option or valid non-hold `other:`
+     text, single line, length and marker checks). For the current accepted choice,
+     resume a pending decision or report "Already answered." A manually edited page
+     answer still needs acceptance if it differs from the accepted choice.
+  4. A different choice after an owner decision is allowed for a tech override, for
+     `keep-held` followed by `approve`, or through CLI/page sync as today. Otherwise
+     report "Already answered." Finish an existing pending decision for this question
+     before replacing its receipt.
+  5. First save the answer, original `Answered:` timestamp and a decision receipt in
+     one atomic page write. The receipt stores a fresh unique ID, source, submitted
+     version, accepted choice, digest of the question definition (key, asked time, class,
+     wait, question, context, detail, options and recommendation), and pending status.
+     Use `store.canonical_digest` for the digest. A re-ask starts without a receipt.
+     A retry reuses the saved ID, time and source. Pending status is explicit even if
+     the choice equals the previous `applied`.
+  6. Re-read the slice. Only `_lifts_hold(s, key, choice)` authorizes the release branch:
+     release a still-HELD slice, or, for PARKED with `park_reason in slices.OWNER_PARKS`
+     (including `failed-twice`), call `slices.owner_answer` if `owner_answered` is false.
+     Preserve the existing ordinary-question `waiting_on`, key and phase guards and the
+     interactive guard for headless sync. Replay skips effects already satisfied.
+     Through `store.append_event`, check for this decision ID and append
+     `question-answered` only if absent, under the same events-file lock. Use the saved
+     timestamp for the event's `at`. Only after durable append (or finding that ID)
+     atomically mark the receipt complete and set `applied` to the accepted choice.
+     After a failure following the first save, report "Your answer was saved, but applying
+     it did not finish. Retry to finish." A matching retry or fresh page sync resumes
+     pending work and reports "Finished applying your answer." Old records without a
+     receipt retain their applied state. Sync also accepts a new valid page edit, and
+     skips legacy answers already applied without replaying their events.
+- **The tick sees owner decisions**: take the prompt text, digest and included decision
+  versions from one snapshot. Render complete unacknowledged owner answers (key, text,
+  decision ID as version) before lower-priority sections within the prompt cap. Pending
+  effects stay visible. In tick state, keep the last acknowledged decision ID per key
+  (missing map means empty). Only a successful model pass acknowledges the exact
+  versions included in its prompt. A post-call snapshot used for `last_hash` cannot
+  acknowledge anything. An unacknowledged decision bypasses the fresh/digest skip even
+  when that hash already includes it. Include open question versions and outstanding
+  decision versions in the digest. `last_model_at` still controls the skip window.
 - **One write path**: the dashboard calls `notes.answer(..., via="dashboard",
   expect_version=V)`, `store.set_paused(project, on, via)` (the CLI `pause`/`resume` branch,
-  `devloop/state_cli.py:257`, moves into it) and `tick.spawn_detached(project)` (moved from
+  `devloop/state_cli.py:257`, moves into it) and `tick.spawn_detached` (moved from
   `wrap._wake_tick`, `devloop/wrap.py:241`, so wrapper wake-ups and the button start a tick
-  the same way). No new file format: two optional fields (`Detail`, `Class`)
-  join the existing questions page.
+  the same way). The optional S3 fields extend the existing questions page.
 - **Tick running status is passive**: `tick.running(project, proc="/proc") -> bool`
   stats `tick.lock` without creating it (absent means not running) and looks for its
   device and inode in `/proc/locks` as a held FLOCK. It never opens or flocks the file, so
   a GET cannot create state or make an arriving tick defer (`devloop/tick.py:197`). The
   tick keeps its real flock.
 - **"Run a tick now"** runs under one server-side `threading.Lock`: check `tick.running`,
-  check the debounce, call `tick.spawn_detached`, and only on a successful spawn record
-  `last_tick`. A spawn failure (`OSError` from `Popen`) returns 500 "Could not start a
-  tick." and sets no debounce. `spawn_detached` raises; the wrapper's caller keeps its
+  check the debounce and call `tick.spawn_detached`. Its launch callback records
+  monotonic `last_tick` immediately when `Popen` returns, still under the server lock
+  and before the helper appends `tick-requested`. An append error keeps the debounce
+  and returns success with "Tick started, but its event could not be recorded." A failed
+  `Popen` returns 500 "Could not start a tick." and sets no debounce. `spawn_detached` raises; the wrapper's caller keeps its
   best-effort behavior by catching `OSError` itself (`devloop/wrap.py:249`). A race with
   cron is resolved by the tick's own flock (`tick.requested`).
 - **Token and origin**: one `secrets.token_urlsafe(32)` per server process, embedded in the
@@ -387,11 +412,11 @@ that every entry passes `safe_target`.
     `/act/tick`. `ROUTES` becomes `{(method, path): handler}`.
   - CSP `form-action 'self'` (was `'none'`).
   - `runs.Kind` gains `harness` and `transcript`; `wrap.CODEX_KINDS` is derived.
-  - Questions page: optional `- Detail:` and `- Class:` lines; answers may be
-    `other: <text>` for non-hold questions. A page without the new lines reads as today
-    (class `product`).
+  - Questions page: optional `- Detail:`, `- Class:`, `- Answered:` (original decision
+    time) and `- Decision:` (the Task 9b receipt). Non-hold answers may be `other: <text>`.
+    Without `Class:`, derive the legacy class from `Wait:` (`no` is tech, `yes` is product).
   - `devloop-state ask` gains `--detail` and `--class tech|product`.
-  - Event kinds added: `question-answered` gains `via`; new `question-decided`,
+  - Event kinds added: `question-answered` gains `via` and the decision ID; new `question-decided`,
     `loop-paused`, `loop-resumed`, `tick-requested`, each with `via`.
 - New and frozen: `TOOL_TAGS = ("READ", "EDIT", "WRITE", "SHELL", "SEARCH", "AGENT", "WEB",
   "PLAN", "MCP", "OTHER")`; event tags `DISPATCHED`, `APPLIED`, `MOVED`, `MERGED`,
@@ -414,19 +439,20 @@ that every entry passes `safe_target`.
   call:
   - `Content-Length` missing, not a nonnegative integer, or over `POST_BYTES`: 400 "Bad
     request."
+  - short read against the declared byte length, malformed percent escape or malformed form encoding (including invalid
+    UTF-8 in a form name or value): 400 "Bad request." before any state call.
   - token missing or wrong: 403 "This page is out of date. Reload."
   - origin missing or foreign (scheme, host or effective port): 403 "Refused: not sent
     from this page."
-  - body not strict form encoding, a field outside the route's contract, a field given
+  - a field outside the route's contract, a field given
     more than once, or not exactly one answer mode (`choice` or `other`): 400 "Bad
     request." Parsing uses `keep_blank_values=True`, so `other=` counts as given.
-- Answer outcomes after the checks, in the order of the answer rules (Design notes): 409
-  "This question is gone. Reload."; 400 with the fixed `NotesError` message; 409 "Already
-  answered." or 200 "Finished applying your answer."; 409 "This question changed. Reload
-  to see the new version."; 500 "Your answer was saved, but applying it did not finish.
-  Retry to finish."
+- Answer outcomes use the ordered rules in Design notes. Missing, stale and already
+  answered each return 409 with their respective fixed message. Invalid choices return
+  400, a finished retry returns 200, and a saved decision awaiting recovery returns 500.
 - Tick outcomes: 409 "A tick is running now."; 409 "A tick was just started."; 500 "Could
-  not start a tick." (no debounce recorded).
+  not start a tick." (no debounce recorded). A launched tick with a failed event write
+  follows the POST success path with the launch warning from Design notes.
 - Any other exception in a handler: 500 "Something went wrong. Reload to see what was
   saved." and the log gets the exception class name only.
 - POST success: 303 to `/` (no JS) or JSON `{"ok": true, "message": ...}` when the request
@@ -457,7 +483,7 @@ that every entry passes `safe_target`.
 - Card to transcript: path from `store.out_dir(rd)` and the kind's `transcript` value;
   `req["out"]` is honoured only when it equals `out_dir(rd) / "codex.out"`.
 - Answer form to question: `key` (a `qkey`, round-trippable) must exist in the questions
-  page; `version` must equal `question_version` of that record inside the lock. A hold
+  page; the locked version and retry checks follow the Answer rules. A hold
   item's form key is `hold:KEY`; an override's form key is the decided question's key.
 - Tech ratchet answer to its planned fix: the TICK wording requires the answer text to
   name the roadmap row, plan or follow-up key that retires the entry.
@@ -478,7 +504,7 @@ problem, unreadable).
   `klass`[word: tech, product], `version`[version?].
 - `decided[]` (tech questions decided by the Tech lead, newest 20): `key`[qkey],
   `question`[owner_text], `detail`[owner_text?], `options`[owner_text list],
-  `applied`[owner_text], `answer`[owner_text?] (set after an override), `at`[at?],
+  `recommended`[owner_text] (original stored option), `applied`[owner_text], `answer`[owner_text?] (set after an override), `at`[at?],
   `version`[version].
 - `controls`: `paused`[bool], `tick_running`[bool].
 - `live[]`: `ref`[id], `role`[label], `icon`[icon], `key`[id], `slice_active`[bool],
@@ -508,7 +534,7 @@ costs, the page token, the questions file path (only in the copy text, from
   then stuck), "Decided for you", worker grid, feed, pipeline, known problems, capacity,
   memory, shipped, parked, hidden drawer sources (slices and questions).
 - `/api/state` JSON: the sealed schema 2 view, with ETag and 304.
-- Tick snapshot: recent owner answers (key, text, version) and their versions in the digest.
+- Tick snapshot: unacknowledged or pending owner answers (key, text, version) and their versions in the digest.
 - POST responses: fixed messages listed in Exit paths.
 - Server log: method, path, status; for POST also the action name and outcome word.
   Never a form value or question text.
@@ -516,7 +542,7 @@ costs, the page token, the questions file path (only in the copy text, from
   `loop-paused`, `loop-resumed`, `tick-requested`, with IDs only.
 - Slack: the tech-decision line from `_post_question`; dashboard answers post the existing
   answered line.
-- Questions page: `Detail`, `Class` and `Answered` lines; `Answer: other: ...`.
+- Questions page: `Detail`, `Class`, `Answered` and `Decision` lines; `Answer: other: ...`.
 - Browser: theme in `localStorage`; drawer key in `location.hash`; filters in the query.
 
 ## Defect classes
@@ -635,27 +661,33 @@ Control (S3):
   `test_old_wait_no_record_survives_rewrite` (asking another question keeps it `Wait: no`),
   `test_wait_flag_forces_product`.
 - `test_managed_markers_refused` (both markers in question, detail, option and an `other:`
-  answer are refused; the owner's text around the block is preserved; a later valid
-  answer succeeds and the page still parses).
+  answer are refused, including an actual inline edit to `Answer:` followed by sync;
+  surrounding prose survives, a later valid answer applies, and problem and lesson
+  writers still accept marker text).
 - `test_other_answer_stored_and_validated` (`other: use the slower path` accepted;
   empty, newline or 501 characters refused; refused on a hold),
   `test_answer_with_old_version_is_refused`, `test_reask_between_check_and_lock_is_refused`,
   `test_cli_answer_unchanged`, `test_override_of_tech_decision_records_owner_answer`,
-  `test_keep_held_then_approve`, `test_page_sync_rechecks_under_lock` (the page is edited
-  between read and apply), `test_duplicate_same_answer_is_already_answered`,
+  `test_keep_held_then_approve`, `test_owner_park_keep_held_then_approve_resumes`,
+  `test_removed_option_on_reask_is_stale`, `test_page_sync_rechecks_under_lock` (replace the question between read and apply, leaving the same choice pending;
+  stale sync performs zero writes, releases and events), `test_duplicate_same_answer_is_already_answered`,
   `test_failed_effect_is_finished_on_retry` (failure injected right after the page save:
   message says saved but not finished; final page, slice phase and event count 1 after
   the retry), `test_version_digest_fixtures` (pinned outputs for a view and a record).
 - `test_override_wakes_skippable_tick` (a tech override changes the digest; the pass gets
-  the saved answer text), `test_other_instruction_reaches_snapshot`.
+  the saved answer text), `test_other_instruction_reaches_snapshot`,
+  `test_override_during_model_call_reaches_next_prompt`,
+  `test_answer_event_once_across_append_failure`.
 - `test_cli_and_dashboard_pause_share_one_path`, `test_tick_running_is_passive` (GET and
   HEAD with `tick.lock` absent and present create nothing, and a tick arriving during a
   poll still runs), `test_spawn_detached_leaves_no_child_fds`,
   `test_wrapper_wakes_tick_through_spawn_detached`, `test_spawn_failure_reports_and_allows_retry`,
-  `test_overlapping_tick_posts_spawn_once`.
+  `test_overlapping_tick_posts_spawn_once`, `test_tick_event_failure_keeps_debounce`.
 - `test_every_post_route_refuses_bad_token_or_origin`, `test_post_body_contract`
   (negative or non-numeric length, duplicate `choice`, `choice` with `other=`, neither
-  mode, unknown field, foreign scheme, foreign port; each with all other checks valid),
+  mode, unknown field, foreign scheme or port, short body at EOF, bare/truncated/bad
+  percent escape, invalid raw UTF-8 and `other=caf%E9`. Each refusal makes zero state
+  calls with all other checks valid. `other=caf%C3%A9` stores exactly `other: café` once),
   `test_double_post_records_one_answer`, `test_stale_token_after_restart_is_refused`
   (server A's HTML is not reused by server B with identical state: no ETag, `no-store`;
   the refreshed form submits), `test_unknown_question_key_is_refused`, `test_tick_debounce`,
@@ -667,7 +699,8 @@ Control (S3):
   Copy for Claude with `notes.questions_path` in its text, forms carry `data-key` and
   `data-version`), `test_hold_drawer_offers_only_two_choices`, `test_decided_for_you_list`
   (each entry has a question source),
-  `test_controls_render_paused_and_tick_running`.
+  `test_override_form_round_trips` (after A is overridden with B, reopen and submit A
+  from the recommendation form), `test_controls_render_paused_and_tick_running`.
 - JS (no pytest runner; VERIFY in Task 13): drawers by click and hash, kept across polls;
   a draft kept across swaps of the same version, and a re-ask between typing and Save
   shows the changed notice and blocks Save until the owner confirms; fetch submit shows the server message; copy fallback on a
@@ -727,7 +760,7 @@ suite once on its merge head, diffed against the stored main baseline.
   page sync finishes the effect; the message says what happened.
 - **The owner answers and the tick does not notice.** Recent answers and their versions
   are in the snapshot and digest.
-- **Pasted text breaks the questions page.** Managed markers are refused in every field.
+- **Pasted text breaks the questions page.** Managed markers are refused in question fields. Only standalone marker lines delimit the block.
 - **The dashboard and the CLI disagree on pause or answers.** One function each, shared;
   `test_cli_and_dashboard_pause_share_one_path`.
 - **A GET starts writing.** `test_get_routes_write_nothing` walks every GET route.
@@ -767,7 +800,7 @@ decisions:
 
 Outside reviewer, plan round 2: GO-WITH-FIXES. Folded with coordinator decisions (R2 for S3
 confirmed):
-- V1 markers in free text: refused in every persisted field (`test_managed_markers_refused`).
+- V1 markers in free text: refused in every persisted question field (`test_managed_markers_refused`).
 - V1 stale drafts: forms and drafts bound to `(key, version)`; explicit confirm after a
   re-ask.
 - V1 answered rules: ordered rules under the lock; duplicates "Already answered"; tech
@@ -1074,10 +1107,11 @@ each new call: append to entry.calls and cache.feed_log with label
   `wait`; `wait` stored as `klass == "product"`; a record without `Class` reads its class
   from `Wait`: `no` is tech, `yes` is product, and is rewritten unchanged);
   `notes.question_version(q: dict) -> str` (via `store.canonical_digest`);
-  `notes._line` refuses the managed markers;
+  `notes._split_page` recognizes standalone delimiters. The question-field validator
+  refuses inline markers on question writes and sync;
   `notes.answer(project, key, choice, *, expect_version=None, via="cli") -> None`;
   `notes.OTHER_PREFIX = "other: "`; `notes.valid_choice(q, choice) -> bool`;
-  questions page fields `Detail` (`_line(detail, 1000)`) and `Class`; events `question-decided`
+  questions page fields `Detail` (single line, 1000 characters) and `Class`; events `question-decided`
   (tech) and `question-answered` with `via`; `status.EVENTS` entries with tags DECIDED and
   ANSWERED. CLI: `ask --detail TEXT --class tech|product`.
 - Slack (`_post_question`): tech reads "Tech lead decided KEY: OPTION. Override on the
@@ -1092,7 +1126,10 @@ each new call: append to entry.calls and cache.feed_log with label
   `tests/devloop/test_notes.py` as listed above.
 - [ ] **Step 2: Run** `pytest tests/devloop/dash/test_controls.py tests/devloop/test_notes.py
   -q`. Expected: FAIL.
-- [ ] **Step 3: Implement** the class, detail, marker and version parts. Docs: TICK step 10 says to pass `--class`, `--detail` (what is
+- [ ] **Step 3: Implement** the class, detail and version parts and the question-only marker rule in Design notes.
+  Test a real page edit with an inline marker in `Answer:`, run sync, verify refusal
+  leaves the block and surrounding prose readable, then apply a valid answer. Round-trip
+  marker text in a problem and a lesson through their existing writers. Docs: TICK step 10 says to pass `--class`, `--detail` (what is
   happening, why it matters, what each option does, in short plain sentences), with the
   product and tech definitions above and "when unsure, product". PLAYBOOK gets: the
   question row says an `other: <text>` answer is the owner's instruction and the tick
@@ -1109,31 +1146,53 @@ each new call: append to entry.calls and cache.feed_log with label
 ## Task 9b: Answer rules, idempotent effects and tick input
 
 **Files:**
-- Modify: `devloop/notes.py` (`_apply_answer`, `answer`, `read_answers`, `Answered` field),
-  `devloop/snapshot.py` (`_questions`, digest), `devloop/state_cli.py`
+- Modify: `devloop/notes.py` (`_apply_answer`, `answer`, `read_answers`, receipt parsing and rendering),
+  `devloop/store.py` (keyed append in the existing event writer), `devloop/snapshot.py`
+  (prompt contents and digest), `devloop/tick.py` (skip and success acknowledgement),
+  `devloop/state_cli.py`
 - Test: `tests/devloop/dash/test_controls.py`, `tests/devloop/test_notes.py`,
-  `tests/devloop/test_snapshot_status.py`
+  `tests/devloop/test_snapshot_status.py`, `tests/devloop/test_tick.py`
 
 **Interfaces:**
 - Consumes: Task 9.
 - Produces: `notes.answer(project, key, choice, *, expect_version=None, via="cli") ->
   str` (the fixed outcome message); `notes.OTHER_PREFIX = "other: "`;
   `notes.valid_choice(q, choice) -> bool`; `notes.AnswerPending(NotesError)` (saved, effect
-  not finished); the `Answered:` page field; `snapshot._questions` returns open questions
-  plus `recent_answers(project, since)`; the digest's stable part gains
-  `"questions": sorted((key, version))` for both.
+  not finished); the optional `Answered:` and `Decision:` fields (one compact JSON
+  receipt on a single line). Round-trip both through the existing parser and writer.
+  Keep the existing snapshot pair for its callers; the tick also takes the included
+  decision versions from the same build. Store acknowledgements in existing tick state.
 
 - [ ] **Step 1: Write the failing tests** `test_other_answer_stored_and_validated`,
   `test_answer_with_old_version_is_refused`, `test_reask_between_check_and_lock_is_refused`,
   `test_cli_answer_unchanged`, `test_override_of_tech_decision_records_owner_answer`,
-  `test_keep_held_then_approve`, `test_page_sync_rechecks_under_lock`,
+  `test_keep_held_then_approve`, `test_owner_park_keep_held_then_approve_resumes`,
+  `test_removed_option_on_reask_is_stale`, `test_page_sync_rechecks_under_lock`,
   `test_duplicate_same_answer_is_already_answered`, `test_failed_effect_is_finished_on_retry`,
-  `test_override_wakes_skippable_tick`, `test_other_instruction_reaches_snapshot`.
+  `test_override_wakes_skippable_tick`, `test_other_instruction_reaches_snapshot`,
+  `test_override_during_model_call_reaches_next_prompt`,
+  `test_answer_event_once_across_append_failure`.
 - [ ] **Step 2: Run** `pytest tests/devloop/dash/test_controls.py tests/devloop/test_notes.py
-  tests/devloop/test_snapshot_status.py -q`. Expected: FAIL.
+  tests/devloop/test_snapshot_status.py tests/devloop/test_tick.py -q`. Expected: FAIL.
 - [ ] **Step 3: Implement** the answer rules and commit order in Design notes, all checks
   inside `store.locked(_lock_for(project))`. `read_answers` passes the observed answer and
-  version. The CLI prints the outcome message.
+  version before any effect. Re-ask with a removed option and assert the old dashboard submission gets
+  the fixed changed-version outcome (HTTP 409 in Task 11). Retry the original dashboard version and choice in both
+  pending and complete states. Submit the same choice with an unrelated stale version
+  and assert the full changed-version message with no effect. Replace the observation during
+  sync with another question
+  carrying the same pending choice and assert no effect. Sync must scan explicit pending
+  receipts even when `answer == applied`. Move its invalid-answer reporting behind the
+  locked observation check. On a failed-twice park, a
+  `keep-held` answer leaves resume blocked; only the hold key plus `approve` sets
+  `owner_answered=True`. Then move successfully to the saved `parked_from`.
+  Inject a stop immediately before append and immediately after durable append but before
+  completion; recover each via POST retry and via fresh sync. Assert one event for the
+  original decision ID, original timestamp and source, one effective slice transition and
+  a complete receipt on reload. Advance the clock before recovery. Include an answer equal to the previous applied value.
+  Save an override inside a successful stubbed model call; assert its text is absent
+  from that prompt and present in the next actual call inside the skip window. A failed
+  call leaves the version outstanding. The CLI prints the outcome message.
 - [ ] **Step 4: Run** `pytest tests/devloop -k "notes or dash or state or snapshot or tick"
   -q`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(devloop): finish owner answers safely and show them to the
@@ -1150,9 +1209,11 @@ each new call: append to entry.calls and cache.feed_log with label
 - Produces: `store.set_paused(project, on: bool, via: str) -> None` (touch or unlink
   `PAUSE`, append `loop-paused` or `loop-resumed`); `tick.running(project, proc="/proc")
   -> bool` (passive: `os.stat` of `tick.lock`, then its `MAJ:MIN:INODE` among FLOCK lines
-  of `/proc/locks`; never opens the lock file); `tick.spawn_detached(project, via: str) ->
-  None` (the old `wrap._wake_tick` body, output appended to `cron.log`, event
-  `tick-requested` when `via != "wrapper"`; raises `OSError` on a failed `Popen`); the CLI
+  of `/proc/locks`; never opens the lock file); `tick.spawn_detached(project, via, *, on_started=None)
+  -> None` (the old `wrap._wake_tick` launch, output appended to `cron.log`). Invoke the
+  dashboard callback immediately after successful `Popen`, then append `tick-requested`
+  for the dashboard. Distinguish an event-write failure with `tick.TickEventError`
+  from a launch `OSError`. The CLI
   `pause`/`resume` call `set_paused(..., via="cli")`; `wrap.finish` calls
   `tick.spawn_detached(project, "wrapper")` inside its own `try/except OSError`; `lifecycle` drops `DEVLOOP_HEADLESS` from the
   server child env.
@@ -1182,8 +1243,11 @@ each new call: append to entry.calls and cache.feed_log with label
   `("choice", "other")`); `Handler.do_POST` (always through `_post`);
   `actions.check_post(handler, route) -> dict[str, str]` (length: digits only, 0 to
   `POST_BYTES`; token via `hmac.compare_digest`; origin: scheme `http`, host and effective
-  port equal to `Host`; `parse_qs(body, keep_blank_values=True, strict_parsing=True,
-  max_num_fields=8)`; every field exactly one value; exactly the route's fields; exactly
+  port equal to `Host`; read exactly the declared byte count or refuse. Reject every
+  percent sign without two following ASCII hex digits. Decode raw bytes as strict UTF-8,
+  then use `parse_qs` on the string with `encoding="utf-8", errors="strict",
+  keep_blank_values=True, strict_parsing=True, max_num_fields=8`; every field exactly
+  one value; exactly the route's fields; exactly
   one answer mode); handlers `actions.answer`, `pause`, `resume`, `run_tick`;
   `actions.Refused(code: int, message: str)`; `DashServer.token: str`,
   `DashServer.tick_lock: threading.Lock`, `DashServer.last_tick: float | None`. `/` and
@@ -1193,7 +1257,10 @@ each new call: append to entry.calls and cache.feed_log with label
 - [ ] **Step 1: Write the failing tests** `test_every_post_route_refuses_bad_token_or_origin`,
   `test_post_body_contract`, `test_double_post_records_one_answer`,
   `test_stale_token_after_restart_is_refused`, `test_unknown_question_key_is_refused`,
+  `test_stale_post_with_removed_option_returns_changed` (409 and no state change),
   `test_tick_debounce`, `test_spawn_failure_reports_and_allows_retry`,
+  `test_tick_event_failure_keeps_debounce` (successful Popen, injected append error,
+  immediate retry while running probe is false: success warning then 409, one child),
   `test_overlapping_tick_posts_spawn_once` (two threads post at once; one spawn observed),
   `test_get_routes_write_nothing`, `test_post_success_json_and_redirect`,
   `test_each_write_appends_its_event`, `test_post_log_has_no_values`,
@@ -1203,9 +1270,13 @@ each new call: append to entry.calls and cache.feed_log with label
   `/api/state`.
 - [ ] **Step 2: Run** `pytest tests/devloop/dash/test_controls.py tests/devloop/test_dash_server.py
   -q`. Expected: FAIL.
-- [ ] **Step 3: Implement.** `_post` order: route lookup (else 404), length, token,
-  origin, fields, then the handler; `run_tick` holds `tick_lock` across the running check,
-  the debounce check and the spawn, and sets `last_tick` only after a spawn returns;
+- [ ] **Step 3: Implement.** `_post` order: route lookup (else 404), length, exact read and strict form
+  decoding, token, origin, route fields, then the handler. Exercise short reads and bad
+  form bytes with zero state calls and a valid UTF-8 answer through the real route.
+  `run_tick` holds `tick_lock` across the running check,
+  the debounce check and the spawn. Its `on_started` records launch success and sets
+  `last_tick` under that lock. Map `tick.TickEventError` from the helper to a successful
+  launch with the fixed warning and keep the timestamp. Only a failed launch permits an immediate retry;
   `NotesError`, `AnswerPending` and `Refused` map to the fixed messages in Exit paths; any
   other exception gives the fixed 500 and a class-name log.
 - [ ] **Step 4: Run** `pytest tests/devloop -k dash -q`, `pytest tests/devloop/dash -q`.
@@ -1225,7 +1296,8 @@ each new call: append to entry.calls and cache.feed_log with label
 **Interfaces:**
 - Produces: `render_control.question_sources(v, token, copy_path) -> str` (one hidden
   `#qs-KEY` per open owner question and per `decided` entry: question, detail, options
-  with the recommended one marked, "Go with recommended" form, one form per other option,
+  with the stored `recommended` from the sealed record marked, "Go with recommended"
+  form, one form per other option,
   free-text form "Your answer" with Save (not for holds, which show only `approve` and
   `keep-held`), "Copy for Claude" button with `data-copy` text; every form carries the
   real `qkey`, `data-key` and `data-version`, and its textarea id is
@@ -1243,11 +1315,13 @@ each new call: append to entry.calls and cache.feed_log with label
 
 - [ ] **Step 1: Write the failing tests** `test_decisions_drawer_has_actions`,
   `test_hold_drawer_offers_only_two_choices`, `test_hold_answer_uses_hold_key` (submit the
-  rendered hold form), `test_override_form_round_trips` (submit a rendered override),
+  rendered hold form), `test_override_form_round_trips` (override A with B, rebuild the sealed view and reopen
+  the drawer; submit its "Go with recommended" form and verify A is applied),
   `test_decided_for_you_list`, `test_controls_render_paused_and_tick_running`.
-- [ ] **Step 2: Run** `pytest tests/devloop/dash/test_controls.py -q -k "drawer or decided or
+- [ ] **Step 2: Run** `pytest tests/devloop/dash/test_controls.py -q -k "drawer or decided or override or
   controls"`. Expected: FAIL.
-- [ ] **Step 3: Implement.**
+- [ ] **Step 3: Implement.** Carry the stored recommendation through `decided[]` and
+  `_seal` as `owner_text`. Use it for both the option label and the submitted choice.
 - [ ] **Step 4: Run** `pytest tests/devloop -k dash -q`, `pytest tests/devloop/dash -q`.
   Expected: PASS.
 - [ ] **Step 5: Commit** `feat(devloop): add the decisions drawer and loop controls`, last
@@ -1263,14 +1337,15 @@ each new call: append to entry.calls and cache.feed_log with label
   outside the lock, caught by `test_reask_between_check_and_lock_is_refused`), 9 (pause
   path, `CODEX_KINDS`, a second digest implementation in `notes`) and 10 (missing `Class`
   read as product), each with its test. Confirm each fails on its intended assertion, not
-  an import or setup error.
+  an import or setup error. For commit order, mark complete before append and verify
+  the pre-append failure case loses its event and kills the mutant.
 - [ ] **Step 2: Run** `tests/devloop/mutations.sh`. Expected: every entry killed, none
   `RED-BASE`.
 - [ ] **Step 3: VERIFY in a browser** on the fixture server at 1440 px and 390 px, light
   and dark: answer a product question with "Go with recommended" (event and page update);
   double click (one answer, "Already answered"); type a draft, re-ask the question, wait
   for a poll, then Save (blocked until confirmed); answer from a tab opened before the tick
-  re-asked (refused, "changed"); approve a hold answered `keep-held`; type an `other:` answer; override a tech decision; Pause,
+  re-asked (refused, "changed"); approve a hold answered `keep-held`; type an `other:` answer; override a tech decision, reopen its drawer and submit the original recommendation; Pause,
   Resume, "Run a tick now" twice (second refused); restart the server and post from the
   old tab ("out of date"); "Copy for Claude" on loopback and on the LAN IP (fallback).
   Record steps and screenshots in the PR body.
