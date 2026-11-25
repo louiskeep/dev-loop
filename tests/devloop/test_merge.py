@@ -672,3 +672,72 @@ def test_dispatch_workflow_with_an_empty_code_roster_is_refused_at_load(
 def test_main_and_master_are_always_base_branches(monkeypatch):
     monkeypatch.setenv("DEVLOOP_BASE_BRANCHES", "develop")
     assert headless_merge_guard._base_branches() == ["develop", "main", "master"]
+
+
+def test_crash_after_the_move_still_counts_and_delivers_the_board_once(
+    proj, gate, monkeypatch
+):
+    k = gate()
+    real = slices.deliver_board
+    monkeypatch.setattr(
+        slices, "deliver_board", lambda *a: (_ for _ in ()).throw(RuntimeError("crash"))
+    )
+    with pytest.raises(RuntimeError):
+        merge.merge(proj, k)
+    s = slices.load(proj, k)
+    assert s["phase"] == "DOCUMENT" and s["merge_attempt"] is None
+    recs = slices.merge_records(proj)
+    assert len(recs) == 1 and next(iter(recs.values()))["board_done"] is False
+    monkeypatch.setattr(slices, "deliver_board", real)
+    assert merge.merge(proj, k).outcome == "refused"  # already in DOCUMENT
+    assert gate.board().count("merged ") == 1
+    assert next(iter(slices.merge_records(proj).values()))["board_done"] is True
+    merge.merge(proj, k)
+    assert gate.board().count("merged ") == 1  # idempotent per repo, PR and head
+    from devloop import status
+
+    assert status.counts(proj)["merged_total"] == 1
+
+
+def test_crash_before_the_move_finishes_once_and_counts_once(proj, gate, monkeypatch):
+    k = gate()
+    real = slices.finish_merge
+    monkeypatch.setattr(
+        slices,
+        "finish_merge",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("crash")),
+    )
+    with pytest.raises(RuntimeError):
+        merge.merge(proj, k)
+    monkeypatch.setattr(slices, "finish_merge", real)
+    assert merge.merge(proj, k).outcome == "merged"
+    assert len(slices.merge_records(proj)) == 1
+    assert gate.board().count("merged ") == 1
+
+
+def test_unknown_response_keeps_the_attempt(proj, gate):
+    k = gate()
+    gate.set_gh(on_merge={"fail_view": True})
+    assert merge.merge(proj, k).outcome == "unknown"
+    s = slices.load(proj, k)
+    assert s["merge_unknown"] and s["merge_attempt"]["head"] == HEAD
+
+
+def test_head_and_pr_cannot_change_while_a_merge_is_pending(proj, gate):
+    k = gate()
+    gate.set_gh(on_merge={"fail_view": True})
+    merge.merge(proj, k)
+    for field in ({"head": "b" * 40}, {"pr": 99}):
+        with pytest.raises(slices.SliceError, match="merge is pending"):
+            slices.set_fields(proj, k, **field)
+    slices.set_fields(proj, k, next_action="wait")  # other fields stay editable
+
+
+def test_finish_refuses_when_the_slice_no_longer_matches_the_confirmed_merge(
+    proj, gate
+):
+    k = gate()
+    ident = {"repo": "main", "slug": "own/main", "pr": 7, "head": "c" * 40}
+    with pytest.raises(slices.TransitionError, match="current PR and head"):
+        slices.finish_merge(proj, k, ident=ident)
+    assert slices.load(proj, k)["phase"] == "GATE" and not slices.merge_records(proj)

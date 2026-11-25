@@ -324,7 +324,7 @@ def _blank(row, slice_id, repo, risk) -> dict:
 def _board_call(project, cfg, args, **fields):
     board = cfg.get("board")
     if not board:
-        return
+        return True
     ok = False
     try:
         r = subprocess.run(
@@ -346,6 +346,7 @@ def _board_call(project, cfg, args, **fields):
             impact="the board shows an older phase than the loop",
             fix="check the board command in project.json",
         )
+    return ok
 
 
 def _mirror(project, cfg, s):
@@ -563,6 +564,11 @@ def set_fields(project: str, key: str, **fields) -> dict:
     unknown = sorted(set(fields) - set(SETTABLE))
     if unknown:
         raise SliceError(f"unknown field: {', '.join(unknown)}")
+    pending = load(project, key)
+    if pending["merge_attempt"] and ("head" in fields or "pr" in fields):
+        raise SliceError(
+            "a merge is pending; head and pr cannot change until it settles"
+        )
     if fields.get("head") is not None:
         current = load(project, key)
         fields["head"] = resolve_head(
@@ -609,6 +615,62 @@ def set_merge_state(project: str, key: str, *, attempt=..., unknown=None) -> Non
             s["merge_unknown"] = bool(unknown)
 
 
+def _merges_path(project):
+    return store.state_dir(project) / "merges.json"
+
+
+def merge_id(ident) -> str:
+    return f"{ident['slug']}#{ident['pr']}@{ident['head']}"
+
+
+def merge_records(project) -> dict:
+    return store.read_json(_merges_path(project)).get("merges", {})
+
+
+def _record_merge(project, ident, s) -> None:
+    """Persist one completed merge, keyed by repo, PR and head. Idempotent."""
+    path = _merges_path(project)
+    with store.locked(path):
+        doc = store.read_json(path)
+        merges = doc.setdefault("merges", {})
+        merges.setdefault(
+            merge_id(ident),
+            {
+                "key": s["key"],
+                "row": s["row"],
+                "slice": s["slice"],
+                "pr": ident["pr"],
+                "at": store.now_iso(),
+                "board_done": False,
+            },
+        )
+        store.write_json(path, doc)
+
+
+def deliver_board(project, ident) -> None:
+    """Tell the board about a recorded merge once; a replay finds board_done set."""
+    path = _merges_path(project)
+    with store.locked(path):
+        doc = store.read_json(path)
+        rec = (doc.get("merges") or {}).get(merge_id(ident))
+        if rec is None or rec["board_done"]:
+            return
+        if board_merged(project, rec["key"], rec["pr"]):
+            rec["board_done"] = True
+            store.write_json(path, doc)
+
+
+def pending_board(project, key) -> list:
+    """Idents of this slice's merges whose board call has not landed."""
+    out = []
+    for mid, rec in merge_records(project).items():
+        if rec["key"] == key and not rec["board_done"]:
+            slug, rest = mid.rsplit("#", 1)
+            pr, head = rest.split("@", 1)
+            out.append({"slug": slug, "pr": int(pr), "head": head})
+    return out
+
+
 def merge_reset(project: str, key: str) -> None:
     """Owner only: clear a stuck merge attempt or unknown-state flag after reading the PR."""
     store.require_interactive("merge-reset")
@@ -616,11 +678,11 @@ def merge_reset(project: str, key: str) -> None:
     store.append_event(project, "merge-reset", key=key)
 
 
-def board_merged(project: str, key: str, pr) -> None:
+def board_merged(project: str, key: str, pr) -> bool:
     """Tell the board a PR merged. The words are fixed; no model text reaches the board."""
     s = load(project, key)
     cfg = projmod.load_project(project)
-    _board_call(
+    return _board_call(
         project,
         cfg,
         ["merged", s["row"], s["slice"], str(pr), f"{s['row']} {s['slice']}"],
@@ -1033,7 +1095,7 @@ def validate_gate(project: str, key: str) -> list:
 # --- moving -------------------------------------------------------------------
 
 
-def _move(project, key, to, reason, via_merge=False):
+def _move(project, key, to, reason, via_merge=False, ident=None):
     if to not in PHASES:
         raise TransitionError("unknown phase")
     cfg = projmod.load_project(project)
@@ -1043,6 +1105,18 @@ def _move(project, key, to, reason, via_merge=False):
         if via_merge:
             if (frm, to) != ("GATE", "DOCUMENT"):
                 raise TransitionError("only GATE to DOCUMENT is a merge move")
+            if ident is not None:
+                # What GitHub confirmed must be what this slice still holds.
+                if (s["repo"], s["pr"], s["head"]) != (
+                    ident["repo"],
+                    ident["pr"],
+                    ident["head"],
+                ):
+                    raise TransitionError(
+                        "the merged PR is not this slice's current PR and head"
+                    )
+                _record_merge(project, ident, s)
+                s["merge_attempt"], s["merge_unknown"] = None, False
         elif (frm, to) == ("GATE", "DOCUMENT"):
             raise TransitionError(
                 "GATE to DOCUMENT happens only through the merge command"
@@ -1114,9 +1188,13 @@ def move(project: str, key: str, to_phase: str, reason: str) -> dict:
     return _move(project, key, to_phase, reason)
 
 
-def finish_merge(project: str, key: str, reason: str = "merged") -> dict:
-    """GATE to DOCUMENT; only the merge command calls this, after the PR is confirmed merged."""
-    return _move(project, key, "DOCUMENT", reason, via_merge=True)
+def finish_merge(project: str, key: str, reason: str = "merged", ident=None) -> dict:
+    """GATE to DOCUMENT; only the merge command calls this, after the PR is confirmed merged.
+
+    With `ident` (repo, slug, pr, head) the identity is checked and the completion
+    recorded in the same locked step as the move.
+    """
+    return _move(project, key, "DOCUMENT", reason, via_merge=True, ident=ident)
 
 
 def release_hold(project: str, key: str) -> dict:

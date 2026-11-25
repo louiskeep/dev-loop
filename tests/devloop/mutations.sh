@@ -172,6 +172,15 @@ mutate "guard ignores configured bases" devloop/project.py \
 mutate "run conclusion compared case-sensitively" devloop/merge.py \
   '    return isinstance(conclusion, str) and conclusion.lower() == "success"' '    return conclusion == "SUCCESS"' \
   $T/test_merge.py::test_merge_refuses_gate_dispatch_before_codex_go
+mutate "unknown merge drops the attempt" devloop/merge.py \
+  '    slices.set_merge_state(project, key, unknown=True)' '    slices.set_merge_state(project, key, attempt=None, unknown=True)' \
+  $T/test_merge.py::test_unknown_response_keeps_the_attempt
+mutate "board call repeats on replay" devloop/slices.py \
+  '        if rec is None or rec["board_done"]:' '        if rec is None:' \
+  $T/test_merge.py::test_crash_after_the_move_still_counts_and_delivers_the_board_once
+mutate "merge identity not checked" devloop/slices.py \
+  '                if (s["repo"], s["pr"], s["head"]) != (' '                if False and (s["repo"], s["pr"], s["head"]) != (' \
+  $T/test_merge.py::test_finish_refuses_when_the_slice_no_longer_matches_the_confirmed_merge
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

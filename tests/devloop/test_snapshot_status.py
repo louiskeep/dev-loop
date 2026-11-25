@@ -22,11 +22,17 @@ def journal(proj, *events):
 
 
 def test_status_renders_counts_from_fixture_journal(proj):
+    store.write_json(
+        store.state_dir(proj) / "merges.json",
+        {
+            "merges": {
+                f"o/r#{n}@h": {"key": f"R--{n}", "at": when, "board_done": True}
+                for n, when in enumerate((at(seconds=1), at(days=3), at(days=30)))
+            }
+        },
+    )
     journal(
         proj,
-        ("merged", at(seconds=1)),
-        ("merged", at(days=3)),
-        ("merged", at(days=30)),
         ("row-closed", at(days=2)),
         ("row-closed", at(days=40)),
     )

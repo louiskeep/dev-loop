@@ -54,7 +54,7 @@ def counts(project, now=None) -> dict:
     now = now or datetime.datetime.now(datetime.timezone.utc)
     today = now.astimezone(CHICAGO).date()
     week = now - datetime.timedelta(days=7)
-    merged = [e for e in _events(project) if e["kind"] == "merged"]
+    merged = list(slices.merge_records(project).values())
     stamps = [_when(e) for e in merged]
     return {
         "merged_today": sum(

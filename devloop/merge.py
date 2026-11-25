@@ -318,17 +318,28 @@ def _dead(project, key, state):
     return _result("refused", _DEAD_REASONS[state])
 
 
-def _finish(project, key, s):
+def _finish(project, cfg, key, info):
+    """Advance and report the merge GitHub confirmed, which is `info`'s PR and head."""
+    s = slices.load(project, key)
+    ident = {
+        "repo": info["repo"],
+        "slug": _slug(_repo_settings(cfg, info["repo"])[0]),
+        "pr": info["pr"],
+        "head": info["head"],
+    }
     if s["phase"] == "GATE":
-        slices.finish_merge(project, key)
-    slices.board_merged(project, key, s["pr"])
-    slices.set_merge_state(project, key, attempt=None, unknown=False)
+        try:
+            slices.finish_merge(project, key, ident=ident)
+        except slices.TransitionError as exc:
+            return _result("refused", str(exc))
+    slices.deliver_board(project, ident)
     store.append_event(project, "merged", key=key, row=s["row"], slice=s["slice"])
     return _result("merged", "merged")
 
 
 def _unknown(project, key):
-    slices.set_merge_state(project, key, attempt=None, unknown=True)
+    # The attempt stays so the next call reconciles the same PR and head.
+    slices.set_merge_state(project, key, unknown=True)
     notes.problem(
         project,
         "merge-state-unknown",
@@ -341,6 +352,10 @@ def _unknown(project, key):
 def merge(project, key) -> MergeResult:
     cfg = projmod.load_project(project)
     s = slices.load(project, key)
+    for ident in slices.pending_board(project, key):
+        # A crash after the move but before the board call: deliver it once.
+        ident["repo"] = s["repo"]
+        slices.deliver_board(project, ident)
     attempt = s["merge_attempt"]
     if attempt or s["merge_unknown"]:
         # Reconcile first: a crash after the merge call must finish the move once.
@@ -352,7 +367,7 @@ def merge(project, key) -> MergeResult:
         }
         state = _confirm(cfg, info["repo"], info["pr"], info["base"], info["head"])
         if state == "merged":
-            return _finish(project, key, s)
+            return _finish(project, cfg, key, info)
         if state == "unknown":
             return _result("unknown", "merge state is still unknown; no retry")
         if state in _DEAD_REASONS:
@@ -399,7 +414,9 @@ def merge(project, key) -> MergeResult:
     )
     state = _confirm(cfg, s["repo"], s["pr"], base, s["head"])
     if state == "merged":
-        return _finish(project, key, s)
+        return _finish(
+            project, cfg, key, {"repo": s["repo"], "pr": s["pr"], "head": s["head"]}
+        )
     if state in _DEAD_REASONS:
         return _dead(project, key, state)
     if state == "open":
