@@ -1,6 +1,7 @@
 """The dashboard read model: what it holds, what it leaves out, and how it degrades."""
 
 import datetime
+import html
 import json
 import os
 
@@ -30,7 +31,7 @@ def card(v, key):
 
 def test_view_keys_match_schema(proj, dash):
     v = build(proj)
-    assert set(v) == set(view.VIEW_SCHEMA) and v["schema"] == 1
+    assert set(v) == set(view.VIEW_SCHEMA) and v["schema"] == 2
     bad = dict(v, purpose="free text")
     with pytest.raises(view.ViewError):
         view._seal(bad, view.VIEW_SCHEMA, set())
@@ -436,13 +437,12 @@ def test_memory_thresholds(proj, dash, tmp_path, avail_kb, state):
 
 
 def test_a_question_cut_on_a_space_still_seals(proj):
-    long_q = "word " * 80  # the 300 character cut lands just after a space
-    assert long_q[299] == " "
+    long_q = "word " * 80  # a long question is shown whole, trailing space dropped
     notes.ask(
         proj, "q1", question=long_q, options=["a", "b"], recommended="a", wait=True
     )
     q = build(proj)["needs_you"][0]
-    assert q["question"] == q["question"].strip() and len(q["question"]) <= 300
+    assert q["question"] == q["question"].strip() and len(q["question"]) <= 1000
 
 
 @pytest.mark.parametrize("n", [118, 119, 120, 121, 122])
@@ -491,3 +491,111 @@ def test_tick_line_shows_every_configured_slot(proj):
     cfg = projmod.load_project(proj)
     line = status.tick_line(proj, "model", "x")
     assert all(f"{projmod.pool_label(cfg, s)} 0/" in line for s in projmod.SLOTS)
+
+
+# --- schema 2, owner text and the hint ----------------------------------------------
+
+
+def test_schema_is_two(proj, dash):
+    assert build(proj)["schema"] == 2 == view.SCHEMA
+
+
+def test_view_build_creates_no_directories(proj, home, dash):
+    def tree():
+        return sorted(str(p.relative_to(home)) for p in home.rglob("*"))
+
+    before = tree()
+    build(proj)
+    assert tree() == before
+    with pytest.raises(Exception):
+        build("no-such-project")
+    assert tree() == before
+    assert not (home / "no-such-project").exists()
+
+
+def test_owner_question_shown_in_full_with_real_hint(proj, home):
+    long_q = "Which path? " + "details " * 40 + "password hunter2 /etc/shadow"
+    notes.ask(
+        proj,
+        "q-full",
+        question=long_q,
+        options=["hunter2", "use the slower path", "/etc/shadow"],
+        recommended="hunter2",
+        wait=True,
+    )
+    v = build(proj)
+    q = next(n for n in v["needs_you"] if n["key"] == "q-full")
+    assert q["question"] == " ".join(long_q.split())
+    assert q["options"] == ["hunter2", "use the slower path", "/etc/shadow"]
+    assert q["recommended"] == "hunter2"
+    assert q["answer_key"] == "q-full" and q["detail"] is None
+    assert q["klass"] == "product" and q["version"] is None
+    page = render.render_page(v)
+    text = html.unescape(page)
+    assert "hunter2" in text
+    assert "devloop-state p answer q-full <option>" in text
+
+
+def test_hold_answer_uses_hold_key(proj, dash):
+    held = dash["held"]
+    notes.ensure_hold_question(proj, held)
+    v = build(proj)
+    item = next(n for n in v["needs_you"] if n["key"] == held)
+    assert item["kind"] == "hold" and item["answer_key"] == f"hold:{held}"
+    assert item["options"] and item["recommended"] == "keep-held"
+    text = html.unescape(render.render_page(v))
+    assert f"devloop-state p answer hold:{held} <option>" in text
+
+
+def test_hold_without_a_question_record_has_no_answer_key(proj, dash):
+    item = next(n for n in build(proj)["needs_you"] if n["kind"] == "hold")
+    assert item["answer_key"] is None and item["options"] == []
+
+
+def test_activity_and_feed_read_events_once(proj, dash, monkeypatch):
+    from devloop import status
+
+    real, calls = status.events, []
+
+    def counting(*a, **k):
+        calls.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(status, "events", counting)
+    build(proj)
+    assert len(calls) == 1
+
+
+def test_every_event_kind_has_a_tag():
+    from devloop import status
+
+    assert set(status.EVENTS) == set(status.EVENT_KINDS)
+    for kind in status.EVENT_KINDS:
+        assert status.event_tag(kind) in status.EVENT_TAGS, kind
+    assert status.event_tag("mystery") is None
+    assert status.EVENT_TAGS == (
+        "DISPATCHED",
+        "APPLIED",
+        "MOVED",
+        "MERGED",
+        "CLOSED",
+        "QUESTION",
+        "DECIDED",
+        "ANSWERED",
+        "DROPPED",
+        "PAUSED",
+        "RESUMED",
+        "TICK",
+    )
+
+
+def test_version_digest_fixtures(proj, dash):
+    assert store.canonical_digest({"b": [1, 2], "a": "x"}) == "721ef82f2d6c0997"
+    body = {"a": 1, "z": None}
+    assert view.version_of({**body, "version": "ignored"}) == store.canonical_digest(
+        body
+    )
+    v = build(proj)
+    assert v["version"] == store.canonical_digest(
+        {k: x for k, x in v.items() if k != "version"}
+    )

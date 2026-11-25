@@ -8,8 +8,6 @@ healthy cards still render.
 """
 
 import datetime
-import hashlib
-import json
 import re
 
 from .. import evidence, notes, runs, slices, snapshot, status, store
@@ -17,7 +15,8 @@ from .. import project as projmod
 from ..scrub import plain, scrub
 from . import memory
 
-SCHEMA = 1
+SCHEMA = 2
+OWNER_TEXT_LIMIT = 1000
 SHIPPED_LIMIT = 20
 ACTIVITY_LIMIT = 20
 CHIPS = slices.PHASES[:10]
@@ -26,6 +25,7 @@ PROBLEMS = ("stuck", "problem", "unreadable")
 RUN_STATES = ("executing", "awaiting-apply", "awaiting-release")
 SHIPPED_KINDS = ("merge", "row-close")
 MEMORY_STATES = ("ok", "tight", "low")
+CLASSES = ("tech", "product")
 
 # The fixed wording table: every `word` value in a view must be one of these.
 WORDS = frozenset(
@@ -37,6 +37,7 @@ WORDS = frozenset(
         *RUN_STATES,
         *SHIPPED_KINDS,
         *MEMORY_STATES,
+        *CLASSES,
         *evidence.CODES,
         *evidence.REASON_WORDS,
         *status.EVENT_KINDS,
@@ -115,9 +116,13 @@ VIEW_SCHEMA = {
             "owner": "label",
             "count": "int?",
             "since": "at?",
-            "question": "line?",
-            "options": ["line"],
-            "recommended": "line?",
+            "answer_key": "qkey?",
+            "question": "owner_text?",
+            "detail": "owner_text?",
+            "options": ["owner_text"],
+            "recommended": "owner_text?",
+            "klass": "word",
+            "version": "version?",
             "answer_at": "line?",
         }
     ],
@@ -206,6 +211,23 @@ def _scalar(kind, value, labels, where):
         if not isinstance(value, str) or _VERSION.fullmatch(value) is None:
             raise ViewError(f"{where}: bad version")
         return value
+    if kind == "owner_text":
+        # The owner reads their own questions as written; only the page markers and
+        # line breaks are refused, because they would break the questions file.
+        if (
+            not isinstance(value, str)
+            or "\n" in value
+            or len(value) > OWNER_TEXT_LIMIT
+            or notes.BLOCK_START in value
+            or notes.BLOCK_END in value
+        ):
+            raise ViewError(f"{where}: owner text is not one plain line")
+        return value
+    if kind == "qkey":
+        try:
+            return notes._key(value)
+        except notes.NotesError:
+            raise ViewError(f"{where}: bad question key") from None
     if kind == "line":
         if not isinstance(value, str) or scrub(value, len(value) + 1) != value:
             raise ViewError(f"{where}: line is not plain")
@@ -235,9 +257,7 @@ def _seal(value, spec, labels, where="view"):
 
 def version_of(view) -> str:
     """16 hex of sha256 over the canonical JSON without the version key."""
-    body = {k: v for k, v in view.items() if k != "version"}
-    text = json.dumps(body, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
+    return store.canonical_digest({k: v for k, v in view.items() if k != "version"})
 
 
 # --- helpers --------------------------------------------------------------------
@@ -301,6 +321,7 @@ class _Ctx:
         self.bad = []
         self.owner = projmod.role_label(cfg, "owner")
         self.tick = projmod.role_label(cfg, "tick")
+        self.events = status.events(project)[-200:]
         self.slices, bad_slices = slices.load_all(project)
         self.bad += bad_slices
         self.runs = self._runs()
@@ -472,7 +493,16 @@ def _plain_line(text, limit=300):
 
 def _owner_item(kind, owner, key=None, since=None, **extra):
     """An item for the owner: the question fields are always present, empty for a hold."""
-    fields = {"question": None, "options": [], "recommended": None, "answer_at": None}
+    fields = {
+        "answer_key": None,
+        "question": None,
+        "detail": None,
+        "options": [],
+        "recommended": None,
+        "klass": "product",
+        "version": None,
+        "answer_at": None,
+    }
     fields.update(extra)
     return _need(kind, owner, key, since=since, **fields)
 
@@ -480,6 +510,26 @@ def _owner_item(kind, owner, key=None, since=None, **extra):
 def _problem_item(kind, owner, key=None, count=None, since=None):
     """No loop text here: the page words each kind itself."""
     return {"kind": kind, "key": key, "owner": owner, "count": count, "since": since}
+
+
+def _owner_text(text, limit=OWNER_TEXT_LIMIT):
+    """A question field as the owner wrote it: one line, cut at the limit, or None."""
+    if not isinstance(text, str):
+        return None
+    out = " ".join(text.split())[:limit].strip()
+    if notes.BLOCK_START in out or notes.BLOCK_END in out:
+        return None
+    return out or None
+
+
+def _question_fields(ctx, q):
+    return {
+        "answer_key": q["key"],
+        "question": _owner_text(q["question"]),
+        "options": [o for o in (_owner_text(o) for o in q["options"]) if o],
+        "recommended": _owner_text(q["recommended"]),
+        "answer_at": _plain_line(answer_file(ctx), 80),
+    }
 
 
 def _needs_you(ctx):
@@ -493,7 +543,8 @@ def _needs_you(ctx):
             return {}
         return notes.load_questions(path)[1]
 
-    for q in _try(questions, ctx.bad, "questions", {}).values():
+    records = _try(questions, ctx.bad, "questions", {})
+    for q in records.values():
         hold = q["key"].startswith(notes.HOLD_PREFIX)
         if hold and q["key"][len(notes.HOLD_PREFIX) :] in held_keys:
             continue  # shown once, on the hold item
@@ -504,19 +555,24 @@ def _needs_you(ctx):
                     ctx.owner,
                     q["key"],
                     since=_iso(q["asked_at"]),
-                    question=_plain_line(q["question"]),
-                    options=[
-                        o for o in (_plain_line(o, 120) for o in q["options"]) if o
-                    ],
-                    recommended=_plain_line(q["recommended"], 120),
-                    answer_at=_plain_line(answer_file(ctx), 80),
+                    **_question_fields(ctx, q),
                 )
             )
     for s in ctx.slices:
         owner_park = s["phase"] == "PARKED" and s["park_reason"] in slices.OWNER_PARKS
         if s["phase"] == "HELD" or owner_park or s["merge_unknown"]:
+            # A hold's question record carries the real answer key and options; without
+            # one (a merge with an unknown result) there is nothing to answer by key.
+            rec = records.get(notes.HOLD_PREFIX + s["key"])
+            extra = _question_fields(ctx, rec) if rec else {}
             out.append(
-                _owner_item("hold", ctx.owner, s["key"], since=_iso(s["last_moved_at"]))
+                _owner_item(
+                    "hold",
+                    ctx.owner,
+                    s["key"],
+                    since=_iso(s["last_moved_at"]),
+                    **extra,
+                )
             )
     return out
 
@@ -630,7 +686,7 @@ def _shipped(ctx, merges, closures):
 
 def _activity(ctx):
     out = []
-    for ev in status.events(ctx.project)[-200:]:
+    for ev in ctx.events:
         words = status.event_words(ev, ctx.cfg)
         if words and _iso(ev["at"]):
             out.append({"at": ev["at"], "kind": ev["kind"], "words": words})

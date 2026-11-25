@@ -53,7 +53,7 @@ def test_the_five_routes_answer(srv):
         status, headers, body = call(srv, path)
         assert status == 200 and headers["Content-Type"].startswith(ctype), path
         assert body
-    assert json.loads(call(srv, "/api/state")[2])["schema"] == 1
+    assert json.loads(call(srv, "/api/state")[2])["schema"] == 2
 
 
 def test_head_has_headers_and_no_body(srv):

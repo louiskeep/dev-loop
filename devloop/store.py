@@ -7,6 +7,7 @@ wrapper, an operator shell) never lose each other's update.
 import contextlib
 import datetime
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -78,6 +79,12 @@ def run_dir(project: str, run_id: str) -> Path:
     if not isinstance(run_id, str) or TOKEN.fullmatch(run_id) is None:
         raise StoreError("bad run id")
     return state_dir(project) / "runs" / run_id
+
+
+def canonical_digest(obj) -> str:
+    """16 hex of sha256 over sorted, compact JSON: one version rule for every record."""
+    text = json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 def now_iso() -> str:

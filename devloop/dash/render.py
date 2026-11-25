@@ -212,7 +212,7 @@ def _strip(v, now):
     )
 
 
-def _question_detail(n):
+def _question_detail(n, project):
     parts = []
     if n["question"]:
         parts.append(f'<div class="q">{e(n["question"])}</div>')
@@ -221,7 +221,15 @@ def _question_detail(n):
         parts.append(f'<div class="muted">Options: {opts}</div>')
     if n["recommended"]:
         parts.append(f'<div class="muted">Recommended: {e(n["recommended"])}</div>')
-    if n["answer_at"]:
+    if n["answer_key"]:
+        cmd = f"devloop-state {project} answer {n['answer_key']} <option>"
+        where = (
+            f", or on the questions page ({e(n['answer_at'])})"
+            if n["answer_at"]
+            else ""
+        )
+        parts.append(f'<div class="muted">Answer: <code>{e(cmd)}</code>{where}.</div>')
+    elif n["answer_at"]:
         parts.append(f'<div class="muted">Answer in {e(n["answer_at"])}</div>')
     return "".join(parts)
 
@@ -234,7 +242,7 @@ def _needs(v, now):
         items.append(
             f"<li>{_chip(kind, icon, word)}{key} {e(text)} "
             f'<span class="muted">{e(n["owner"])}</span> {_time(n["since"], now)}'
-            f"{_question_detail(n)}</li>"
+            f"{_question_detail(n, v['project'])}</li>"
         )
     body = (
         f'<ul class="list">{"".join(items)}</ul>'
