@@ -92,7 +92,10 @@ def _test_item(project, s, level, label):
 def _plan_items(project, s, cfg):
     f = slices.plan_file(s)
     cur = slices.plan_sha_or_none(s)
-    items = [("plan file exists", cur is not None)]
+    items = [
+        ("plan file exists", cur is not None),
+        ("no plan review or repair outstanding", not _plan_outstanding(project, s)),
+    ]
     has_rules = False
     if f is not None and cur is not None:
         has_rules = "Rules consulted:" in f.read_text(
@@ -193,6 +196,21 @@ def _outstanding(project, s):
         if code_run and (mine or covers.get(s["key"]) == s["head"]):
             out.append(rd.name)
     return out
+
+
+def _plan_outstanding(project, s):
+    """A plan review or repair for this slice that is live, or finished but not applied.
+
+    Its verdict is unknown, so approving the plan now could approve bytes that already
+    have a NO-GO waiting to be applied."""
+    return [
+        rd.name
+        for rd, req in runs.iter_runs(project)
+        if not runs.is_done(rd)
+        and req.get("kind") in runs.REVIEW_KINDS
+        and req.get("purpose") == "plan"
+        and runs.slice_key_of(req) == s["key"]
+    ]
 
 
 _EVIDENCE_KINDS = ("test", "dennis", "codex-review", "codex-fix")

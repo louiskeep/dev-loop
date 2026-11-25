@@ -422,3 +422,19 @@ def test_an_older_full_run_cannot_replace_a_newer_one_for_covered_slices(
     runs.apply_run(proj, first)
     assert slices.load(proj, key)["evidence"][h1]["full"]["verdict"] == "NO-GO"
     assert slices.load(proj, top)["evidence"][h2]["full"]["verdict"] == "NO-GO"
+
+
+def test_plan_exit_refuses_while_a_plan_review_is_unapplied(proj, ready, brief):
+    key, _, _ = ready("PLAN", risk="R1")
+    first = go(proj, brief, "codex-review", key, reviewer="codex")
+    finish(proj, first, result=res("DONE", "GO"))
+    runs.apply_run(proj, first)
+    rerun = go(proj, brief, "codex-review", key, reviewer="codex")
+    finish(proj, rerun, result=res("DONE", "NO-GO"))  # finished, not applied
+    with pytest.raises(slices.TransitionError, match="outstanding"):
+        slices.move(proj, key, "DEVELOP", "go")
+    assert slices.load(proj, key)["approved_plan_sha"] is None
+    runs.apply_run(proj, rerun)
+    with pytest.raises(slices.TransitionError):  # the NO-GO now stands
+        slices.move(proj, key, "DEVELOP", "go")
+    assert slices.load(proj, key)["approved_plan_sha"] is None

@@ -219,6 +219,11 @@ mutate "builder allowed after round three" devloop/dispatch.py \
 mutate "an older run replaces newer evidence" devloop/slices.py \
   '    if seq is not None and prior is not None and (prior.get("seq") or 0) > seq:' '    if False:' \
   $T/test_runs_apply.py::test_an_older_green_cannot_replace_a_newer_red
+mutate "plan exit ignores an unapplied review" devloop/evidence.py \
+  '        if not runs.is_done(rd)
+        and req.get("kind") in runs.REVIEW_KINDS' '        if False
+        and req.get("kind") in runs.REVIEW_KINDS' \
+  $T/test_runs_apply.py::test_plan_exit_refuses_while_a_plan_review_is_unapplied
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed
