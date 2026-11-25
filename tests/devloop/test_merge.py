@@ -853,3 +853,12 @@ def test_merge_preflight_runs_the_ancestor_check_when_required(
     gate.set_gh(mergeStateStatus="CLEAN")
     r = merge.merge(proj, k)
     assert r.outcome == "refused" and "latest base" in r.reason
+
+
+def test_snapshot_sends_a_ready_gate_slice_to_devloop_merge(proj, gate):
+    from devloop import snapshot
+
+    k = gate()
+    md, _ = snapshot.build_snapshot(proj)
+    assert f"  next command: devloop-merge {proj} {k}\n" in md
+    assert "slice move" not in md.split("next command:")[1].split("\n")[0]

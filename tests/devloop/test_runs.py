@@ -1,7 +1,8 @@
+import hashlib
+import shutil
 import itertools
 import json
 import os
-import shutil
 import signal
 import subprocess
 import time
@@ -1028,3 +1029,46 @@ def test_collect_recovers_a_damaged_exit_once_the_wrapper_is_dead(proj, ready, j
     snapshot.build_snapshot(proj)  # never raises on a damaged record
     assert runs.collect(proj) == ["builder.dead"]
     assert runs.exit_valid(rd) and store.read_json(rd / "exit")["reason"] == "lost"
+
+
+def test_plan_review_credits_and_names_the_frozen_copy(proj, ready, brief, monkeypatch):
+    key, wt, _ = ready("PLAN", risk="R2")
+    live = slices.plan_file(slices.load(proj, key))
+    original = live.read_bytes()
+    # The live file changes between admission reading it and the copy being made.
+    real = shutil.copyfile
+
+    def edit_then_copy(src, dst):
+        live.write_text("Rules consulted: edited in the window\n")
+        return real(src, dst)
+
+    monkeypatch.setattr(runs.shutil, "copyfile", edit_then_copy)
+    r = go(proj, brief, "dennis", key, reviewer="dennis")
+    monkeypatch.setattr(runs.shutil, "copyfile", real)
+    req = runs.read_request(proj, r)
+    copy = Path(req["plan_copy"])
+    assert req["plan_sha"] == hashlib.sha256(copy.read_bytes()).hexdigest()
+    assert (
+        copy.read_bytes() != original
+    )  # it holds what was copied, and is hashed as such
+    text = (store.run_dir(proj, r) / "brief.md").read_text()
+    assert str(copy) in text and "frozen copy" in text
+    live.write_text("Rules consulted: edited after dispatch\n")
+    finish(proj, r, result=res("DONE", "GO"))
+    assert runs.apply_run(proj, r) == "stale"  # the live plan no longer matches
+    assert slices.load(proj, key)["evidence"] == {}
+
+
+def test_docs_reserve_the_worktree_but_take_no_slot(proj, ready, brief):
+    key, wt, _ = ready("DOCUMENT")
+    r = go(proj, brief, "docs", key)
+    assert runs.read_request(proj, r)["root"]
+    other, _, _ = ready("DEVELOP", worktree=wt)
+    with pytest.raises(runs.Refused, match="worktree is reserved"):
+        go(proj, brief, "builder", other)
+    with pytest.raises(runs.Refused, match="worktree is reserved"):
+        go(proj, brief, "docs", key)
+    assert runs.KINDS["docs"].slot is None
+    finish(proj, r, result=res("DONE", head=""))
+    runs.apply_run(proj, r)
+    go(proj, brief, "builder", other)  # freed when applied

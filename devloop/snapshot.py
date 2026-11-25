@@ -85,6 +85,8 @@ def next_command(project, s, checklist) -> str:
     if p in ("DONE", "PARKED", "HELD"):
         return "none (owner decision needed)" if p != "DONE" else "none"
     forward = slices.FORWARD.get(p)
+    if p == "GATE" and checklist and not missing:
+        return f"devloop-merge {project} {key}"  # the only way out of GATE
     if forward and checklist and not missing:
         return f"devloop-state {project} slice move {key} {forward} --reason ..."
     hints = {

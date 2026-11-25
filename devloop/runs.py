@@ -33,7 +33,7 @@ KINDS = {
     "codex-review": Kind("reviewer", 3600, 3600, "verdict", False, True),
     "codex-fix": Kind("planner", 3600, 3600, "selfverdict", True, False),
     "test": Kind("tester", 7200, 1200, "testexit", False, True),
-    "docs": Kind(None, 3600, 1200, "claude", False, False),
+    "docs": Kind(None, 3600, 1200, "claude", True, False),
     "duty": Kind(None, 3600, 1200, "exit", False, False),
 }
 REVIEW_KINDS = ("dennis", "codex-review", "codex-fix")
@@ -756,6 +756,9 @@ def _freeze(project, req, s, rd, run_id, retry_of, body):
         shutil.copyfile(src, plan_copy)
         os.chmod(plan_copy, 0o444)
         req["plan_copy"] = str(plan_copy)
+        # Credit goes to the bytes the worker is given, not to the live file, which
+        # may have changed since admission read it.
+        req["plan_sha"] = hashlib.sha256(plan_copy.read_bytes()).hexdigest()
     if kind == "codex-fix":
         req["repair_out"] = os.path.expanduser(
             req.pop("repair_out_t").format(run_id=run_id, plan_name=plan_copy.name)
@@ -801,7 +804,10 @@ def _freeze(project, req, s, rd, run_id, retry_of, body):
         "label": req["job"],
     }
     req["argv"] = _fill(req.pop("argv_t"), mapping)
-    store.write_text(rd / "brief.md", build_brief(project, req["key"], kind, body))
+    store.write_text(
+        rd / "brief.md",
+        build_brief(project, req["key"], kind, body, plan_copy=req.get("plan_copy")),
+    )
     store.write_json(rd / "request.json", req)
     store.register_request(project, req["id"])
 
@@ -883,7 +889,7 @@ CONTRACTS = {
 }
 
 
-def build_brief(project, key, kind, body) -> str:
+def build_brief(project, key, kind, body, plan_copy=None) -> str:
     cfg = projmod.load_project(project)
     try:
         template = (store.skill_dir() / "brief-template.md").read_text(encoding="utf-8")
@@ -911,7 +917,13 @@ def build_brief(project, key, kind, body) -> str:
             for e in lessons
         )
         or "none",
-        "body": body,
+        "body": body
+        + (
+            f"\n\nThe plan to read is this frozen copy, not the live file: {plan_copy}\n"
+            "Your verdict applies to exactly that file."
+            if plan_copy and kind in REVIEW_KINDS
+            else ""
+        ),
         "contract": CONTRACTS.get(KINDS[kind].reader, ""),
         "role_section": role_section(project, kind),
     }
