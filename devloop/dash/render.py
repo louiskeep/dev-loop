@@ -60,6 +60,8 @@ REASON_TEXT = {
 NEED_TEXT = {
     "question": ("?", "Question", "waiting for your answer", "warn"),
     "hold": ("⏸", "Held", "needs your decision", "warn"),
+}
+PROBLEM_TEXT = {
     "stuck": ("⚠", "Stuck", "no progress for over 2 hours", "bad"),
     "problem": ("✗", "Problem", "open known problem", "bad"),
     "unreadable": ("✗", "Unreadable", "state file could not be read", "bad"),
@@ -78,6 +80,7 @@ EVENT_ICON = "·"
 SECTION_IDS = (
     "strip",
     "needs",
+    "problems",
     "progress",
     "workers",
     "capacity",
@@ -209,10 +212,42 @@ def _strip(v, now):
     )
 
 
+def _question_detail(n):
+    parts = []
+    if n["question"]:
+        parts.append(f'<div class="q">{e(n["question"])}</div>')
+    if n["options"]:
+        opts = ", ".join(e(o) for o in n["options"])
+        parts.append(f'<div class="muted">Options: {opts}</div>')
+    if n["recommended"]:
+        parts.append(f'<div class="muted">Recommended: {e(n["recommended"])}</div>')
+    if n["answer_at"]:
+        parts.append(f'<div class="muted">Answer in {e(n["answer_at"])}</div>')
+    return "".join(parts)
+
+
 def _needs(v, now):
     items = []
     for n in v["needs_you"]:
         icon, word, text, kind = NEED_TEXT[n["kind"]]
+        key = f" <code>{e(n['key'])}</code>" if n["key"] else ""
+        items.append(
+            f"<li>{_chip(kind, icon, word)}{key} {e(text)} "
+            f'<span class="muted">{e(n["owner"])}</span> {_time(n["since"], now)}'
+            f"{_question_detail(n)}</li>"
+        )
+    body = (
+        f'<ul class="list">{"".join(items)}</ul>'
+        if items
+        else '<p class="empty">Nothing needs you right now.</p>'
+    )
+    return _section("needs", "Needs you", body)
+
+
+def _problems(v, now):
+    items = []
+    for n in v["problems"]:
+        icon, word, text, kind = PROBLEM_TEXT[n["kind"]]
         extra = (
             f" (seen {n['count']} time{'s' if n['count'] != 1 else ''})"
             if n["count"]
@@ -226,9 +261,9 @@ def _needs(v, now):
     body = (
         f'<ul class="list">{"".join(items)}</ul>'
         if items
-        else '<p class="empty">Nothing needs you right now.</p>'
+        else '<p class="empty">No known problems.</p>'
     )
-    return _section("needs", "Needs you", body)
+    return _details("problems", "Known problems", len(items), body)
 
 
 def _phase_strip(c):
@@ -452,6 +487,7 @@ def render_fragment(view, now=None) -> str:
     parts = (
         _strip(view, now),
         _needs(view, now),
+        _problems(view, now),
         _progress(view, now),
         _workers(view, now),
         _capacity(view),

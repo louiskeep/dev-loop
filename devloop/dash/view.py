@@ -22,7 +22,8 @@ SHIPPED_LIMIT = 20
 ACTIVITY_LIMIT = 20
 CHIPS = slices.PHASES[:10]
 POOLS = ("builder", "tester", "reviewer", "planner")
-NEEDS = ("question", "hold", "stuck", "problem", "unreadable")
+NEEDS = ("question", "hold")
+PROBLEMS = ("stuck", "problem", "unreadable")
 RUN_STATES = ("executing", "awaiting-apply", "awaiting-release")
 SHIPPED_KINDS = ("merge", "row-close")
 MEMORY_STATES = ("ok", "tight", "low")
@@ -33,6 +34,7 @@ WORDS = frozenset(
         *slices.PHASES,
         *slices.RISKS,
         *NEEDS,
+        *PROBLEMS,
         *RUN_STATES,
         *SHIPPED_KINDS,
         *MEMORY_STATES,
@@ -100,6 +102,7 @@ VIEW_SCHEMA = {
     },
     "counts": {
         "needs_you": "int",
+        "problems": "int",
         "executing": "int",
         "free": "int",
         "merged_today": "int?",
@@ -107,6 +110,19 @@ VIEW_SCHEMA = {
         "rows_closed": "int?",
     },
     "needs_you": [
+        {
+            "kind": "word",
+            "key": "id?",
+            "owner": "label",
+            "count": "int?",
+            "since": "at?",
+            "question": "line?",
+            "options": ["line"],
+            "recommended": "line?",
+            "answer_at": "line?",
+        }
+    ],
+    "problems": [
         {
             "kind": "word",
             "key": "id?",
@@ -429,11 +445,37 @@ def _parked(ctx):
     return sorted(cards, key=_by_age)
 
 
-def _need(kind, owner, key=None, count=None, since=None):
+def _need(kind, owner, key=None, count=None, since=None, **extra):
+    return {
+        "kind": kind,
+        "key": key,
+        "owner": owner,
+        "count": count,
+        "since": since,
+        **extra,
+    }
+
+
+def _plain_line(text, limit=300):
+    """Loop-written text, scrubbed like every other public line; None when empty."""
+    out = scrub(text, limit) if isinstance(text, str) else ""
+    return out or None
+
+
+def _owner_item(kind, owner, key=None, since=None, **extra):
+    """An item for the owner: the question fields are always present, empty for a hold."""
+    fields = {"question": None, "options": [], "recommended": None, "answer_at": None}
+    fields.update(extra)
+    return _need(kind, owner, key, since=since, **fields)
+
+
+def _problem_item(kind, owner, key=None, count=None, since=None):
+    """No loop text here: the page words each kind itself."""
     return {"kind": kind, "key": key, "owner": owner, "count": count, "since": since}
 
 
 def _needs_you(ctx):
+    """Items that only the Product owner can answer: open questions and holds."""
     out = []
     held_keys = {s["key"] for s in ctx.slices if s["phase"] == "HELD"}
 
@@ -449,18 +491,43 @@ def _needs_you(ctx):
             continue  # shown once, on the hold item
         if q["wait"] and not q["answer"]:
             out.append(
-                _need("question", ctx.owner, q["key"], since=_iso(q["asked_at"]))
+                _owner_item(
+                    "question",
+                    ctx.owner,
+                    q["key"],
+                    since=_iso(q["asked_at"]),
+                    question=_plain_line(q["question"]),
+                    options=[
+                        o for o in (_plain_line(o, 120) for o in q["options"]) if o
+                    ],
+                    recommended=_plain_line(q["recommended"], 120),
+                    answer_at=_plain_line(answer_file(ctx), 80),
+                )
             )
     for s in ctx.slices:
         owner_park = s["phase"] == "PARKED" and s["park_reason"] in slices.OWNER_PARKS
         if s["phase"] == "HELD" or owner_park or s["merge_unknown"]:
             out.append(
-                _need("hold", ctx.owner, s["key"], since=_iso(s["last_moved_at"]))
+                _owner_item("hold", ctx.owner, s["key"], since=_iso(s["last_moved_at"]))
             )
+    return out
+
+
+def answer_file(ctx):
+    """Where the owner answers: the questions file's name, never its folder."""
+    try:
+        return notes.questions_path(ctx.project).name
+    except (OSError, ValueError, TypeError, store.StoreError, notes.NotesError):
+        return None
+
+
+def _problems(ctx):
+    """Known problems and stuck work: the Tech lead's, not the owner's."""
+    out = []
     for row in _rows_cache(ctx):
         for c in row["cards"]:
             if c["stuck"]:
-                out.append(_need("stuck", ctx.tick, c["key"], since=c["since"]))
+                out.append(_problem_item("stuck", ctx.tick, c["key"], since=c["since"]))
 
     def problems():
         data = store.read_json(store.state_dir(ctx.project) / "problems.json")
@@ -469,7 +536,7 @@ def _needs_you(ctx):
     for e in _try(problems, ctx.bad, "problems", []):
         if isinstance(e, dict) and e.get("open"):
             out.append(
-                _need(
+                _problem_item(
                     "problem",
                     ctx.tick,
                     e.get("key"),
@@ -487,7 +554,9 @@ def _rows_cache(ctx):
 
 
 def _unreadable(ctx):
-    return [_need("unreadable", ctx.tick, name) for name in dict.fromkeys(ctx.bad)]
+    return [
+        _problem_item("unreadable", ctx.tick, name) for name in dict.fromkeys(ctx.bad)
+    ]
 
 
 def _nodes(ctx):
@@ -603,6 +672,7 @@ def build_view(project, proc="/proc", now=None) -> dict:
     merges = _try(lambda: slices.merge_records(project), ctx.bad, "merges", None)
     closures = _try(lambda: slices.closure_records(project), ctx.bad, "closures", None)
     needs = _needs_you(ctx)
+    problems = _problems(ctx)
     counts = status.counts_from(merges, closures, now)
     slots = _slots(ctx)
     view = {
@@ -612,6 +682,7 @@ def build_view(project, proc="/proc", now=None) -> dict:
         "tick": _tick_facts(ctx),
         "counts": {
             "needs_you": 0,
+            "problems": 0,
             "executing": sum(1 for r in ctx.runs if r["state"] == "executing"),
             "free": sum(max(0, p["cap"] - p["used"]) for p in slots),
             "merged_today": counts["merged_today"],
@@ -619,6 +690,7 @@ def build_view(project, proc="/proc", now=None) -> dict:
             "rows_closed": counts["rows_closed"],
         },
         "needs_you": needs,
+        "problems": problems,
         "rows": _rows_cache(ctx),
         "workers": [
             {k: r[k] for k in ("role", "key", "node", "state", "started_at")}
@@ -631,8 +703,9 @@ def build_view(project, proc="/proc", now=None) -> dict:
         "activity": _activity(ctx),
         "parked": _parked(ctx),
     }
-    view["needs_you"] = needs + _unreadable(ctx)
+    view["problems"] = problems + _unreadable(ctx)
     view["counts"]["needs_you"] = len(view["needs_you"])
+    view["counts"]["problems"] = len(view["problems"])
     for w in view["workers"]:
         w["key"] = w["key"] if w["key"] else "?"
     sealed = _seal(view, VIEW_SCHEMA, _labels(cfg))

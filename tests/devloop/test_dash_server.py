@@ -177,7 +177,6 @@ def test_routes_leak_nothing_planted(proj, dash, srv, tmp_path):
             "/etc/passwd",
             "PLANTEDSECRET",
             str(tmp_path),
-            "Pick a thing",
             "space is short",
         ):
             assert needle not in text, (path, needle)

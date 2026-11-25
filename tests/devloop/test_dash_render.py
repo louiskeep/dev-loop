@@ -83,6 +83,7 @@ def test_every_code_and_word_has_wording():
     assert set(evidence.CODES) <= set(render.CODE_TEXT)
     assert set(evidence.REASON_WORDS) <= set(render.REASON_TEXT)
     assert set(view.NEEDS) == set(render.NEED_TEXT)
+    assert set(view.PROBLEMS) == set(render.PROBLEM_TEXT)
     assert set(view.RUN_STATES) == set(render.WORKER_STATE)
     assert set(view.MEMORY_STATES) == set(render.MEMORY_STATE)
     assert set(render.PHASE_TEXT) == set(view.CHIPS)

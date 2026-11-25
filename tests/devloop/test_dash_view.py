@@ -6,8 +6,8 @@ import os
 import pytest
 from dash_fixture import AGENT_NAMES, ago, dash, put_run, put_slice  # noqa: F401
 
-from devloop import slices, store
-from devloop.dash import view
+from devloop import notes, slices, store
+from devloop.dash import render, view
 
 PLANTED = ("password hunter2", "user:pw@host", "/etc/shadow", "ghp_PLANTEDSECRET1")
 
@@ -64,15 +64,45 @@ def test_needs_you_present_with_empty_state(proj):
     assert v["counts"]["needs_you"] == 0 and v["memory"] is None
 
 
-def test_needs_you_lists_question_hold_stuck_problem(proj, dash):
+def test_needs_you_lists_only_the_owners_questions_and_holds(proj, dash):
     v = build(proj)
     kinds = {(n["kind"], n["key"]) for n in v["needs_you"]}
     assert ("question", "q-owner") in kinds
     assert ("hold", dash["held"]) in kinds
     assert ("hold", dash["parked"]) in kinds  # an owner park
-    assert ("stuck", dash["plan"]) in kinds
-    assert ("problem", "disk-low") in kinds
-    assert v["counts"]["needs_you"] == len(v["needs_you"])
+    assert {k for k, _ in kinds} == {"question", "hold"}
+    assert {n["owner"] for n in v["needs_you"]} == {"Product owner (you)"}
+    assert v["counts"]["needs_you"] == len(v["needs_you"]) == 3
+
+
+def test_a_question_item_carries_its_text_options_and_answer_file(proj, dash):
+    q = next(n for n in build(proj)["needs_you"] if n["kind"] == "question")
+    assert q["question"] == "Pick a thing" and q["options"] == ["a", "b"]
+    assert q["recommended"] == "a"
+    assert q["answer_at"] == notes.questions_path(proj).name
+    assert "/" not in q["answer_at"]
+
+
+def test_known_problems_have_their_own_tech_lead_panel(proj, dash):
+    v = build(proj)
+    kinds = {(n["kind"], n["key"]) for n in v["problems"]}
+    assert ("problem", "disk-low") in kinds and ("stuck", dash["plan"]) in kinds
+    assert {n["owner"] for n in v["problems"]} == {"Tech lead"}
+    assert v["counts"]["problems"] == len(v["problems"])
+
+
+def test_one_question_and_three_problems(proj):
+    notes.ask(
+        proj, "q1", question="Which?", options=["x", "y"], recommended="x", wait=True
+    )
+    for key in ("p1", "p2", "p3"):
+        notes.problem(proj, key, impact="i", fix="f")
+    v = build(proj)
+    assert v["counts"]["needs_you"] == 1 and len(v["needs_you"]) == 1
+    assert v["counts"]["problems"] == 3 and len(v["problems"]) == 3
+    page = render.render_page(v)
+    assert 'id="problems"' in page and "Known problems" in page
+    assert "Tech lead" in page and "Which?" in page and "Recommended: x" in page
 
 
 def test_stuck_flag_after_stale_secs(proj, dash):
@@ -217,7 +247,7 @@ def test_bad_merge_ledger_keeps_cards(proj, dash):
     (store.state_dir(proj) / "merges.json").write_text("{not json")
     v = build(proj)
     assert card(v, dash["gate"]) and v["shipped"][0]["kind"] == "row-close"
-    assert ("unreadable", "merges") in {(n["kind"], n["key"]) for n in v["needs_you"]}
+    assert ("unreadable", "merges") in {(n["kind"], n["key"]) for n in v["problems"]}
     assert v["counts"]["merged_today"] is None and v["counts"]["rows_closed"] == 1
 
 
@@ -229,7 +259,7 @@ def test_bad_sibling_beside_gate_card(proj, dash):
     assert card(v, dash["gate"])["checklist"]["available"] is False
     assert card(v, dash["frame"])["checklist"]["available"] is True
     assert ("unreadable", "ROW2--BROKEN") in {
-        (n["kind"], n["key"]) for n in v["needs_you"]
+        (n["kind"], n["key"]) for n in v["problems"]
     }
 
 
@@ -310,7 +340,6 @@ def test_free_text_never_reaches_the_view(proj, dash):
     for planted in (
         *PLANTED,
         str(store.state_dir(proj)),
-        "Pick a thing",
         "space is short",
     ):
         assert planted not in text
