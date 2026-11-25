@@ -8,6 +8,7 @@ editing a line in a page they already keep.
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 from . import project as projmod
@@ -342,6 +343,8 @@ def notify(project, text, limit=300):
         pass
     if not ok:
         store.append_event(project, "notify-failed")
+        # Cron appends stderr to cron.log, which is where this belongs.
+        print("devloop: notify failed", file=sys.stderr)
 
 
 _notify = notify
