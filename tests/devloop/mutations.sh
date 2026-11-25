@@ -113,11 +113,14 @@ mutate "skip never expires" devloop/tick.py \
     )' '        < SKIP_WINDOW_S * 1000
     )' \
   $T/test_tick.py::test_skip_unchanged_snapshot_until_two_hours
-mutate "a timeout counts as a cap" devloop/tick.py \
+mutate "a timeout counts as a cap" devloop/caps.py \
   '    if rc == 124:
         return None' '    if False:
         return None' \
   $T/test_tick.py::test_detect_cap_shapes
+mutate "codex cap text is ignored" devloop/caps.py \
+  '    if CAP_TEXT.search(tail) and TRY_AGAIN.search(tail):' '    if False:' \
+  $T/test_wrap.py::test_codex_usage_cap_text_sets_cap_until
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

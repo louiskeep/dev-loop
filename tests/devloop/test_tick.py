@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from devloop import slices, status, store, tick
+from devloop import caps, slices, status, store, tick
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -146,10 +146,10 @@ def test_timeout_is_not_a_cap_and_alerts_once(proj, tmp_path, home, monkeypatch)
 
 
 def test_detect_cap_shapes():
-    assert tick.detect_cap(124, '{"type":"rate_limit"}') is None
-    when = tick.detect_cap(1, '{"type":"rate_limit","resets_at":4102444800}')
+    assert caps.detect_cap(124, '{"type":"rate_limit"}') is None
+    when = caps.detect_cap(1, '{"type":"rate_limit","resets_at":4102444800}')
     assert when.year == 2100
-    soon = tick.detect_cap(
+    soon = caps.detect_cap(
         1,
         json.dumps(
             {"type": "result", "is_error": True, "result": "You hit your usage limit"}
@@ -157,10 +157,10 @@ def test_detect_cap_shapes():
     )
     assert soon > datetime.datetime.now(datetime.timezone.utc)
     assert (
-        tick.detect_cap(0, json.dumps({"type": "result", "result": "usage limit docs"}))
+        caps.detect_cap(0, json.dumps({"type": "result", "result": "usage limit docs"}))
         is None
     )
-    assert tick.detect_cap(1, "plain text") is None
+    assert caps.detect_cap(1, "plain text") is None
 
 
 def test_pause_collects_only(proj, home, tmp_path):

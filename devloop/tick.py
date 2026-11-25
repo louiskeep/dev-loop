@@ -1,66 +1,17 @@
 """The tick: lock, collect, snapshot, skip or call the model, render, post."""
 
 import datetime
+import fcntl
 import json
+import os
 import re
+import subprocess
+import sys
+from pathlib import Path
 
-CAP_TEXT = re.compile(r"(usage|rate)[ _]limit", re.IGNORECASE)
-ISO = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:?\d{2})?")
-
-
-def _utc_now():
-    return datetime.datetime.now(datetime.timezone.utc)
-
-
-def _reset_time(value, text=""):
-    """A reset moment from an epoch, an ISO string or free text; one hour on failure."""
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
-    for candidate in (value, *(ISO.findall(text) if isinstance(text, str) else [])):
-        if isinstance(candidate, str):
-            try:
-                at = datetime.datetime.fromisoformat(candidate.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            if at.tzinfo is None:
-                at = at.replace(tzinfo=datetime.timezone.utc)
-            if at > _utc_now():
-                return at
-    return _utc_now() + datetime.timedelta(hours=1)
-
-
-def detect_cap(rc, output):
-    """When a usage cap ends, or None. Exit 124 is a timeout, never a cap."""
-    if rc == 124:
-        return None
-    for line in str(output).splitlines():
-        try:
-            event = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(event, dict):
-            continue
-        if event.get("type") == "rate_limit":
-            return _reset_time(event.get("resets_at"), line)
-        if (
-            event.get("type") == "result"
-            and (event.get("is_error") or rc not in (0, None))
-            and CAP_TEXT.search(str(event.get("result", "")))
-        ):
-            return _reset_time(None, str(event.get("result", "")))
-    return None
-
-
-# --- the tick -----------------------------------------------------------------
-
-import fcntl  # noqa: E402
-import os  # noqa: E402
-import subprocess  # noqa: E402
-import sys  # noqa: E402
-from pathlib import Path  # noqa: E402
-
-from . import notes, runs, snapshot, status, store  # noqa: E402
-from . import project as projmod  # noqa: E402
+from . import notes, runs, snapshot, status, store
+from . import project as projmod
+from .caps import detect_cap, utc_now
 
 MAX_BACK_TO_BACK = 3
 SKIP_WINDOW_S = 7200
@@ -105,7 +56,7 @@ def _alert(project, reason, text):
         last = sent.get(reason)
         if (
             last
-            and (_utc_now() - datetime.datetime.fromisoformat(last)).total_seconds()
+            and (utc_now() - datetime.datetime.fromisoformat(last)).total_seconds()
             < ALERT_EVERY_S
         ):
             return
@@ -124,7 +75,7 @@ def _cap_active(project) -> bool:
         return True
     if until.tzinfo is None:
         until = until.replace(tzinfo=datetime.timezone.utc)
-    return until > _utc_now()
+    return until > utc_now()
 
 
 def _model_call(project, cfg, prompt):
@@ -213,7 +164,7 @@ def _pass(project) -> str:
     last = state.get("last_model_at")
     fresh = (
         last is not None
-        and (_utc_now() - datetime.datetime.fromisoformat(last)).total_seconds()
+        and (utc_now() - datetime.datetime.fromisoformat(last)).total_seconds()
         < SKIP_WINDOW_S
     )
     if digest == state.get("last_hash") and fresh:

@@ -126,6 +126,35 @@ def test_nonzero_exit_voids_the_verdict(proj, tmp_path, monkeypatch):
     assert result(rd)["status"] == "FAILED"
 
 
+def test_codex_usage_cap_text_sets_cap_until(proj, tmp_path, monkeypatch, home):
+    monkeypatch.setenv(
+        "FAKE_OUT_TEXT",
+        "ERROR: you have hit your usage limit. Try again at 2999-01-01T00:00:00Z",
+    )
+    rd = codex(proj, tmp_path, monkeypatch, no_last=True, exit_=1)
+    assert store.read_json(rd / "exit")["reason"] == "capped"
+    assert (home / "p" / "cap-until").read_text().startswith("2999-01-01")
+    assert result(rd)["status"] == "FAILED"
+
+
+def test_codex_failure_without_a_cap_message_is_not_a_cap(
+    proj, tmp_path, monkeypatch, home
+):
+    monkeypatch.setenv("FAKE_OUT_TEXT", "the sandbox failed to start")
+    rd = codex(proj, tmp_path, monkeypatch, no_last=True, exit_=1)
+    assert store.read_json(rd / "exit")["reason"] == "exit"
+    assert not (home / "p" / "cap-until").exists()
+
+
+def test_codex_review_text_about_limits_with_exit_zero_is_not_a_cap(
+    proj, tmp_path, monkeypatch, home
+):
+    monkeypatch.setenv("FAKE_OUT_TEXT", "the rate limit handling resets after a minute")
+    rd = codex(proj, tmp_path, monkeypatch, last="VERDICT: GO")
+    assert store.read_json(rd / "exit")["reason"] == "exit"
+    assert not (home / "p" / "cap-until").exists()
+
+
 def test_repair_reads_the_self_verdict(proj, tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_FIX_CACHE", str(tmp_path / "cache"))
     rd = codex(proj, tmp_path, monkeypatch, kind="codex-fix")

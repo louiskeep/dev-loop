@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from . import runs, store
+from .caps import TAIL_CHARS, detect_cap, detect_cap_text
 
 VERDICT = re.compile(r"VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
 SELF_VERDICT = re.compile(r"SELF-VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
@@ -144,15 +145,19 @@ def _write_result(rd, req, code, reason):
 
 
 def _set_cap_until(project, code, rd, req):
-    from .tick import detect_cap
-
+    codex = req["kind"] in CODEX_KINDS
+    files = (
+        [Path(req.get("out") or ""), Path(req.get("last_msg") or "")]
+        if codex
+        else [store.out_dir(rd) / "log"]
+    )
     text = ""
-    for p in (store.out_dir(rd) / "log", Path(req.get("out") or "")):
+    for p in files:
         try:
-            text += p.read_text(encoding="utf-8", errors="replace")[-20000:]
+            text += p.read_text(encoding="utf-8", errors="replace")[-TAIL_CHARS:] + "\n"
         except OSError:
             pass
-    until = detect_cap(code, text)
+    until = (detect_cap_text if codex else detect_cap)(code, text)
     if until is not None:
         store.write_text(store.state_dir(project) / "cap-until", until.isoformat())
     return until is not None
