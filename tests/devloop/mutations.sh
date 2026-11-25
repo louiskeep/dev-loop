@@ -44,14 +44,14 @@ mutate "wrapper drops the exit-writing finally step" devloop/wrap.py \
   $T/test_wrap.py::test_wrapper_writes_exit_on_kill
 mutate "processed run id is never recorded" devloop/slices.py \
   '        s["processed_run_ids"] = (s["processed_run_ids"] + [run_id])[-500:]' '        pass' \
-  $T/test_runs.py::test_apply_replay_counts_once
+  $T/test_runs_apply.py::test_apply_replay_counts_once
 mutate "KINDS loses the test entry" devloop/runs.py \
   '    "test": Kind("tester", 7200, 1200, "testexit", False, True),' '' \
-  $T/test_runs.py::test_every_kind_has_reader_and_slot
-mutate "evidence key from the slice phase at apply time" devloop/runs.py \
+  $T/test_runs_dispatch.py::test_every_kind_has_reader_and_slot
+mutate "evidence key from the slice phase at apply time" devloop/apply.py \
   "ev_kind = f\"{req['purpose']}:{req['reviewer']}\"" \
   "ev_kind = f\"{'plan' if s['phase'] == 'PLAN' else 'code'}:{req['reviewer']}\"" \
-  $T/test_runs.py::test_late_plan_review_grants_no_code_go
+  $T/test_runs_apply.py::test_late_plan_review_grants_no_code_go
 mutate "verdict taken from anywhere in the transcript" devloop/wrap.py \
   'm = rx.fullmatch(_plain_line(lines[-1])) if lines else None' \
   'm = next((x for x in map(rx.fullmatch, map(_plain_line, lines)) if x), None)' \
@@ -60,9 +60,9 @@ mutate "an error result can carry the verdict" devloop/wrap.py \
   'final = None if event.get("is_error") else event.get("result")' \
   'final = event.get("result")' \
   $T/test_wrap.py::test_error_result_cannot_supply_a_verdict
-mutate "admission lets one past the cap" devloop/runs.py \
+mutate "admission lets one past the cap" devloop/dispatch.py \
   'if used >= cfg["capacity"][spec.slot]:' 'if used > cfg["capacity"][spec.slot]:' \
-  $T/test_runs.py::test_admission_refuses_ninth_builder $T/test_runs.py::test_admission_refuses_fifth_tester
+  $T/test_runs_dispatch.py::test_admission_refuses_ninth_builder $T/test_runs_dispatch.py::test_admission_refuses_fifth_tester
 mutate "merge drops --match-head-commit" devloop/merge.py \
   '        "--match-head-commit",
         s["head"],' '' \
@@ -92,21 +92,21 @@ mutate "merge guard blocks any text with merge" hooks/headless_merge_guard.py \
   $T/test_merge.py::test_merge_guard_allows_reads_feature_pushes_and_devloop_merge
 mutate "request ledger always matches" devloop/store.py \
   'return want is not None and want == request_digest(run_dir(project, run_id))' 'return True' \
-  $T/test_runs.py::test_payload_that_rewrites_request_gets_no_evidence
-mutate "repaired copy is not re-hashed" devloop/runs.py \
-  'if _sha_file(copy) != data.get("output_sha"):' 'if False:' \
-  $T/test_runs.py::test_tampered_repaired_copy_is_caught_before_install
+  $T/test_runs_integrity.py::test_payload_that_rewrites_request_gets_no_evidence
+mutate "repaired copy is not re-hashed" devloop/apply.py \
+  'if runs.sha_file(copy) != data.get("output_sha"):' 'if False:' \
+  $T/test_runs_integrity.py::test_tampered_repaired_copy_is_caught_before_install
 mutate "a lost test run frees its slot" devloop/runs.py \
   '    return (rd / "released").is_file() or (' '    return True or (' \
-  $T/test_runs.py::test_lost_test_holds_slot
+  $T/test_runs_apply.py::test_lost_test_holds_slot
 mutate "a reused pid reads alive" devloop/runs.py \
   'return proc_start(pid) == str(start)' 'return proc_start(pid) is not None' \
-  $T/test_runs.py::test_reused_pid_reads_dead
-mutate "zero exit without a result reads DONE" devloop/runs.py \
-  'if status not in STATUSES:
-        status = "FAILED"' 'if status not in STATUSES:
+  $T/test_runs_apply.py::test_reused_pid_reads_dead
+mutate "zero exit without a result reads DONE" devloop/apply.py \
+  'if status not in runs.STATUSES:
+        status = "FAILED"' 'if status not in runs.STATUSES:
         status = status or "DONE"' \
-  $T/test_runs.py::test_zero_exit_without_result_is_failed
+  $T/test_runs_apply.py::test_zero_exit_without_result_is_failed
 mutate "skip check ignores the unchanged hash" devloop/tick.py \
   '        digest == state.get("last_hash")' '        False' \
   $T/test_tick.py::test_skip_unchanged_snapshot_until_two_hours
@@ -127,13 +127,13 @@ mutate "a rejected run still holds its slot" devloop/runs.py \
   '    if (rd / "rejected").is_file():
         return False
     if spec.writes_worktree' '    if spec.writes_worktree' \
-  $T/test_runs.py::test_ledger_mismatch_rejects_the_run_and_frees_the_slot $T/test_runs.py::test_repaired_hash_mismatch_rejects_the_run_and_frees_the_worktree
-mutate "a rejected run is still collected" devloop/runs.py \
-  '            if (rd / "exit").is_file() and not is_done(rd):' '            if (rd / "exit").is_file() and not (rd / "applied").is_file():' \
-  $T/test_runs.py::test_ledger_mismatch_rejects_the_run_and_frees_the_slot
-mutate "refusal writes no rejected marker" devloop/runs.py \
+  $T/test_runs_integrity.py::test_ledger_mismatch_rejects_the_run_and_frees_the_slot $T/test_runs_integrity.py::test_repaired_hash_mismatch_rejects_the_run_and_frees_the_worktree
+mutate "a rejected run is still collected" devloop/apply.py \
+  '            if (rd / "exit").is_file() and not runs.is_done(rd):' '            if (rd / "exit").is_file() and not (rd / "applied").is_file():' \
+  $T/test_runs_integrity.py::test_ledger_mismatch_rejects_the_run_and_frees_the_slot
+mutate "refusal writes no rejected marker" devloop/apply.py \
   '    (rd / "rejected").write_text(why)' '    pass' \
-  $T/test_runs.py::test_binding_mismatch_rejects_the_run_and_frees_the_slot
+  $T/test_runs_integrity.py::test_binding_mismatch_rejects_the_run_and_frees_the_slot
 mutate "held test runs are not listed" devloop/snapshot.py \
   '            and runs.holds_slot(rd, req)' '            and False' \
   $T/test_snapshot_status.py::test_snapshot_lists_test_runs_that_hold_a_slot
@@ -141,10 +141,10 @@ mutate "remove_tree trusts the request path" devloop/runs.py \
   '    tree = rd / "tree"
     if not tree.exists()' '    tree = Path((req or {}).get("tree") or rd / "tree")
     if not tree.exists()' \
-  $T/test_runs.py::test_remove_tree_ignores_a_path_named_in_the_request
-mutate "builder failures keyed by head" devloop/runs.py \
+  $T/test_runs_integrity.py::test_remove_tree_ignores_a_path_named_in_the_request
+mutate "builder failures keyed by head" devloop/apply.py \
   '        base = f"builder:{req.get('"'"'lineage'"'"')}"' '        base = f"builder:{req.get('"'"'head'"'"')}"' \
-  $T/test_runs.py::test_builder_failures_count_across_new_heads
+  $T/test_runs_integrity.py::test_builder_failures_count_across_new_heads
 mutate "markdown is not stripped from the verdict" devloop/wrap.py \
   '    m = rx.fullmatch(_plain_line(lines[-1])) if lines else None' '    m = rx.fullmatch(lines[-1]) if lines else None' \
   $T/test_wrap.py::test_markdown_around_the_verdict_line_is_stripped
@@ -156,15 +156,15 @@ mutate "merge move re-checks the gate" devloop/slices.py \
             else [name' '            if False
             else [name' \
   $T/test_merge.py::test_plan_edited_after_the_merge_still_finishes_the_move
-mutate "no-verdict resumes forever" devloop/runs.py \
+mutate "no-verdict resumes forever" devloop/apply.py \
   'reason == "no-verdict" and count < 3' 'reason == "no-verdict"' \
-  $T/test_runs.py::test_third_no_verdict_after_a_resume_is_owner_gated
-mutate "a red test is a failed run" devloop/runs.py \
+  $T/test_runs_integrity.py::test_third_no_verdict_after_a_resume_is_owner_gated
+mutate "a red test is a failed run" devloop/apply.py \
   '        if not red_test:' '        if True:' \
-  $T/test_runs.py::test_red_test_rerun_replaces_an_earlier_go
-mutate "a selection earns t2 or full" devloop/runs.py \
+  $T/test_runs_apply.py::test_red_test_rerun_replaces_an_earlier_go
+mutate "a selection earns t2 or full" devloop/dispatch.py \
   '    if select and level in ("t2", "full"):' '    if False:' \
-  $T/test_runs.py::test_selection_is_refused_for_t2_and_full_but_not_t1
+  $T/test_runs_apply.py::test_selection_is_refused_for_t2_and_full_but_not_t1
 mutate "guard ignores configured bases" devloop/project.py \
   '    names = {"main", "master"}' '    return "main,master"
     names = {"main", "master"}' \
@@ -175,7 +175,7 @@ mutate "run conclusion compared case-sensitively" devloop/merge.py \
 mutate "unknown merge drops the attempt" devloop/merge.py \
   '    slices.set_merge_state(project, key, unknown=True)' '    slices.set_merge_state(project, key, attempt=None, unknown=True)' \
   $T/test_merge.py::test_unknown_response_keeps_the_attempt
-mutate "board call repeats on replay" devloop/slices.py \
+mutate "board call repeats on replay" devloop/board.py \
   '        if rec is None or rec["board_done"]:' '        if rec is None:' \
   $T/test_merge.py::test_crash_after_the_move_still_counts_and_delivers_the_board_once
 mutate "merge identity not checked" devloop/slices.py \
@@ -187,12 +187,12 @@ mutate "up-to-date skips the ancestor check" devloop/merge.py \
 mutate "finished runs do not force a pass" devloop/tick.py \
   '        and not snapshot.finished_unapplied(project)' '        and True' \
   $T/test_tick.py::test_finished_unapplied_run_forces_a_model_pass_whatever_the_hash
-mutate "exit is written in place" devloop/runs.py \
+mutate "exit is written in place" devloop/apply.py \
   '        os.link(tmp, rd / "exit")' '        os.rename(tmp, rd / "exit")' \
-  $T/test_runs.py::test_exit_is_published_whole_or_not_at_all
-mutate "damaged exit is never recovered" devloop/runs.py \
-  '            if damaged and not wrapper_alive(req):' '            if False:' \
-  $T/test_runs.py::test_collect_recovers_a_damaged_exit_once_the_wrapper_is_dead
+  $T/test_runs_integrity.py::test_exit_is_published_whole_or_not_at_all
+mutate "damaged exit is never recovered" devloop/apply.py \
+  '            if damaged and not runs.wrapper_alive(req):' '            if False:' \
+  $T/test_runs_integrity.py::test_collect_recovers_a_damaged_exit_once_the_wrapper_is_dead
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed
@@ -210,14 +210,14 @@ mutate "hex runs are not scrubbed" devloop/scrub.py \
 mutate "snapshot hash includes digits" devloop/snapshot.py \
   '"outputs": [(n, DIGITS.sub("", t)) for n, t in outputs],' '"outputs": [(n, t) for n, t in outputs],' \
   $T/test_snapshot_status.py::test_hash_ignores_ages_and_digits
-mutate "stacked member need not be an ancestor" devloop/runs.py \
+mutate "stacked member need not be an ancestor" devloop/dispatch.py \
   '        if not stacked:' '        if False:' \
-  $T/test_runs.py::test_train_member_must_be_ancestor
-mutate "codex review needs no earlier reviewer" devloop/runs.py \
+  $T/test_runs_apply.py::test_train_member_must_be_ancestor
+mutate "codex review needs no earlier reviewer" devloop/dispatch.py \
   '    if i == 0:
         return None' '    if True:
         return None' \
-  $T/test_runs.py::test_codex_code_review_refused_before_dennis_go
+  $T/test_runs_apply.py::test_codex_code_review_refused_before_dennis_go
 mutate "a duplicate failing check name passes" devloop/merge.py \
   '        if not entries or any(state(e) != "SUCCESS" for e in entries):' '        if not entries or state(entries[0]) != "SUCCESS":' \
   $T/test_merge.py::test_merge_refuses_duplicate_name_with_one_failure
