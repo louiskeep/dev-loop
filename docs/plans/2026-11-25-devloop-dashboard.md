@@ -11,9 +11,9 @@ Rules consulted: README, 00-universal, risk-and-exceptions, development-loop, re
 proportionality, architecture, cross-cutting-concerns, security, observability-and-resilience,
 api-and-compatibility, testing, workspace-and-vcs, profiles/local-operations.
 
-Risk: **R1** (read-only, local, reversible; no state writes except its own pid file). Plan
-review: one round. Code review: Codex on the exact head. Repo `/home/cam/dev-loop-plugin`,
-branch `feat/headless-loop`, planned from head `fff2419`.
+Risk: **R1** (read-only, local, reversible; the only files it writes are its own pid and
+port files). Plan review: one round. Code review: Codex on the exact head. Repo
+`/home/cam/dev-loop-plugin`, branch `feat/headless-loop`, planned from head `fff2419`.
 
 **Goal (owner, 2026-11-25):** one clean, local, read-only web dashboard that every project
 using the plugin gets as part of the standard loop. It shows recently shipped work, rows in
@@ -22,320 +22,364 @@ Single user, LAN, no auth, binds `0.0.0.0`. Threat model: accidents only.
 
 **Owner addition (2026-11-25, role names):** everything people read uses role labels, not
 kind or persona names. Code kind names (`runs.KINDS`) stay the internal contract; only labels
-change. Folded in as Task 1 (labels and config) and Task 7 (STATUS and Slack outside the
-dashboard).
+change (Task 1, and Task 7 for STATUS and Slack outside the dashboard).
+
+## Review record
+
+- Codex plan R1 (head 3258f6c): GO-WITH-FIXES, 11 findings, all folded with the owner's
+  scope notes (structured facts only, no command runs, one server and a stable port per
+  project, both builder kinds read "Developer"). Map in "Codex R1 findings" below.
 
 **Architecture:** a sub-package `devloop/dash/`. `view.py` holds `build_view(project) ->
 dict`, the only reader of state for the dashboard, built from existing functions. `render.py`
 turns that dict into HTML; it is the only renderer, used for `/` and for the `/fragment` the
-page polls. `server.py` is a `ThreadingHTTPServer` with a fixed route table, ETags, and the
-pid-file lifecycle. Static `dash.css` and `dash.js` sit in `devloop/dash/web/`, so the
-existing `devloop-install` copy carries them. No framework, no build step.
+page polls. `server.py` holds the route table, ETags and the lifecycle. Static `dash.css` and
+`dash.js` sit in `devloop/dash/web/`, so the existing `devloop-install` copy carries them.
 
-**Tech stack:** Python 3.11 stdlib (`http.server`, `html`, `json`, `hashlib`, `socket`),
-vanilla JS, CSS custom properties. Tests: pytest with the existing `home`/`proj` fixtures.
+**Tech stack:** Python 3.11 stdlib (`http.server`, `html`, `json`, `hashlib`, `socket`,
+`fcntl`), vanilla JS, CSS custom properties. Tests: pytest with the `home`/`proj` fixtures.
 
 ## Guarantee and non-goals
 
-Guarantee: the dashboard never writes loop state, never shows an absolute path, a secret or a
-commit id, shows the same counts STATUS.md shows, and keeps working (with an error item, not
-a 500) when one state file is damaged.
+Guarantee: the dashboard never writes loop state and never runs a configured command. Public
+output holds only fixed wording and structured facts: event kinds, row and slice IDs that
+pass the ID check, counts, phases, timestamps, role labels and PR URLs built from config. It
+shows no free text a model or tool wrote, so no path, secret or commit id can reach it. A
+damaged state file becomes an `unreadable` item; healthy cards still render.
 
-Non-goals (leave out): auth, write actions, charts, drag and drop, logs and diffs,
-websockets, a JS framework or build step, notifications, DNS-rebinding or hostile-LAN
-defences (accidents-only threat model), server-side filtering, multi-project pages.
+Non-goals: auth, write actions, charts, drag and drop, logs and diffs, websockets, a JS
+framework or build step, notifications, a stronger secret scanner, hostile-LAN defences,
+server-side filtering, multi-project pages, node load text.
 
 ## Design notes
 
-- Single choke point for public text: `view._seal(tree)` walks the finished view once. Each
-  key has one declared kind in `VIEW_SCHEMA`: `id` (must fullmatch `store.TOKEN`, else
-  `"?"`), `text` (through `scrub` with the declared limit), `at` (ISO timestamp or null),
-  `url` (must fullmatch `https://github.com/<SLUG>/pull/<n>`, else null), `int`, `bool`,
-  `label` (a role label from `project.role_label`, then `scrub`). An undeclared key raises
-  `ViewError`. Sites never call `scrub` themselves, so a new field cannot skip it.
-- One renderer (Python). The page polls `/fragment`, not the JSON, so there is no second
-  renderer in JS to drift. `/api/state` carries the same version and ETag for scripts and
-  tests. This departs from "page polls `/api/state`" in the research note on purpose.
-- One place per fact: slot usage moves to `runs.slot_usage` (STATUS, snapshot and view read
-  it); the event-field rule moves to `scrub.plain`; role and pool labels live only in
-  `project.role_label` / `project.pool_label`; the stuck threshold is
-  `snapshot.STALE_SECS`.
-- Read-only by construction: the view never calls a function that creates a directory when
-  the target is missing (`store.state_dir`, `runs._runs_dir` and `slices._slices_dir` all
-  `mkdir`). It checks `is_dir()` first and reads slice files one by one through
-  `slices.load`, catching `SliceError` per file.
-- House style: typed context over long parameter lists, single-purpose functions, comments
-  that explain why.
+- No free text in the view. Slice `purpose`, `next_action`, `waiting_on`, question and
+  option text, problem impact, tick-log bodies and command output are left out. Line 1 of a
+  card therefore drops "purpose" from the research layout; it shows slice id, row, risk, PR
+  link and round badge.
+- One ID rule, `scrub.plain(value)`: fullmatch `store.TOKEN`, and no secret prefix
+  (`scrub._TOKEN`), no 7-to-40 hex run, no 40-char run; else `"?"`. STATUS and Slack use the
+  same function, so the rule tightens everywhere at once.
+- One choke point for the view: `view._seal(tree)` walks the finished view. Each key has a
+  declared kind in `VIEW_SCHEMA`: `id` (through `plain`), `word` (must be in the fixed
+  wording table `view.WORDS`), `at` (ISO timestamp or null), `url` (fullmatch
+  `https://github.com/<SLUG>/pull/<n>` or null), `int`, `bool`, `label` (from
+  `project.role_label` or `pool_label`). Nullable keys are declared nullable. An undeclared
+  key raises `ViewError`.
+- One renderer (Python). The page polls `/fragment`; `/api/state` carries the same version
+  and ETag for scripts and tests. This departs on purpose from "page polls `/api/state`".
+- One place per fact: slot use in `runs.slot_usage` (from `holds_slot`); cap expiry in
+  `store.cap_active`; role and pool labels in `project.role_label` and `pool_label`;
+  checklist meaning in `evidence.exit_items`; the stuck threshold is `snapshot.STALE_SECS`.
+- Read-only by construction: reader paths never create directories. `runs.iter_runs` and
+  `slices.list_slices` return nothing when their directory is missing; only writers
+  (`dispatch`, `slices._create`, `_save`, admission) create it.
+- House style: typed context over long parameter lists, single-purpose functions, no flag
+  arguments, comments that explain why.
 
 ## Placement
 
-The repo has no CODEMAP. `devloop/` holds 23 modules and the architecture fan-out cap is
-about 25, so the new modules go in a named sub-package, not beside the others. This is why
-the read model is `devloop/dash/view.py` and not `devloop/view.py`.
+The repo has no CODEMAP. `devloop/` holds 23 modules and the fan-out cap is about 25, so new
+modules go in a named sub-package; the read model is `devloop/dash/view.py`.
 
 | New file | Directory | Why there | Sits beside |
 |---|---|---|---|
-| `devloop/dash/__init__.py`, `view.py`, `render.py`, `server.py` | `devloop/dash/` | fan-out cap; one concern per module like the parent | `devloop/status.py` |
+| `devloop/dash/__init__.py`, `view.py`, `render.py`, `server.py` | `devloop/dash/` | fan-out cap; one concern per module | `devloop/status.py` |
 | `devloop/dash/web/dash.css`, `dash.js` | `devloop/dash/web/` | shipped by `install_package`'s `devloop/` copy | `skills/dev-loop/` assets |
 | `bin/devloop-dash` | `bin/` | launcher pattern of `bin/devloop-state` | `bin/devloop-state` |
 | `tests/devloop/test_dash_*.py`, `dash_fixture.py` | `tests/devloop/` | existing test home | `test_snapshot_status.py` |
 
-Expected size: about 8 new files (view about 260 lines, render 260, server 230, JS 180, CSS
-160, tests 450), edits to `scrub.py`, `runs.py`, `status.py`, `snapshot.py`, `project.py`,
-`check.py`, `SKILL.md`, `project.example.json`, `test_shipped_files.py`, `mutations.sh`. New
-public names: `build_view`, `VIEW_SCHEMA`, `render_page`, `render_fragment`, `serve`,
-`dash_status`, `lan_ip`, `main`, `runs.slot_usage`, `scrub.plain`, `project.role_label`,
-`project.pool_label`.
+Expected size: 8 new files (view about 280 lines, render 260, server 260, JS 180, CSS 160,
+tests 550); edits to `scrub.py`, `store.py`, `runs.py`, `slices.py`, `evidence.py`,
+`status.py`, `snapshot.py`, `tick.py`, `dispatch.py`, `project.py`, `check.py`, `SKILL.md`,
+`project.example.json`, `test_shipped_files.py`, `mutations.sh`. New public names:
+`build_view`, `VIEW_SCHEMA`, `render_page`, `render_fragment`, `make_server`, `main`,
+`dash_status`, `default_port`, `lan_ip`, `runs.slot_usage`, `runs.run_state`, `scrub.plain`,
+`store.cap_active`, `evidence.exit_items`, `status.counts_from`, `status.event_words`,
+`snapshot.command_outputs`, `project.role_label`, `project.pool_label`.
 
 ## Established solutions
 
 The owner's research note (Buildkite, Argo CD, GitHub Actions, Vercel, Linear, Blue Ocean,
-Conductor, OpenHands, Grafana) sets the layout, card shape, colours, refresh and filter
-rules; this plan follows it except the one-renderer change above. Conditional GET with
-`ETag`/`If-None-Match` and `304` follows RFC 9110 section 13. Pausing polls on hidden tabs
-uses the Page Visibility API. The LAN address uses the stdlib UDP `connect` trick (no packet
-is sent). Liveness of the pid file reuses `runs.proc_start` and `runs.boot_id`, the same
-check the run wrapper uses. No custom code beyond the view, renderer and route table.
+Conductor, OpenHands, Grafana) sets the layout, card shape, colours, refresh and filters.
+Conditional GET follows RFC 9110 section 13 (`ETag`, `If-None-Match`, 304). Hidden-tab
+pausing uses the Page Visibility API. One server per project uses an `fcntl.flock` held for
+the process lifetime, the pattern `tick.py` already uses for `tick.lock`. The LAN address
+uses the stdlib UDP `connect` trick (no packet sent). No custom code beyond view, renderer
+and route table.
+
+## Codex R1 findings
+
+1. Private text: free text removed from the view; `plain` adds secret and hex checks to IDs;
+   tests on all three routes (Acceptance tests).
+2. `runs/` created by a PLAN card: readers never `mkdir`; test with no `runs/` and
+   `store.locked` and `write_text` patched to raise.
+3. Dashboard runs commands: it never does; it reads `node-status.json`, which the tick writes
+   from the outputs it already collected (names, exit ok, time; no text).
+4. One damaged file hides healthy work: each ledger read isolated, counts null when their
+   ledger is unreadable; a checklist that raises reads `available: false`; tests for a bad
+   `merges.json` and a bad sibling beside a healthy GATE card.
+5. Reserved slots shown as running: `runs.run_state` splits executing, awaiting apply and
+   awaiting release; card owner and stuck use executing only; capacity uses `holds_slot`.
+6. Schema misfit: nullable card fields; `shipped` shapes split by `kind`; only `closed` row
+   closures with `at` are shipped.
+7. Pid and port scopes: one server per project by `dash.lock`; stable default port
+   `8791 + sha256(project) % 20`, stored in `dash-port.json` and printed.
+8. Agent names survive: both builder kinds read "Developer"; checklist items carry a fixed
+   code, the reviewer's role and a fixed reason; run IDs leave the view.
+9. SIGTERM in a thread and `send_error`: signals only in the CLI main thread; route tests use
+   the signal-free `make_server`; SIGTERM tested in a subprocess; `send_error` goes through
+   `_send`.
+10. Install and mutation checks: assert at the real destinations; class 8 gets a concrete
+    production mutation.
+11. Third cap reader: `store.cap_active` shared by tick, dispatch and view, tested on absent,
+    expired, future, naive and malformed files.
 
 ## Reuse inventory
 
-- `slices.load`, `slices.PHASES`, `slices.ACTIVE`, `slices.FORWARD`, `slices.OWNER_PARKS`.
-- `evidence.exit_checklist(project, key)` for the "3/5 met" block.
-- `runs.iter_runs`, `runs.holds_slot`, `runs.live_runs`, `runs.KINDS` for workers and slots.
-- `notes.questions_path`, `notes.load_questions`, `notes.read_ticklog`, `problems.json`.
-- `board.merge_records`, `board.closure_records` for recently shipped.
-- `status.counts` for merged today, this week and rows closed.
-- `scrub.scrub`, `scrub.scrub_lines`, `store.TOKEN`, `project.SLUG`.
-- `snapshot.STALE_SECS` for "stuck".
-- `install.install_package` and `install_bins`: unchanged, they already copy `devloop/**`
-  and `bin/devloop-*`.
-- Not reused: `snapshot._command_outputs` runs every command for 60 s. The dashboard runs
-  only commands flagged `"dash": true`, at most once a minute, in a background thread.
+- `slices.load`, `PHASES`, `ACTIVE`, `FORWARD`, `OWNER_PARKS`; `evidence.exit_checklist`
+  (kept, now derived from `exit_items`).
+- `runs.iter_runs`, `holds_slot`, `wrapper_alive`, `payload_alive`, `proc_start`,
+  `boot_id`, `KINDS`.
+- `notes.questions_path`, `load_questions` (keys and wait flags only), `problems.json` (keys
+  and counts only).
+- `board.merge_records`, `closure_records`; `status.counts` (rebuilt on `counts_from`);
+  `status._WORDS` (made public as `event_words` for Recent activity).
+- `snapshot.STALE_SECS`; snapshot command outputs (the tick's run, recorded as status only).
+- `install.install_package`, `install_bins`: unchanged; they copy `devloop/**` and
+  `bin/devloop-*`.
 
 ## Frozen contracts
 
-- STATUS.md section list, `snapshot` text and hash, `KINDS` names, event kinds: unchanged
-  except the role-label wording in Task 7 (STATUS "Running" lines and the Slack tick line).
-- `devloop-state check` output format `ok|FAIL: message`; the new line follows it.
-- New contract, frozen by this plan: `/api/state` JSON with `schema: 1` and the keys in
-  Fields below; routes `/`, `/fragment`, `/api/state`, `/static/dash.css`,
-  `/static/dash.js`; CLI `devloop-dash PROJECT [--port N] [--host H] [--detach|--stop]`;
-  pid file `dash.json` in the state dir.
+- `KINDS` names, event kinds, slice and run file shapes, snapshot text and hash: unchanged.
+- `exit_checklist` return shape `[(label, ok)]` and its labels: unchanged (`move` and the
+  snapshot read them; PLAYBOOK `[code]` items match them).
+- `devloop-state check` format `ok|FAIL: message`; one new line.
+- STATUS.md and the Slack tick line change wording only for role labels (Task 7, approved).
+- New, frozen here: `/api/state` JSON `schema: 1` with the Fields below; the five routes;
+  CLI `devloop-dash PROJECT [--port N] [--host H] [--detach|--stop]`; state files
+  `dash.json`, `dash.lock`, `dash-port.json`, `node-status.json`.
 
 ## Enumerations
 
 ### Exit paths
 
-- Foreground server stops on Ctrl-C or SIGTERM: the `finally` in `serve` closes the socket
-  and removes `dash.json` only when its pid is ours.
-- Bind fails (port in use, bad host): exit 3 with `port N in use`, no pid file written. The
-  pid file is written after `bind`, never before.
+- Ctrl-C or SIGTERM: the CLI main thread installs the handler; `main`'s `finally` shuts the
+  server, removes `dash.json` when its pid is ours, and releases `dash.lock` by closing it.
+- Project already served: `dash.lock` is held, so a second start prints the running URL;
+  `--detach` exits 0, a foreground start exits 3. `dash.json` is untouched.
+- Bind fails on every port in the range, or on an explicit `--port`: exit 3 with
+  `port N in use`; no `dash.json`.
 - Project missing (no `project.json` under the state root): exit 2 before any `store` call,
   because `store.state_dir` creates the directory (`devloop/store.py:38`).
-- SIGKILL or reboot: `dash.json` stays; `dash_status` reads it dead by pid, start time and
-  boot id (`devloop/runs.py:133`, `devloop/runs.py:143`), and `--detach` replaces it.
-- `--detach` child dies before writing the pid file within 5 s: exit 3, "see dash.log in
-  the state dir".
-- A request whose view build raises: 500 with fixed text "state unreadable"; the log line
-  holds the exception class name only.
-- Damaged slice file or questions page: no exit; a `needs_you` item of kind `unreadable`
-  (`slices.load` raises per file, `devloop/slices.py:247`; markers raise in
-  `devloop/notes.py:287`).
+- SIGKILL or reboot: the flock dies with the process; `dash.json` is read dead by pid, start
+  time and boot id (`devloop/runs.py:133`, `devloop/runs.py:143`) and replaced.
+- `--detach` child not live within 5 s: exit 3, "see dash.log in the state dir".
+- View build raises: 500 with fixed text "state unreadable"; the log holds the exception
+  class name only. Unsupported methods: 501 through `_send` with fixed text.
+- Damaged slice, ledger or questions page: no exit; an `unreadable` item names the file kind
+  (`slices.load` raises per file, `devloop/slices.py:247`; ledgers at `devloop/board.py:181`;
+  questions at `devloop/notes.py:287`).
 - Client: a failed poll increments a counter; two failures or 60 s without a good poll shows
-  the stale banner; polling resumes on the next success.
+  the stale banner; it clears on the next success.
 
 ### Routes
 
-One table, `server.ROUTES`, maps exact paths to handlers. `do_GET` and `do_HEAD` are the
-only methods; others get 501 from `BaseHTTPRequestHandler`.
+One table, `server.ROUTES`, maps exact paths to handlers; `do_GET` and `do_HEAD` only.
 - `GET /`: full HTML page, works without JS.
-- `GET /fragment`: the sections only, with `ETag`; `304` on `If-None-Match` match.
-- `GET /api/state`: the view JSON, same `ETag`.
-- `GET /static/dash.css`, `GET /static/dash.js`: fixed bytes read at start, never a path
-  join from the request.
-- Anything else, including `/static/../x` and query-only variants of unknown paths: 404.
-  Query strings are ignored by the server (filters are client side).
+- `GET /fragment`: sections only, with `ETag`; 304 on `If-None-Match` match.
+- `GET /api/state`: view JSON, same `ETag`.
+- `GET /static/dash.css`, `GET /static/dash.js`: bytes read once at start, never a path join.
+- Anything else, including `/static/../x`: 404. Query strings are ignored by the server.
 
 ### FK shapes
 
-References the view joins, each checked rather than trusted:
-- run `request.key` to a slice file: a run whose slice is gone is listed under workers with
-  no card link.
-- merge ledger id `slug#pr@head` to `project.repos[].slug` (`devloop/board.py:181`): a slug
-  not in config, or a non-integer PR, gets no URL.
-- slice `repo` to `project.repos[].name`: unknown repo gets no PR URL.
-- question key `hold:KEY` to a HELD slice: shown once, on the hold item.
+References the view joins, each checked:
+- run `row` and `slice` to a slice file: a run whose slice is gone shows under workers
+  without a card.
+- merge ledger id `slug#pr@head` to `project.repos[].slug` (`devloop/board.py:181`): unknown
+  slug or non-integer PR gets no URL.
+- slice `repo` to `project.repos[].name`: unknown repo gets no URL.
+- question `hold:KEY` to a HELD slice: shown once, on the hold item.
+- checklist reviewer name to `project.reviewers[name].kind`, then to its role label.
 
 ### Fields
 
-`VIEW_SCHEMA` (kind in brackets; text limits in characters):
+`VIEW_SCHEMA` (kind in brackets; `?` means nullable):
 - top: `schema`[int], `project`[id], `version`[id], `tick`, `counts`, `needs_you`, `rows`,
-  `workers`, `nodes`[text 2000, nullable], `slots`, `shipped`, `ticks`, `parked`.
-- `tick`: `last_pass_at`[at] (STATUS.md mtime; `write_status` runs on every pass outcome),
-  `last_model_at`[at], `paused`[bool], `capped`[bool].
-- `counts`: `needs_you`, `running`, `free`, `merged_today`, `merged_week`,
-  `rows_closed`[int].
-- `needs_you[]`: `kind`[id: question, hold, stuck, problem, unreadable], `key`[id],
-  `owner`[label: "Product owner (you)" or the stuck step's role], `text`[text 200],
-  `since`[at].
+  `workers`, `nodes`, `slots`, `shipped`, `activity`, `parked`.
+- `tick`: `last_pass_at`[at?] (STATUS.md mtime; `write_status` runs on every pass),
+  `last_model_at`[at?], `paused`[bool], `capped`[bool] (`store.cap_active`).
+- `counts`: `needs_you`, `executing`, `free`[int]; `merged_today`, `merged_week`,
+  `rows_closed`[int?] (null when a ledger is unreadable).
+- `needs_you[]`: `kind`[word: question, hold, stuck, problem, unreadable], `key`[id?],
+  `owner`[label], `count`[int?], `since`[at?].
 - `rows[]`: `row`[id], `oldest_at`[at], `stuck`[bool], `cards[]`.
-- card: `key`, `row`, `slice`[id], `purpose`[text 120], `pr`[int], `url`[url], `risk`[id],
-  `round`[int], `phase`[id], `phase_index`[int], `held`[bool], `since`[at], `owner`[label],
-  `stuck`[bool], `checklist{met, total[int], items[{name[text 120], ok[bool]}]}` with
-  missing items first.
-- `workers[]`: `run`[id], `kind`[id], `role`[label], `key`[id], `node`[id, request host
-  or "local"], `started_at`[at].
+- card: `key`, `row`, `slice`[id], `phase`[word], `phase_index`[int], `held`[bool],
+  `risk`[word?], `pr`[int?], `url`[url?], `round`[int], `since`[at], `owner`[label],
+  `stuck`[bool], `checklist{available[bool], met[int], total[int], items[{code[word],
+  role[label?], ok[bool], reason[word?]}]}`, missing items first.
+- `workers[]`: `role`[label], `key`[id], `node`[id: request host or "local"],
+  `state`[word: executing, awaiting-apply, awaiting-release], `started_at`[at].
+- `nodes[]`: `name`[id], `ok`[bool], `at`[at] from `node-status.json`.
 - `slots[]`: `pool`[id], `label`[label], `cap`, `used`[int].
-- `shipped[]` (last 20, newest first): `kind`[id: merge, row-close], `row`, `slice`[id],
-  `pr`[int], `url`[url], `at`[at].
-- `ticks[]` (last 10): `at`[at], `text`[text 400]. `parked[]`: cards.
+- `shipped[]` (last 20, newest first): `kind`=`merge` with `row`, `slice`[id], `pr`[int],
+  `url`[url?], `at`[at]; or `kind`=`row-close` with `row`[id], `at`[at].
+- `activity[]` (last 20 events): `at`[at], `kind`[word], `words`[word-built line from
+  `event_words`, IDs through `plain`]. `parked[]`: cards.
 
-Not in the view at all: `worktree`, `plan_path`, `branch`, `head`, `repo` paths, run dirs,
-briefs, `next_action`, `waiting_on`, `history`, `evidence` run ids.
+Not in the view: run IDs, reviewer and agent names, `worktree`, `plan_path`, `branch`,
+`head`, repo paths, `purpose`, `next_action`, `waiting_on`, question text, problem impact,
+tick-log bodies, command output, `history`, `evidence`.
 
 ### Output surfaces
 
 - `/` HTML, `/fragment` HTML, `/api/state` JSON.
-- CLI stdout: the Network URL `http://<lan-ip>:<port>/` and fixed-word errors.
-- `dash.log` in the state dir: method, path without query, status code. No query, no body.
-- `dash.json` pid file (0600, atomic `store.write_json`).
+- CLI stdout: `Dashboard: http://<lan-ip>:<port>/` and fixed-word errors.
+- `dash.log`: method, path without query, status code.
+- `dash.json` (pid, start, boot id, port, host), `dash-port.json`, `node-status.json`: 0600,
+  atomic `store.write_json`.
 - `devloop-state check` line: `ok: dash: running at http://<lan-ip>:<port>/` or
-  `ok: dash: not running`.
-- STATUS.md and the Slack tick line (role labels only, Task 7).
+  `ok: dash: not running (port N)`.
+- STATUS.md and the Slack tick line (role labels, Task 7).
 
 ## Defect classes
 
 | # | Class | Closing structure | Sentry or property test | Mutation that must fail it |
 |---|---|---|---|---|
-| 1 | value-free output | `_seal` walk over `VIEW_SCHEMA`; free text only through `scrub`, ids through `scrub.plain` | `test_api_state_has_no_absolute_paths`, `test_view_scrubs_planted_secret` | return the tree from `build_view` without `_seal` |
-| 2 | cleanup on every exit path | `serve` `finally` removes its own pid file; liveness by pid, start time and boot id | `test_sigterm_removes_pid_file`, `test_stale_pid_file_reads_dead` | delete the `finally` block in `serve` |
-| 3 | state consistency (read-only) | view checks `is_dir()` before any `mkdir`-ing helper; no lock held past one read | `test_build_view_writes_nothing` (tree listing and mtimes equal, with `runs/` and `slices/` absent) | call `runs.iter_runs` without the `is_dir` guard |
-| 4 | route completeness | `ROUTES` table; one `_send` sets CSP, nosniff, no-cache, no-referrer on every response | `test_only_known_routes_and_methods`, `test_every_route_sends_security_headers`, `test_static_traversal_404` | drop the CSP header line in `_send` |
-| 5 | referential integrity | PR URL built only from config slug plus int PR; orphan runs keep no card | `test_merge_with_unknown_slug_has_no_url`, `test_orphan_run_listed_without_card` | build the URL from the ledger slug without the config check |
-| 6 | untrusted input | `html.escape` in every render helper; damaged files become `unreadable` items; JS swaps parsed fragment nodes, never sets `innerHTML` from JSON | `test_html_escapes_planted_markup`, `test_corrupt_slice_file_is_an_item_not_500` | remove `html.escape` from `render._t` |
-| 7 | TOCTOU (check then use) | pid file written after `bind`; a second server fails bind and leaves the first pid file; atomic writes mean reads see whole files | `test_second_server_same_port_keeps_first_pid`, `test_slice_deleted_mid_read_is_skipped` | write `dash.json` before `bind` |
-| 8 | weak tests | every row's mutation added to `tests/devloop/mutations.sh` | `mutations.sh` reports each listed mutation killed | revert any one assertion in `test_dash_*.py` |
-| 9 | refactor drift | `runs.slot_usage` and `scrub.plain` extracted; STATUS and snapshot call them | existing `test_snapshot_status.py` unchanged and green, `test_slot_usage_matches_status` | make `slot_usage` skip the `tester` slot |
-| 10 | frozen contracts | `VIEW_SCHEMA` with `schema: 1`; `KINDS` names untouched, labels only via `role_label` | `test_view_keys_match_schema`, `test_kind_names_unchanged` | rename `phase_index` in `view.py` only |
+| 1 | value-free output | no free-text source in `build_view`; `_seal` walk over `VIEW_SCHEMA`; `plain` checks secrets and hex in IDs | `test_routes_leak_nothing_planted`, `test_token_in_id_is_redacted` | add `purpose` to the card dict and to `VIEW_SCHEMA` as `word` without the `WORDS` check |
+| 2 | cleanup on every exit path | `main` `finally` removes its own pid file; flock released by close; liveness by pid, start and boot id | `test_sigterm_removes_pid_file` (subprocess), `test_stale_pid_file_reads_dead` | delete the `finally` block in `main` |
+| 3 | state consistency (read-only) | readers never `mkdir`; view takes no lock | `test_build_view_writes_nothing` (PLAN slice, no `runs/`, `store.locked` and `write_text` raise) | restore `_runs_dir(project)` in `iter_runs` |
+| 4 | route completeness | `ROUTES` table; `_send` sets CSP, nosniff, no-cache, no-referrer; `send_error` calls `_send` | `test_only_known_routes_and_methods`, `test_every_response_sends_security_headers` (incl. 404 and 501) | drop the `send_error` override |
+| 5 | referential integrity | PR URL only from config slug plus int PR; orphan runs keep no card; reviewer role via config | `test_merge_with_unknown_slug_has_no_url`, `test_orphan_run_listed_without_card` | build the URL from the ledger slug without the config check |
+| 6 | untrusted input | per-file catch to `unreadable`; ledgers read one by one; checklist failure reads unavailable; `html.escape` in render | `test_bad_merge_ledger_keeps_cards`, `test_bad_sibling_beside_gate_card`, `test_html_escapes_planted_markup` | let `exit_items` errors propagate from `view._card` |
+| 7 | TOCTOU (check then use) | `dash.lock` taken before bind and pid write; pid written after bind | `test_second_start_same_project_other_port_refused`, `test_two_projects_get_distinct_ports` | write `dash.json` before taking `dash.lock` |
+| 8 | weak tests | each row's mutation in `tests/devloop/mutations.sh`, run at the gate | `mutations.sh` reports each dash mutation killed | make `run_state` return `executing` for an exited builder (caught by `test_exited_builder_is_awaiting_apply`) |
+| 9 | refactor drift | `slot_usage`, `cap_active`, `counts_from`, `event_words`, `exit_items`, `plain` extracted; old callers use them | existing `test_snapshot_status.py`, `test_tick.py`, `test_slices.py` green, `test_cap_active_cases`, `test_exit_checklist_labels_unchanged` | make `cap_active` return False for a malformed file |
+| 10 | frozen contracts | `VIEW_SCHEMA` with `schema: 1`; `KINDS` names and `exit_checklist` labels unchanged | `test_view_keys_match_schema`, `test_kind_names_unchanged` | rename `phase_index` in `view.py` only |
 
 ## Acceptance tests
 
-All in `tests/devloop/`, written red first. `dash_fixture.py` builds one state dir through
-the public APIs (`slices.new_slice`, `slices.set_fields`, runs written with
-`runs_support`, `board.record_merge`, `notes.ask`, `notes.ticklog`, `notes.problem`): two
-rows, five slices across FRAME, DEVELOP, REVIEW, HELD and PARKED, one stuck, one live builder,
-one test run, three merges, one closed row, one waiting question, one problem.
+All in `tests/devloop/`, red first. `dash_fixture.py` builds one state dir through public
+APIs: two rows; slices in FRAME (fresh, nulls), PLAN, REVIEW, GATE, HELD and PARKED; one stuck;
+one executing builder, one exited builder not applied, one exited unconfirmed test; reviewers
+named `zed-agent` and `qux-agent`; three merges, one closed row, one attempted-not-closed row;
+one waiting question; one problem; one snapshot command recorded in `node-status.json`.
 
-- `test_page_renders_from_fixture_offline`: `socket.socket.connect` and `getaddrinfo`
-  patched to raise; `render_page(build_view("p"))` contains every section heading, the
-  Needs you items, the row lanes, phase chips with `aria-current` on the current phase,
-  "3/5 met"-style counts, PR links, and the shipped list.
-- `test_api_state_has_no_absolute_paths`: fixture with absolute paths and a `ghp_` token
-  planted in `purpose`, `next_action`, `waiting_on`, a question, a problem impact and a tick
-  log entry; serve on `127.0.0.1:0`, GET `/api/state`; assert no `str(tmp_path)`, no match
-  of `(?<![\w:/])/[\w.-]+/[\w.-]+` outside `https://` URLs, no `ghp_`, no 40-char hex.
+- `test_page_renders_from_fixture_offline`: `socket.socket.connect` and `getaddrinfo` raise;
+  `render_page(build_view("p"))` has every section, empty-state texts, chips with
+  `aria-current`, "n/m met", PR links, role labels.
+- `test_routes_leak_nothing_planted` on `/`, `/fragment`, `/api/state` (server on
+  `127.0.0.1:0`): plants `password hunter2` and `https://user:pw@host/x` in `purpose`,
+  `next_action` and a tick-log entry, `/etc` and absolute paths in fields and command
+  output; none appears, nor `str(tmp_path)`, nor a 40-char hex.
+- `test_token_in_id_is_redacted`: a row id and a problem key holding `ghp_DEMOTOKEN123`
+  render `?` on all three routes.
+- `test_no_agent_names_in_output`: `zed-agent`, `qux-agent` and run IDs absent on all three
+  routes; plan review, missing code review and a repair worker render role labels.
 - `test_etag_304_on_unchanged_poll`, `test_etag_changes_after_slice_move`.
-- `test_needs_you_present_with_empty_state` ("Nothing needs you" when empty).
-- `test_stuck_flag_after_stale_secs`, `test_cards_sorted_stuck_then_oldest`.
-- `test_checklist_lists_missing_first`.
-- `test_shipped_last_20_newest_first_with_urls`.
-- `test_card_owner_is_role_label` (live builder shows "Developer"; HELD shows "Product owner
-  (you)"; idle shows "Tech lead"), `test_slots_read_per_role_pool` ("Developers 1/8").
-- `test_roles_config_overrides_and_validates` (unknown kind or empty label refused with the
-  key path `roles.<kind>`).
+- `test_needs_you_present_with_empty_state`, `test_stuck_flag_after_stale_secs`,
+  `test_cards_sorted_stuck_then_oldest`, `test_checklist_lists_missing_first`.
+- `test_fresh_frame_card_renders_nulls`, `test_shipped_merges_and_closed_rows_only`.
+- `test_exited_builder_is_awaiting_apply`, `test_unconfirmed_test_is_awaiting_release`
+  (both still count in slots; neither owns the card; the slice can show stuck).
+- `test_bad_merge_ledger_keeps_cards`, `test_bad_sibling_beside_gate_card`.
 - `test_build_view_writes_nothing`, `test_html_escapes_planted_markup`.
+- `test_server_never_runs_configured_commands` (fake snapshot command writes a marker; start,
+  poll ten times, no marker).
 - `test_only_known_routes_and_methods`, `test_static_traversal_404`,
-  `test_every_route_sends_security_headers`.
-- `test_detach_writes_pid_and_prints_network_url`, `test_stop_kills_only_own_pid` (pid file
-  pointing at an unrelated live process with a different start time is not signalled),
+  `test_every_response_sends_security_headers`.
+- `test_sigterm_removes_pid_file`, `test_second_start_same_project_other_port_refused`,
+  `test_two_projects_get_distinct_ports`, `test_default_port_stable_and_reported`,
+  `test_detach_prints_network_url`, `test_stop_kills_only_own_pid`,
   `test_check_reports_dash_running_and_not_running`.
-- `test_install_ships_dash_assets` (installed version holds `devloop/dash/web/dash.js` and
-  `bin/devloop-dash`).
-- `test_css_tokens_meet_aa`: parse `:root` and dark tokens, every text token on its
-  background has contrast at least 4.5.
-- `test_status_and_tick_line_use_role_labels`.
-- `test_no_private_strings_in_shipped_files` extended to `devloop/dash/web/*`.
+- `test_install_ships_dash_assets`: `HOME` patched; asserts
+  `~/.local/share/devloop/lib/devloop/dash/web/dash.js` and `<bin_dir>/devloop-dash`.
+- `test_cap_active_cases` (absent, expired, future, naive, malformed).
+- `test_roles_config_overrides_and_validates`, `test_card_owner_is_role_label`,
+  `test_slots_read_per_role_pool`, `test_status_and_tick_line_use_role_labels`.
+- `test_css_tokens_meet_aa`; `test_no_private_strings_in_shipped_files` covers
+  `devloop/dash/web/*`.
 - JS behaviour (5 s poll, pause while hidden, refetch on focus, details and scroll kept,
   stale banner, filters in the URL, `/` focuses search) has no pytest runner. VERIFY runs it
-  in a browser against the fixture server and records the steps and results; residual risk
-  stated in the review packet.
+  in a browser against the fixture server and records steps and results.
 
 ## Slices
 
 | Slice | Tasks | Ships | Gate |
 |---|---|---|---|
-| S1 read model and page | 1, 2, 3, 4 | role labels, `build_view`, renderer, assets, server | Codex on the S1 head; T1 = `pytest tests/devloop -k "dash or status or snapshot or project"` |
-| S2 lifecycle and labels everywhere | 5, 6, 7 | CLI, detach and stop, check line, skill, install, STATUS and Slack labels | Codex on the S2 head; T1 = `pytest tests/devloop`; `mutations.sh` |
+| S1 read model and page | 1, 2, 3, 4 | shared helpers, labels, `build_view`, renderer, assets, routes | Codex on the S1 head; T1 = `pytest tests/devloop -k "dash or status or snapshot or project or tick or slices or evidence"` |
+| S2 lifecycle and labels everywhere | 5, 6, 7 | CLI, lock, port, detach and stop, check line, skill, STATUS and Slack labels | Codex on the S2 head; T1 = `pytest tests/devloop`; `mutations.sh` |
 
 Low risk, so preparation folds into S1 and docs into S2. One PR is fine if review is short.
 
 ## Pre-mortem
 
-- **A planted path or token reaches the LAN page.** `_seal` is the single walk; the leak
-  test plants in every free-text source; undeclared keys raise.
-- **Dashboard and STATUS disagree on running or free counts.** Both read
-  `runs.slot_usage` and `status.counts`; `test_slot_usage_matches_status`.
-- **Five-second polls from two tabs load the state dir.** The server caches the view for 2 s
-  behind a lock; unchanged polls answer 304 with no body.
-- **Port taken or old server left after a reboot.** Bind fails cleanly with exit 3;
-  liveness by boot id; `--detach` is idempotent when a live server already runs.
-- **Clock skew between devbox and viewer.** The client takes skew from the `Date` header of
-  every response before computing time-ago.
-- **A damaged file blanks the page.** Per-file catch turns it into an `unreadable` item.
-- **JS regressions go unseen.** The JS stays small (swap fragment, timers, filters); the
-  browser check at VERIFY is a named step, not optional.
-- **Role labels drift between surfaces.** One function, `project.role_label`, used by view,
-  STATUS and Slack.
+- **Private text on the LAN.** No free-text source feeds the view; IDs pass `plain`; leak
+  tests plant in every source on all three routes.
+- **Dashboard and STATUS disagree.** Both read `slot_usage` and `counts_from`.
+- **Polls load the state dir.** The server caches the view for 2 s behind a lock; unchanged
+  polls answer 304.
+- **Two dashboards for one project, or two projects fight for 8791.** `dash.lock` per
+  project; hashed default port in a range of 20, stored and printed.
+- **Clock skew between devbox and viewer.** The client takes skew from each `Date` header.
+- **A damaged file blanks the page.** Per-file and per-ledger catch; checklist unavailable.
+- **Checklist labels drift from `move`.** `exit_checklist` is derived from `exit_items`;
+  `test_exit_checklist_labels_unchanged` pins today's labels.
+- **JS regressions unseen.** JS stays small; the browser check at VERIFY is required.
 
-## Task 1: Role labels and shared helpers
+## Task 1: Shared helpers and role labels
 
-**Files:** modify `devloop/project.py`, `devloop/scrub.py`, `devloop/runs.py`,
-`devloop/status.py`, `devloop/snapshot.py`, `skills/dev-loop/project.example.json`. Test:
-`tests/devloop/test_dash_labels.py`.
+**Files:** modify `devloop/scrub.py`, `store.py`, `runs.py`, `slices.py`, `evidence.py`,
+`status.py`, `snapshot.py`, `tick.py`, `dispatch.py`, `project.py`,
+`skills/dev-loop/project.example.json`. Test: `tests/devloop/test_dash_shared.py`.
 
 **Interfaces:**
-- `project.ROLE_DEFAULTS = {"planner": "Architect", "builder": "Developer",
-  "codex-builder": "Developer (Codex)", "dennis": "Senior reviewer", "codex-review":
-  "Outside reviewer", "codex-fix": "Outside reviewer", "test": "QA", "docs": "Tech writer",
-  "duty": "Duty", "tick": "Tech lead", "owner": "Product owner (you)"}`.
-- `project.POOL_DEFAULTS = {"builder": "Developers", "tester": "QA", "reviewer":
-  "Reviewers", "planner": "Architects"}`.
-- `role_label(cfg, kind) -> str`, `pool_label(cfg, slot) -> str`. Optional `roles` map in
-  `project.json`: keys must be in `ROLE_DEFAULTS`, values non-empty single-line str of at
-  most 40 characters; refused with `ConfigError("roles.<key>: ...")`.
-- `scrub.plain(value) -> str` (moved from `status._plain`). `runs.slot_usage(project) ->
-  dict[slot, int]` (moved from `status._running` and the loop at `snapshot.py:190`).
-- Optional `dash: {port: int 1024-65535, host: str}` validated here too.
+- `scrub.plain(value) -> str` (from `status._plain`, plus secret, hex and long-run checks).
+- `store.cap_active(project, now=None) -> bool`: absent False; malformed True; naive read as
+  UTC; future True; past False. `tick._cap_active` and `dispatch._pause_or_cap` call it.
+- `runs.iter_runs` and `slices.list_slices` yield nothing for a missing directory; `mkdir`
+  moves to writers. `runs.run_state(rd, req) -> "executing" | "awaiting-apply" |
+  "awaiting-release" | None`. `runs.slot_usage(project) -> dict` from `holds_slot`.
+- `evidence.exit_items(project, key, to_phase=None) -> list[Item]`, `Item(code, reviewer,
+  ok, reason, label)`; `code` and `reason` from fixed tables; `exit_checklist` returns
+  `[(i.label, i.ok)]` with today's labels.
+- `status.counts_from(merges, closures, now) -> dict`; `status.event_words(ev) -> str | None`.
+- `snapshot.command_outputs(project, cfg) -> list[(name, text, ok)]`; `tick._pass` writes
+  `node-status.json` `{name: {ok, at}}` from the outputs it collected. No text is stored.
+- `project.ROLE_DEFAULTS`: planner Architect, builder Developer, codex-builder Developer,
+  dennis Senior reviewer, codex-review Outside reviewer, codex-fix Outside reviewer, test QA,
+  docs Tech writer, duty Duty, tick Tech lead, owner "Product owner (you)".
+  `POOL_DEFAULTS`: builder Developers, tester QA, reviewer Reviewers, planner Architects.
+  `role_label(cfg, kind)`, `pool_label(cfg, slot)`. Optional `roles` map: keys in
+  `ROLE_DEFAULTS`, values single-line, 1 to 40 chars, else `ConfigError("roles.<key>: ...")`.
+  Optional `dash: {port: 1024-65535, host: str}`.
 
-- [ ] Step 1: failing tests `test_roles_config_overrides_and_validates`,
-  `test_slot_usage_matches_status`, `test_kind_names_unchanged`.
-- [ ] Step 2: run `pytest tests/devloop/test_dash_labels.py -v`, expect FAIL.
-- [ ] Step 3: implement; status and snapshot call the moved helpers with no output change.
-- [ ] Step 4: run the file plus `test_snapshot_status.py`, expect PASS.
-- [ ] Step 5: commit `refactor(devloop): share slot usage and add role labels`.
+- [ ] Step 1: failing tests `test_cap_active_cases`, `test_slot_usage_matches_status`,
+  `test_exit_checklist_labels_unchanged`, `test_exited_builder_is_awaiting_apply`,
+  `test_unconfirmed_test_is_awaiting_release`, `test_roles_config_overrides_and_validates`,
+  `test_kind_names_unchanged`, `test_token_in_id_is_redacted` (unit part).
+- [ ] Step 2: run, expect FAIL. Step 3: implement. Step 4: run plus `test_tick.py`,
+  `test_slices.py`, `test_snapshot_status.py`, `test_runs_*.py`, expect PASS.
+- [ ] Step 5: commit `refactor(devloop): share read helpers and add role labels`.
 
 ## Task 2: Read model `devloop/dash/view.py`
 
 **Files:** create `devloop/dash/__init__.py`, `devloop/dash/view.py`,
 `tests/devloop/dash_fixture.py`, `tests/devloop/test_dash_view.py`.
 
-**Interfaces:** `build_view(project, *, node_text=None) -> dict`; `VIEW_SCHEMA`;
-`ViewError`; `version_of(view) -> str` (first 16 hex of sha256 over canonical JSON without
-`version`). Sources and rules exactly as in Fields. Needs you order: questions, holds
-(HELD, owner parks, `merge_unknown`), stuck, problems, unreadable. Rows sorted by stuck,
-then oldest `last_moved_at`; cards likewise. Phase chips use `PHASES[:10]`; a HELD or PARKED
-card shows `parked_from` as current with `held: true`. Owner of the step: live run's role,
-else "Product owner (you)" for HELD and owner parks, else the tick's role.
+**Interfaces:** `build_view(project) -> dict`; `VIEW_SCHEMA`; `WORDS`; `ViewError`;
+`version_of(view) -> str` (16 hex of sha256 over canonical JSON without `version`). Slices
+read file by file through `slices.load`; each ledger in its own `try`. Needs you order:
+questions (key, wait), holds (HELD, owner parks, `merge_unknown`), stuck, problems (key,
+count), unreadable. Rows and cards sorted stuck first, then oldest `last_moved_at`. Chips use
+`PHASES[:10]`; HELD or PARKED cards show `parked_from` as current. Owner: an executing run's
+role, else "Product owner (you)" for HELD and owner parks, else the tick role.
 
-- [ ] Step 1: failing tests `test_page_renders_from_fixture_offline` (view part),
-  `test_view_scrubs_planted_secret`, `test_build_view_writes_nothing`,
-  `test_view_keys_match_schema`, `test_stuck_flag_after_stale_secs`,
-  `test_cards_sorted_stuck_then_oldest`, `test_checklist_lists_missing_first`,
-  `test_shipped_last_20_newest_first_with_urls`, `test_merge_with_unknown_slug_has_no_url`,
-  `test_orphan_run_listed_without_card`, `test_corrupt_slice_file_is_an_item_not_500`,
-  `test_slice_deleted_mid_read_is_skipped`, `test_card_owner_is_role_label`,
-  `test_slots_read_per_role_pool`.
-- [ ] Step 2: run, expect FAIL. Step 3: implement. Step 4: run, expect PASS.
+- [ ] Step 1: failing view tests from Acceptance tests (offline render view part, schema,
+  stuck, sort, checklist order, null FRAME card, shipped shapes, unknown slug, orphan run,
+  bad ledger, bad sibling, writes nothing, owner label, slots by pool, no agent names).
+- [ ] Step 2 to 4: red, implement, green.
 - [ ] Step 5: commit `feat(devloop): add dashboard read model`.
 
 ## Task 3: Renderer and assets
@@ -343,88 +387,81 @@ else "Product owner (you)" for HELD and owner parks, else the tick's role.
 **Files:** create `devloop/dash/render.py`, `devloop/dash/web/dash.css`,
 `devloop/dash/web/dash.js`, `tests/devloop/test_dash_render.py`.
 
-**Interfaces:** `render_page(view) -> str`, `render_fragment(view) -> str`. Sections top to
-bottom: header strip, Needs you, In progress (lanes and two-line cards, checklist in
-`<details>`), Workers and nodes, Capacity slots, Recently shipped, Tick log (collapsed),
-Parked and held (collapsed). Times as `<time datetime>` with server text fallback. Each
-state colours only its own chip and carries an icon and a word. Every `<details>` has a
-stable `id` so JS can keep it open. Filters: one search box plus phase, needs-you, stuck and
-hide-parked toggles, matched on `data-*` attributes, kept in the query string. CSS tokens on
-`:root`, dark under `prefers-color-scheme`. JS: poll `/fragment` every 5 s with
-`If-None-Match`, pause on `visibilitychange` hidden, refetch on focus, swap parsed sections
-keeping open `details` ids and `scrollY`, stale banner rule, `Date`-header skew,
-time-ago tick each second.
+**Interfaces:** `render_page(view) -> str`, `render_fragment(view) -> str`. Sections: header
+strip, Needs you, In progress (lanes, two-line cards, checklist in `<details>` with a stable
+`id`), Workers and nodes, Capacity ("Developers 3/8"), Recently shipped, Recent activity
+(collapsed), Parked and held (collapsed). Times as `<time datetime>` with server fallback.
+Each state colours only its chip and carries an icon and a word. Filters on `data-*`, kept
+in the query string. CSS tokens on `:root`, dark under `prefers-color-scheme`. JS polls
+`/fragment` every 5 s with `If-None-Match`, pauses when hidden, refetches on focus, swaps
+parsed sections keeping open `details` and `scrollY`, applies the stale rule and `Date`
+skew, and never assigns `innerHTML` from JSON.
 
-- [ ] Step 1: failing tests `test_html_escapes_planted_markup`, `test_css_tokens_meet_aa`,
-  page assertions of `test_page_renders_from_fixture_offline`.
+- [ ] Step 1: failing `test_html_escapes_planted_markup`, `test_css_tokens_meet_aa`, page
+  part of `test_page_renders_from_fixture_offline`.
 - [ ] Step 2 to 4: red, implement, green.
 - [ ] Step 5: commit `feat(devloop): render the dashboard page`.
 
-## Task 4: Server
+## Task 4: Routes
 
 **Files:** create `devloop/dash/server.py`, `tests/devloop/test_dash_server.py`.
 
-**Interfaces:** `ROUTES`; handler with `do_GET`, `do_HEAD`, one `_send(code, body, ctype,
-etag=None)`; `serve(project, host, port, *, ready=None)` (binds, writes `dash.json` after
-bind, installs a SIGTERM handler that raises `SystemExit`, removes its own pid file in
-`finally`); a 2 s view cache under a `threading.Lock`; a node thread that runs `"dash":
-true` snapshot commands every 60 s with a 10 s timeout and passes `scrub_lines` output as
-`node_text`. `log_message` writes method, path without query, and status only.
+**Interfaces:** `ROUTES`; handler with `do_GET`, `do_HEAD`, `_send(code, body, ctype,
+etag=None)`, `send_error` overridden to call `_send` with fixed text; `make_server(project,
+host, port) -> ThreadingHTTPServer` with no signal handling; 2 s view cache under a
+`threading.Lock`; `log_message` writes method, path without query, status.
 
-- [ ] Step 1: failing tests `test_api_state_has_no_absolute_paths`,
-  `test_etag_304_on_unchanged_poll`, `test_etag_changes_after_slice_move`,
-  `test_only_known_routes_and_methods`, `test_static_traversal_404`,
-  `test_every_route_sends_security_headers`, `test_sigterm_removes_pid_file`,
-  `test_second_server_same_port_keeps_first_pid`.
-- [ ] Step 2 to 4: red, implement, green (server on `127.0.0.1:0` in a thread).
+- [ ] Step 1: failing route, ETag, header, leak, agent-name and never-runs-commands tests,
+  with `make_server` on `127.0.0.1:0` in a thread.
+- [ ] Step 2 to 4: red, implement, green.
 - [ ] Step 5: commit `feat(devloop): serve the dashboard`.
 
 ## Task 5: CLI and lifecycle
 
-**Files:** create `bin/devloop-dash`; modify `devloop/dash/server.py` (`main`, `lan_ip`,
-`dash_status`), `devloop/check.py`; test `tests/devloop/test_dash_cli.py`.
+**Files:** create `bin/devloop-dash`; modify `devloop/dash/server.py` (`main`,
+`default_port`, `lan_ip`, `dash_status`), `devloop/check.py`; test
+`tests/devloop/test_dash_cli.py`.
 
-**Interfaces:** `devloop-dash PROJECT [--port 8791] [--host 0.0.0.0] [--detach|--stop]`.
-Defaults from `project.json` `dash`, then flags. `--detach` starts the launcher with
-`start_new_session=True`, output to `dash.log`, waits up to 5 s for a live pid file, prints
-`Dashboard: http://<lan-ip>:<port>/`; already running prints the URL and exits 0. `--stop`
-sends SIGTERM only when pid, start time and boot id match, waits 5 s, prints `stopped` or
-`not running`. `lan_ip(host)` returns `host` unless it is `0.0.0.0`, else the UDP-connect
-address, else the hostname address. `dash_status(project) -> (state, url|None)`. `check`
-adds one `ok:` line.
+**Interfaces:** `devloop-dash PROJECT [--port N] [--host H] [--detach|--stop]`. Port order:
+flag, `project.json` `dash.port`, `dash-port.json`, then `default_port(project) = 8791 +
+int(sha256(project)[:8], 16) % 20`, trying the next ports in that range of 20 when busy; the
+bound port is saved to `dash-port.json`. `main` takes `dash.lock` (non-blocking flock) before
+bind, writes `dash.json` after bind, installs SIGTERM and SIGINT handlers in the main thread,
+and cleans up in `finally`. `--detach` starts the launcher with `start_new_session=True`,
+output to `dash.log`, waits up to 5 s for a live pid, prints `Dashboard:
+http://<lan-ip>:<port>/`. `--stop` signals only on a pid, start and boot id match.
+`lan_ip(host)` returns `host` unless `0.0.0.0`, else the UDP-connect address, else the
+hostname address. `dash_status(project) -> (state, url, port)`; `check` adds one `ok:` line.
 
-- [ ] Step 1: failing tests `test_detach_writes_pid_and_prints_network_url`,
-  `test_stop_kills_only_own_pid`, `test_stale_pid_file_reads_dead`,
-  `test_check_reports_dash_running_and_not_running`, project-missing exit 2 with no new
-  directory.
+- [ ] Step 1: failing lifecycle tests from Acceptance tests (SIGTERM in a subprocess).
 - [ ] Step 2 to 4: red, implement, green.
 - [ ] Step 5: commit `feat(devloop): add devloop-dash start and stop`.
 
 ## Task 6: Skill, install, shipped-files, mutations
 
 **Files:** modify `skills/dev-loop/SKILL.md`, `tests/devloop/test_shipped_files.py`,
-`tests/devloop/mutations.sh`; test `tests/devloop/test_dash_cli.py`
-(`test_install_ships_dash_assets`).
+`tests/devloop/mutations.sh`; test `test_install_ships_dash_assets` in
+`tests/devloop/test_dash_cli.py`.
 
-- start mode: after the cron step, run `devloop-dash PROJECT --detach` and tell the user the
-  Network URL it printed. stop mode: `devloop-dash PROJECT --stop`. status mode: name the
-  dashboard URL from `devloop-state PROJECT check`.
-- `shipped()` adds `devloop/**/*.js`, `*.css`; the private-string and em-dash tests cover
-  them.
-- One `mutate` entry per defect-class mutation above.
-- [ ] Steps: red, implement, green; run `tests/devloop/mutations.sh`, every dash mutation
-  killed. Commit `feat(devloop): wire the dashboard into the skill`.
+- start mode: after the cron step, run `devloop-dash PROJECT --detach` and give the user the
+  Network URL it prints. stop mode: `devloop-dash PROJECT --stop`. status mode: the URL from
+  `devloop-state PROJECT check`.
+- `shipped()` adds `devloop/**/*.js` and `*.css`.
+- One `mutate` entry per mutation in the defect table, each with the named test.
+- [ ] Steps: red, implement, green; `tests/devloop/mutations.sh` kills every dash mutation.
+  Commit `feat(devloop): wire the dashboard into the skill`.
 
 ## Task 7: Role labels in STATUS and Slack (outside the dashboard)
 
 **Files:** modify `devloop/status.py`; test `tests/devloop/test_snapshot_status.py`.
 
 STATUS "Running" lines read per pool label ("Developers: 3"); the tick line tail reads
-"Running: Developers 3/8, QA 1/4, Reviewers 2/4, Architects 1/3." Labels come from
-`role_label` and `pool_label` only. The model-facing snapshot keeps kind names, since the
-tick runs commands by kind. `_WORDS` "started {kind}" becomes "started {role}".
+"Running: Developers 3/8, QA 1/4, Reviewers 2/4, Architects 1/3." `event_words` says
+"started Developer on ROW SLICE" instead of the kind. Labels come from `role_label` and
+`pool_label` only. The model-facing snapshot keeps kind names, since the tick runs commands
+by kind.
 
-- [ ] Step 1: failing `test_status_and_tick_line_use_role_labels`; update the existing
-  assertions that pin "builders" wording (an approved contract change, recorded here).
+- [ ] Step 1: failing `test_status_and_tick_line_use_role_labels`; update the assertions
+  that pin "builders" wording (approved contract change, recorded here).
 - [ ] Step 2 to 4: red, implement, green.
 - [ ] Step 5: commit `feat(devloop): use role labels in status and tick posts`.
