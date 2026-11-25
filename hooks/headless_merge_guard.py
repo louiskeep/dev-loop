@@ -129,7 +129,26 @@ class _Unparseable(Exception):
     pass
 
 
-_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
+_HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(['\"]?)([A-Za-z_]\w*)\2")
+
+
+def _is_comment_start(text: str, i: int) -> bool:
+    """A `#` starts a comment only at the start of a word."""
+    return text[i] == "#" and (i == 0 or text[i - 1] in " \t\n;&|()")
+
+
+def _uncomment(line: str) -> str:
+    """The line without a trailing shell comment; quotes hide a `#`."""
+    quote = None
+    for i, c in enumerate(line):
+        if quote:
+            if c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif _is_comment_start(line, i):
+            return line[:i]
+    return line
 
 
 def _feeds_shell(line: str) -> bool:
@@ -149,10 +168,11 @@ def _feeds_shell(line: str) -> bool:
 def _strip_heredocs(command: str):
     """Drop here-document bodies, which are input text and not commands. Returns the
     remaining text and the bodies that feed a shell, which are scripts."""
-    out, scripts, end, body, shell = [], [], None, [], False
+    out, scripts, end, body, shell, tabs = [], [], None, [], False, False
     for line in command.split("\n"):
         if end is not None:
-            if line.strip() == end:
+            # The delimiter is exact; only `<<-` lets leading tabs (not spaces) pass.
+            if (line.lstrip("\t") if tabs else line) == end:
                 end = None
                 out.append(line)
                 if shell:
@@ -161,9 +181,10 @@ def _strip_heredocs(command: str):
                 body.append(line)
             continue
         out.append(line)
-        m = _HEREDOC.search(line)
+        m = _HEREDOC.search(_uncomment(line))
         if m:
-            end, body, shell = m.group(2), [], _feeds_shell(line)
+            end, body, shell = m.group(3), [], _feeds_shell(line)
+            tabs = m.group(1) == "-"
     if end is not None and shell:  # never terminated: the body runs to end of input
         scripts.append("\n".join(body))
     return "\n".join(out), scripts
@@ -187,6 +208,9 @@ def _segments(command: str) -> list[str]:
         elif c == "\\" and i + 1 < len(command):
             cur.append(command[i : i + 2])
             i += 1
+        elif _is_comment_start(command, i):
+            end = command.find("\n", i)  # the newline itself still separates commands
+            i = len(command) if end < 0 else end - 1
         elif command.startswith("$(", i):
             out.append("".join(cur))
             cur = []
@@ -305,6 +329,31 @@ def _git_push_args(args: list[str]):
     return None
 
 
+_GH_VALUE_OPTS = {"-R", "--repo", "--hostname"}
+
+
+def _gh_positionals(args: list[str]) -> list[str]:
+    """The group and operation words of a gh call, found by position: options (and the
+    value of -R/--repo/--hostname) are skipped, and so is anything after the operation."""
+    words, i = [], 0
+    while i < len(args) and len(words) < 2:
+        a = args[i]
+        if a in _GH_VALUE_OPTS:
+            i += 1
+        elif not a.startswith("-"):
+            words.append(a.lower())
+        i += 1
+    return words
+
+
+def _gh_blocked(args: list[str], text: str) -> bool:
+    """`gh pr merge`, or an `api` call that merges. A body that merely says so is allowed."""
+    words = _gh_positionals(args)
+    if words[:2] == ["pr", "merge"]:
+        return True
+    return words[:1] == ["api"] and bool(_ANYWHERE.search(text))
+
+
 def _blocked_commands(command, cwd, *, worker, check_base_pushes) -> bool:
     here = cwd
     for exe, args in _commands(command):
@@ -314,6 +363,9 @@ def _blocked_commands(command, cwd, *, worker, check_base_pushes) -> bool:
             here = path if path.is_absolute() or not here else Path(here) / path
         elif exe == "devloop-merge" and worker:
             return True
+        elif exe == "gh":
+            if _gh_blocked(args, text):
+                return True
         elif exe in _NETWORK_TOOLS and (
             _ANYWHERE.search(text) or _GH_PR_MERGE.search(text)
         ):
