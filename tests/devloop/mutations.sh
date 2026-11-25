@@ -81,12 +81,14 @@ mutate "merge guard forgets gh pr merge" hooks/headless_merge_guard.py \
   'if _ANYWHERE.search(text) or _GH_PR_MERGE.search(text):' 'if _ANYWHERE.search(text):' \
   $T/test_merge.py::test_merge_guard_denies_in_headless_mode
 mutate "merge guard blocks every git push" hooks/headless_merge_guard.py \
-  '    return any(_push_targets_base(m.group(1), cwd) for m in _GIT_PUSH.finditer(text))' \
-  '    return bool(_GIT_PUSH.search(text))' \
+  '    return any(
+        _push_targets_base(' '    return bool(_GIT_PUSH.search(text)) or any(
+        _push_targets_base(' \
   $T/test_merge.py::test_merge_guard_allows_reads_feature_pushes_and_devloop_merge
 mutate "merge guard blocks any text with merge" hooks/headless_merge_guard.py \
-  '    return any(_push_targets_base(m.group(1), cwd) for m in _GIT_PUSH.finditer(text))' \
-  '    return "merge" in text or any(_push_targets_base(m.group(1), cwd) for m in _GIT_PUSH.finditer(text))' \
+  '    return any(
+        _push_targets_base(' '    return "merge" in text or any(
+        _push_targets_base(' \
   $T/test_merge.py::test_merge_guard_allows_reads_feature_pushes_and_devloop_merge
 mutate "request ledger always matches" devloop/store.py \
   'return want is not None and want == request_digest(run_dir(project, run_id))' 'return True' \
@@ -154,6 +156,9 @@ mutate "merge move re-checks the gate" devloop/slices.py \
             else [name' '            if False
             else [name' \
   $T/test_merge.py::test_plan_edited_after_the_merge_still_finishes_the_move
+mutate "no-verdict resumes forever" devloop/runs.py \
+  'reason == "no-verdict" and count < 3' 'reason == "no-verdict"' \
+  $T/test_runs.py::test_third_no_verdict_after_a_resume_is_owner_gated
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

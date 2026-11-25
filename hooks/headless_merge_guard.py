@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 REASON = "devloop: merge only through devloop-merge, which checks the gate first"
 
@@ -52,6 +53,19 @@ def _current_branch(cwd):
     return r.stdout.strip() or None
 
 
+_DASH_C = re.compile(r"\s-C\s+(\S+)")
+_LEAD_CD = re.compile(r"^\s*cd\s+(\S+)\s*(?:&&|;)")
+
+
+def _repo_dir(command: str, prefix: str, cwd):
+    """Where the push runs: `git -C X`, else a leading `cd X &&`, else the hook's cwd."""
+    m = _DASH_C.search(prefix) or _LEAD_CD.match(command)
+    if not m:
+        return cwd
+    path = Path(m.group(1).strip("'\""))
+    return path if path.is_absolute() or not cwd else Path(cwd) / path
+
+
 def _push_targets_base(args: str, cwd) -> bool:
     base = _base_branches()
     tokens = [t.strip("'\"") for t in args.split()]
@@ -64,7 +78,10 @@ def _push_targets_base(args: str, cwd) -> bool:
         return branch in base
     for spec in positional[1:]:
         dst = spec.lstrip("+").split(":", 1)[-1] if ":" in spec else spec.lstrip("+")
-        if dst.removeprefix("refs/heads/") in base:
+        dst = dst.removeprefix("refs/heads/")
+        if dst in ("head", "@"):  # the current branch, whatever it is named
+            dst = (_current_branch(cwd) if cwd else None) or ""
+        if dst in base:
             return True
     return False
 
@@ -75,7 +92,12 @@ def blocked(command: str, cwd=None) -> bool:
     text = command.lower()
     if _ANYWHERE.search(text) or _GH_PR_MERGE.search(text):
         return True
-    return any(_push_targets_base(m.group(1), cwd) for m in _GIT_PUSH.finditer(text))
+    return any(
+        _push_targets_base(
+            m.group(1), _repo_dir(command, command[m.start() : m.start(1)], cwd)
+        )
+        for m in _GIT_PUSH.finditer(text)
+    )
 
 
 def main() -> int:

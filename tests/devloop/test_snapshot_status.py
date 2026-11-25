@@ -212,3 +212,10 @@ def test_rejected_runs_are_not_listed_as_unapplied(proj, mk_slice, mk_run):
     assert "r-rej" in snapshot.build_snapshot(proj)[0]
     (d / "rejected").write_text("ledger")
     assert "applied r-rej" not in snapshot.build_snapshot(proj)[0]
+
+
+def test_selfcheck_hint_carries_the_full_head(proj, mk_slice):
+    head = "ab12cd34ef" * 4
+    mk_slice(proj, phase="SELF_CHECK", risk="R1", head=head)
+    assert "selfcheck " in snapshot.build_snapshot(proj)[0]
+    assert f"--head {head}" in snapshot.build_snapshot(proj)[0]

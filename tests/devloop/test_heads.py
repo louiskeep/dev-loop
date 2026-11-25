@@ -72,3 +72,13 @@ def test_import_resolves_the_head(proj, repo, monkeypatch):
         phase="DEVELOP",
     )
     assert s["head"] == sha
+
+
+def test_selfcheck_and_docs_accept_a_short_head(proj, mk_slice, repo):
+    path, sha = repo
+    k = mk_slice(proj, phase="SELF_CHECK", risk="R1", head=sha)
+    slices.selfcheck(proj, k, "GO", head=sha[:8])
+    assert slices.load(proj, k)["evidence"][sha]["selfcheck"]["head"] == sha
+    k2 = mk_slice(proj, phase="DOCUMENT", risk="R1", head=sha)
+    slices.docs(proj, k2, "GO", head=sha[:8])
+    assert slices.load(proj, k2)["evidence"][sha]["docs"]["head"] == sha

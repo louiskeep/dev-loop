@@ -559,3 +559,23 @@ def test_merge_reset_is_interactive_and_clears_the_flags(proj, gate, monkeypatch
     slices.merge_reset(proj, k)
     s = slices.load(proj, k)
     assert s["merge_unknown"] is False and s["merge_attempt"] is None
+
+
+def test_push_of_head_or_at_is_the_current_branch(tmp_path):
+    main = _repo_on(tmp_path / "a", "main")
+    feat = _repo_on(tmp_path / "b", "feat/x")
+    assert headless_merge_guard.blocked("git push origin HEAD", main) is True
+    assert headless_merge_guard.blocked("git push origin HEAD:main", feat) is True
+    assert headless_merge_guard.blocked("git push origin @", main) is True
+    assert headless_merge_guard.blocked("git push origin HEAD", feat) is False
+
+
+def test_push_reads_the_branch_from_cd_or_dash_c(tmp_path):
+    main = _repo_on(tmp_path / "a", "main")
+    feat = _repo_on(tmp_path / "b", "feat/x")
+    assert headless_merge_guard.blocked(f"cd {main} && git push", feat) is True
+    assert headless_merge_guard.blocked(f"git -C {main} push", feat) is True
+    assert headless_merge_guard.blocked(f"cd {feat} && git push", main) is False
+    assert (
+        headless_merge_guard.blocked(f"git -C {feat} push origin HEAD", main) is False
+    )

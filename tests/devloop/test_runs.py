@@ -933,3 +933,23 @@ def test_remove_tree_skips_a_symlinked_tree(proj, ready, brief, tmp_path):
     (rd / "tree").symlink_to(outside)
     runs.remove_tree(proj, r, {})
     assert (outside / "keep.txt").exists()
+
+
+def test_third_no_verdict_after_a_resume_is_owner_gated(proj, ready, brief):
+    key, _, _ = ready("REVIEW", risk="R1")
+
+    def no_verdict():
+        r = go(proj, brief, "codex-review", key, reviewer="codex")
+        finish(proj, r, code=0, reason="no-verdict", result=res("FAILED"))
+        runs.apply_run(proj, r)
+
+    no_verdict()
+    no_verdict()
+    s = slices.load(proj, key)
+    assert s["park_reason"] == "no-verdict" and s["phase"] == "PARKED"
+    slices.move(proj, key, "REVIEW", "tick resume")  # allowed without the owner
+    no_verdict()
+    s = slices.load(proj, key)
+    assert (s["phase"], s["park_reason"]) == ("PARKED", "failed-twice")
+    with pytest.raises(slices.TransitionError, match="owner"):
+        slices.move(proj, key, "REVIEW", "tick resume")

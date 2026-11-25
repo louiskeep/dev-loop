@@ -91,7 +91,7 @@ def next_command(project, s, checklist) -> str:
         "FRAME": f"devloop-state {project} slice set {key} --risk ... --rulebook ...",
         "PLAN": f"devloop-dispatch {project} planner|dennis|codex-review {key} --brief ...",
         "DEVELOP": f"devloop-dispatch {project} builder {key} --brief ...",
-        "SELF_CHECK": f"read the diff, then devloop-state {project} selfcheck {key} GO --head <head>",
+        "SELF_CHECK": f"read the diff, then devloop-state {project} selfcheck {key} GO --head {s['head'] or '<head>'}",
         "VERIFY": f"devloop-dispatch {project} test {key} --level t1 --brief ...",
         "REVIEW": f"devloop-dispatch {project} dennis|codex-review {key} --brief ...",
         "REMEDIATE": f"devloop-dispatch {project} builder {key} --brief ...",

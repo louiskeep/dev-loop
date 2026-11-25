@@ -1141,8 +1141,10 @@ def _apply(project, run_id) -> str:
 
 def _maybe_park(project, key, fkey, reason=""):
     s = slices.load(project, key)
-    if s["failures"].get(fkey, 0) >= 2 and s["phase"] in slices.ACTIVE:
-        # no-verdict parks under its own reason so it never reads as a double failure
-        why = "no-verdict" if reason == "no-verdict" else "failed-twice"
+    count = s["failures"].get(fkey, 0)
+    if count >= 2 and s["phase"] in slices.ACTIVE:
+        # The first no-verdict park lets the tick resume once; the count survives the
+        # resume, so a third no-verdict is a real failure and needs the owner.
+        why = "no-verdict" if reason == "no-verdict" and count < 3 else "failed-twice"
         slices.move(project, key, "PARKED", why)
         notes.notify(project, f"Parked {key}: {why}.")

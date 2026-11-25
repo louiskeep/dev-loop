@@ -732,6 +732,12 @@ def record_tick_evidence(
     """The tick's own record: no run dir, validated as its own type."""
     if kind not in TICK_KINDS or verdict not in ("GO", "NO-GO"):
         raise SliceError("bad tick evidence")
+    head = resolve_head(
+        project,
+        head,
+        worktree=load(project, key)["worktree"],
+        repo=load(project, key)["repo"],
+    )
     with _edit(project, key) as s:
         if head != s["head"]:
             raise SliceError("head does not match the slice head")
