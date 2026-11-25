@@ -1,0 +1,266 @@
+"""The tick's snapshot: everything the model needs to decide, in one capped page.
+
+It is read-only. The hash covers state that should wake the model, not clocks, so an
+unchanged loop skips the model call.
+"""
+
+import hashlib
+import json
+import re
+import subprocess
+from pathlib import Path
+
+from . import notes, runs, slices, store
+from . import project as projmod
+from .scrub import scrub
+
+CAP = 60000
+STALE_SECS = 2 * 3600
+DEFAULT_CMD_CHARS = 4000
+NODE_LINES = 60
+DIGITS = re.compile(r"\d+")
+
+
+def _age(iso) -> float:
+    import datetime
+
+    try:
+        then = datetime.datetime.fromisoformat(iso)
+    except ValueError:
+        return 0.0
+    return (datetime.datetime.now(datetime.timezone.utc) - then).total_seconds()
+
+
+def _run_summary(rd, req):
+    res = runs.parse_result(rd, req["kind"])
+    return {
+        "id": rd.name,
+        "kind": req["kind"],
+        "key": req.get("key"),
+        "status": res.status,
+        "verdict": res.verdict or "",
+        "reason": res.reason,
+    }
+
+
+def _finished_unapplied(project):
+    return [
+        _run_summary(rd, req)
+        for rd, req in runs.iter_runs(project)
+        if (rd / "exit").is_file() and not (rd / "applied").is_file()
+    ]
+
+
+def _running_keys(project):
+    return {r["key"] for _, r in runs.live_runs(project)}
+
+
+def next_command(project, s, checklist) -> str:
+    """The command the tick is expected to run for this slice, from its checklist."""
+    key, p = s["key"], s["phase"]
+    missing = [name for name, ok in checklist if not ok]
+    if p in ("DONE", "PARKED", "HELD"):
+        return "none (owner decision needed)" if p != "DONE" else "none"
+    forward = slices.FORWARD.get(p)
+    if forward and checklist and not missing:
+        return f"devloop-state {project} slice move {key} {forward} --reason ..."
+    hints = {
+        "FRAME": f"devloop-state {project} slice set {key} --risk ... --rulebook ...",
+        "PLAN": f"devloop-dispatch {project} planner|dennis|codex-review {key} --brief ...",
+        "DEVELOP": f"devloop-dispatch {project} builder {key} --brief ...",
+        "SELF_CHECK": f"read the diff, then devloop-state {project} selfcheck {key} GO --head <head>",
+        "VERIFY": f"devloop-dispatch {project} test {key} --level t1 --brief ...",
+        "REVIEW": f"devloop-dispatch {project} dennis|codex-review {key} --brief ...",
+        "REMEDIATE": f"devloop-dispatch {project} builder {key} --brief ...",
+        "GATE": f"devloop-merge {project} {key}",
+        "DOCUMENT": f"devloop-dispatch {project} docs {key} --brief ...",
+    }
+    return hints.get(p, "none")
+
+
+def _slice_block(project, s, running):
+    try:
+        checklist = slices.exit_checklist(project, s["key"])
+    except slices.SliceError:
+        checklist = []
+    lines = [
+        f"- {s['key']}: {s['phase']}, risk {s['risk']}, head {(s['head'] or '-')[:8]}, "
+        f"PR {s['pr'] or '-'}, round {s['round']}, "
+        f"{'running' if s['key'] in running else 'idle'}, "
+        f"last moved {int(_age(s['last_moved_at']) // 60)} min ago",
+        f"  next action: {scrub(s['next_action'] or '-')}",
+        f"  next command: {next_command(project, s, checklist)}",
+    ]
+    for name, ok in checklist:
+        lines.append(f"  [{'x' if ok else ' '}] {scrub(name, 200)}")
+    return lines
+
+
+def _command_outputs(project, cfg):
+    out = []
+    for spec in cfg.get("snapshot_cmds") or []:
+        text = ""
+        try:
+            r = subprocess.run(
+                spec["argv"],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=60,
+                check=False,
+            )
+            text = (r.stdout or "") + (r.stderr or "")
+        except (OSError, subprocess.SubprocessError):
+            text = "(command did not run)"
+        limit = spec.get("max_chars", DEFAULT_CMD_CHARS)
+        out.append((spec.get("name") or spec["argv"][0], text[:limit]))
+    return out
+
+
+def _questions(project):
+    path = notes._questions_path(project)
+    if not path.is_file():
+        return []
+    _, qs, _, _ = notes._load_questions(path)
+    return [q for q in qs.values() if q["wait"] and not q["answer"]]
+
+
+def _node_summary(cfg):
+    directory = (cfg.get("nodes") or {}).get("directory")
+    if not directory:
+        return ""
+    try:
+        text = Path(directory).read_text(encoding="utf-8")
+    except OSError:
+        return "(node directory not readable)"
+    return "\n".join(text.splitlines()[:NODE_LINES])
+
+
+def build_snapshot(project) -> tuple:
+    cfg = projmod.load_project(project)
+    running = _running_keys(project)
+    all_slices = slices.list_slices(project)
+    active = [s for s in all_slices if s["phase"] in slices.ACTIVE]
+    stale = [
+        s
+        for s in active
+        if s["key"] not in running and _age(s["last_moved_at"]) > STALE_SECS
+    ]
+    finished = _finished_unapplied(project)
+    failed = [r for r in finished if r["status"] == "FAILED"]
+    qs = _questions(project)
+    sd = store.state_dir(project)
+    problems = [
+        e
+        for e in store.read_json(sd / "problems.json").get("problems", {}).values()
+        if e.get("open")
+    ]
+    ticks = notes._read_ticklog(sd / "tick-log.md")[-5:]
+    areas = sorted({s["row"] for s in active})
+    outputs = _command_outputs(project, cfg)
+
+    used = {}
+    for _, req in runs.live_runs(project):
+        slot = runs.KINDS[req["kind"]].slot
+        if slot:
+            used[slot] = used.get(slot, 0) + 1
+    free = {k: cfg["capacity"][k] - used.get(k, 0) for k in cfg["capacity"]}
+    mem_gb = runs.mem_available_kb() / 1024 / 1024
+
+    sections = []
+    sections.append(
+        ["## Stale and failed"]
+        + (
+            [f"- stale: {s['key']} in {s['phase']}" for s in stale]
+            + [
+                f"- failed run: {r['id']} ({r['kind']}, {r['reason'] or 'no reason'})"
+                for r in failed
+            ]
+            or ["- none"]
+        )
+    )
+    sections.append(
+        ["## Finished runs not yet applied"]
+        + (
+            [
+                f"- {r['id']}: {r['kind']} on {r['key']}, {r['status']}"
+                f"{', ' + r['verdict'] if r['verdict'] else ''}"
+                f"  -> devloop-state {project} applied {r['id']}"
+                for r in finished
+            ]
+            or ["- none"]
+        )
+    )
+    inflight = ["## In flight"]
+    for s in active:
+        inflight += _slice_block(project, s, running)
+    sections.append(inflight if len(inflight) > 1 else inflight + ["- none"])
+    sections.append(
+        [
+            "## Free slots and memory",
+            "- " + ", ".join(f"{k} {v}" for k, v in sorted(free.items())),
+            f"- memory available: {mem_gb:.1f} GB (floor {cfg.get('min_free_gb', 2.5)} GB)",
+        ]
+    )
+    sections.append(
+        ["## Open questions and R3 waits"]
+        + (
+            [
+                f"- {q['key']}: {scrub(q['question'], 200)} (recommended: {q['recommended']})"
+                for q in qs
+            ]
+            + [f"- held: {s['key']}" for s in all_slices if s["phase"] == "HELD"]
+            or ["- none"]
+        )
+    )
+    sections.append(
+        ["## Open known problems"]
+        + (
+            [
+                f"- {e['key']} (x{e['count']}): {scrub(e['impact'], 200)}"
+                for e in problems
+            ]
+            or ["- none"]
+        )
+    )
+    sections.append(
+        ["## Last tick-log entries"]
+        + ([f"- {at}: {scrub(body, 400)}" for at, body in ticks] or ["- none"])
+    )
+    lessons = []
+    for area in areas:
+        for e in notes.lessons_for(project, area):
+            lessons.append(
+                f"- {area}/{e['key']}: wrong: {scrub(e['wrong'], 200)} Instead: {scrub(e['instead'], 200)}"
+            )
+    sections.append(["## Lessons for work in flight"] + (lessons or ["- none"]))
+    node = _node_summary(cfg)
+    if node:
+        sections.append(["## Nodes (summary)", node])
+
+    head = "\n".join("\n".join(s) for s in sections)
+    # Command outputs go last so the cap trims the last-listed first.
+    keep = list(outputs)
+    while True:
+        tail = "".join(f"\n\n## {name}\n{text}" for name, text in keep)
+        md = head + tail
+        if len(md) <= CAP or not keep:
+            break
+        keep.pop()
+    md = md[:CAP]
+
+    stable = {
+        "slices": [
+            [s["key"], s["phase"], s["head"], s["round"], s["run"] is not None]
+            for s in all_slices
+        ],
+        "runs": sorted(
+            (rd.name, (rd / "exit").is_file(), (rd / "applied").is_file())
+            for rd, _ in runs.iter_runs(project)
+        ),
+        "questions": sorted(q["key"] for q in qs),
+        "problems": sorted((e["key"], e["count"]) for e in problems),
+        "outputs": [(n, DIGITS.sub("", t)) for n, t in outputs],
+    }
+    digest = hashlib.sha256(json.dumps(stable, sort_keys=True).encode()).hexdigest()
+    return md, digest
