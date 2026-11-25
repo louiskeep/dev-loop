@@ -87,7 +87,9 @@ def _predecessor(project, s, cfg, purpose, name):
             e
             for bucket in s["evidence"].values()
             for k, e in bucket.items()
-            if k == f"plan:{pname}" and e.get("plan_path") == s["plan_path"]
+            if k == f"plan:{pname}"
+            and e.get("plan_path") == s["plan_path"]
+            and e.get("plan_lineage", 0) == s["plan_lineage"]
         ),
         key=lambda e: e["at"],
     )

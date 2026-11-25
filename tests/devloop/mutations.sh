@@ -224,6 +224,9 @@ mutate "plan exit ignores an unapplied review" devloop/evidence.py \
         and req.get("kind") in runs.REVIEW_KINDS' '        if False
         and req.get("kind") in runs.REVIEW_KINDS' \
   $T/test_runs_apply.py::test_plan_exit_refuses_while_a_plan_review_is_unapplied
+mutate "redesign keeps old plan reviews" devloop/slices.py \
+  '                s["plan_lineage"] += 1' '                pass' \
+  $T/test_runs_rounds.py::test_redesign_needs_fresh_plan_reviews_even_after_an_in_place_rewrite
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

@@ -114,7 +114,9 @@ def _plan_items(project, s, cfg):
             (sha, e)
             for sha, bucket in s["evidence"].items()
             for kind, e in bucket.items()
-            if kind == f"plan:{name}" and e.get("plan_path") == s["plan_path"]
+            if kind == f"plan:{name}"
+            and e.get("plan_path") == s["plan_path"]
+            and e.get("plan_lineage", 0) == s["plan_lineage"]
         ]
         mine.sort(key=lambda pair: pair[1]["at"])
         sat = None
@@ -137,7 +139,11 @@ def _plan_items(project, s, cfg):
             sat = pick[1]["run"] if problem is None else None
         else:
             e = (s["evidence"].get(cur) or {}).get(f"plan:{name}") if cur else None
-            if not e or e["verdict"] != "GO":
+            if (
+                not e
+                or e["verdict"] != "GO"
+                or e.get("plan_lineage", 0) != s["plan_lineage"]
+            ):
                 items.append((f"{label} GO on the current plan", False))
                 prev_run = None
                 continue

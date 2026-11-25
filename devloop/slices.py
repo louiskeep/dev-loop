@@ -195,6 +195,7 @@ _FIELDS = {
     "purpose": _ostr,
     "round": _nat,
     "plan_rounds": _plan_rounds,
+    "plan_lineage": _nat,
     "evidence": _evidence,
     "full_suite_required": _bool,
     "run": _ostr,
@@ -297,6 +298,7 @@ def _blank(row, slice_id, repo, risk) -> dict:
         "purpose": None,
         "round": 0,
         "plan_rounds": {},
+        "plan_lineage": 0,
         "evidence": {},
         "full_suite_required": False,
         "run": None,
@@ -621,6 +623,7 @@ def _put_evidence(s, kind, verdict, run_id, *, sha, extra=None, seq=None):
         if not s["plan_path"]:
             raise SliceError("plan evidence needs a plan_path")
         entry["plan_path"] = s["plan_path"]
+        entry["plan_lineage"] = s["plan_lineage"]
         name = kind.split(":", 1)[1]
         rounds = s["plan_rounds"].setdefault(s["plan_path"], {})
         rounds[name] = rounds.get(name, 0) + 1
@@ -751,6 +754,14 @@ def _move(project, key, to, reason, via_merge=False, ident=None):
                 to, reason = "PLAN", "redesign"
                 s["round"], s["plan_rounds"] = 0, {}
                 s["plan_frozen"], s["approved_plan_sha"] = False, None
+                # Reviews of the old plan, even of the same bytes or path, stop counting:
+                # the new lineage earns every plan review again, Dennis first.
+                s["plan_lineage"] += 1
+                for sha, bucket in list(s["evidence"].items()):
+                    for kind in [k for k in bucket if k.startswith("plan:")]:
+                        del bucket[kind]
+                    if not bucket:
+                        del s["evidence"][sha]
         if to in ("PARKED", "HELD"):
             s["parked_from"], s["park_reason"] = parked_from, reason
             if to == "HELD" or reason in OWNER_PARKS:

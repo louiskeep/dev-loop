@@ -131,3 +131,57 @@ def test_snapshot_next_command_follows_the_ladder(proj, mk_slice):
     assert (
         f"devloop-dispatch {proj} codex-builder {k}" in snapshot.build_snapshot(proj)[0]
     )
+
+
+def test_redesign_needs_fresh_plan_reviews_even_after_an_in_place_rewrite(
+    proj, ready, brief
+):
+    key, wt, _ = ready("PLAN", risk="R2")
+    for name in ("dennis", "codex"):
+        r = go(
+            proj,
+            brief,
+            "dennis" if name == "dennis" else "codex-review",
+            key,
+            reviewer=name,
+        )
+        finish(proj, r, result=res("DONE", "GO"))
+        runs.apply_run(proj, r)
+    s = slices.load(proj, key)
+    assert s["plan_lineage"] == 0 and any(
+        k.startswith("plan:") for b in s["evidence"].values() for k in b
+    )
+    s.update(phase="REVIEW", round=6)
+    slices._save(proj, s)
+    s = slices.move(proj, key, "REMEDIATE", "review findings")
+    assert (s["phase"], s["plan_lineage"]) == ("PLAN", 1)
+    assert not any(k.startswith("plan:") for b in s["evidence"].values() for k in b)
+    plan = slices.plan_file(s)
+    plan.write_text("Rules consulted: rewritten in place\n")
+    # Codex cannot start before a fresh Dennis review of the new lineage.
+    with pytest.raises(runs.Refused, match="dennis has not finished"):
+        go(proj, brief, "codex-review", key, reviewer="codex")
+    d = go(proj, brief, "dennis", key, reviewer="dennis")
+    finish(proj, d, result=res("DONE", "GO"))
+    runs.apply_run(proj, d)
+    go(proj, brief, "codex-review", key, reviewer="codex")
+
+
+def test_unchanged_bytes_after_redesign_do_not_return_to_develop(proj, ready, brief):
+    key, _, _ = ready("PLAN", risk="R2")
+    for name in ("dennis", "codex"):
+        r = go(
+            proj,
+            brief,
+            "dennis" if name == "dennis" else "codex-review",
+            key,
+            reviewer=name,
+        )
+        finish(proj, r, result=res("DONE", "GO"))
+        runs.apply_run(proj, r)
+    s = slices.load(proj, key)
+    s.update(phase="REVIEW", round=6)
+    slices._save(proj, s)
+    slices.move(proj, key, "REMEDIATE", "review findings")
+    with pytest.raises(slices.TransitionError, match="plan review"):
+        slices.move(proj, key, "DEVELOP", "again")
