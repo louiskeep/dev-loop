@@ -1,0 +1,369 @@
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from devloop import merge, slices, store
+
+HEAD = "a" * 40
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from hooks import headless_merge_guard  # noqa: E402
+
+
+@pytest.fixture
+def gate(proj, mk_slice, give, tmp_path, cfg_edit, fakebin, monkeypatch):
+    board = tmp_path / "board"
+    board.write_text('#!/bin/sh\necho "$@" >> "$BOARD_LOG"\n')
+    board.chmod(0o755)
+    monkeypatch.setenv("BOARD_LOG", str(tmp_path / "board.log"))
+    monkeypatch.setenv("FAKE_GH_LOG", str(tmp_path / "gh.log"))
+    monkeypatch.setenv("FAKE_GH_JSON", str(tmp_path / "gh.json"))
+    monkeypatch.setenv("FAKE_NOTIFY_LOG", str(tmp_path / "notify.log"))
+    gh = {
+        "statusCheckRollup": [{"name": "ci", "conclusion": "SUCCESS"}],
+        "files": [{"path": "CHANGELOG.md"}],
+        "on_merge": {"state": "MERGED"},
+    }
+    (tmp_path / "gh.json").write_text(json.dumps(gh))
+
+    def edit(c):
+        c["board"] = {
+            "cmd": [str(board)],
+            "phase_map": {p: p.lower() for p in slices.PHASES},
+        }
+        c["notify"] = {"cmd": [str(fakebin / "notify")]}
+        c["merge"] = {
+            "allowed": True,
+            "repos": {"main": {"required_checks": ["ci"]}},
+        }
+
+    cfg_edit(edit)
+    plan = tmp_path / "plan.md"
+    plan.write_text("Rules consulted: x\n")
+    sha = __import__("hashlib").sha256(plan.read_bytes()).hexdigest()
+
+    ids = iter(range(1, 100))
+
+    def make(risk="R1", **fields):
+        k = mk_slice(
+            proj,
+            phase="GATE",
+            risk=risk,
+            head=HEAD,
+            pr=7,
+            plan_path=str(plan),
+            approved_plan_sha=sha,
+            **fields,
+        )
+        slices.record_tick_evidence(proj, k, "selfcheck", "GO", head=HEAD)
+        n = next(ids)
+        give(proj, k, "t1", f"t1-g{n}")
+        give(proj, k, "code:codex", f"c-g{n}")
+        return k
+
+    def set_gh(**kw):
+        d = json.loads((tmp_path / "gh.json").read_text())
+        d.update(kw)
+        (tmp_path / "gh.json").write_text(json.dumps(d))
+
+    make.set_gh = set_gh
+    make.gh_calls = lambda: (
+        [json.loads(x) for x in (tmp_path / "gh.log").read_text().splitlines()]
+        if (tmp_path / "gh.log").exists()
+        else []
+    )
+    make.board = lambda: (
+        (tmp_path / "board.log").read_text()
+        if (tmp_path / "board.log").exists()
+        else ""
+    )
+    return make
+
+
+def test_merge_refuses_head_mismatch(proj, gate):
+    k = gate()
+    gate.set_gh(headRefOid="b" * 40)
+    r = merge.merge(proj, k)
+    assert r.outcome == "refused" and "reviewed head" in r.reason
+    assert not [c for c in gate.gh_calls() if c[:2] == ["pr", "merge"]]
+
+
+def test_merge_refuses_missing_full_suite(proj, gate):
+    k = gate(full_suite_required=True)
+    r = merge.merge(proj, k)
+    assert r.outcome == "refused" and "full suite" in r.reason
+
+
+def test_merge_success_moves_to_document(proj, gate):
+    k = gate()
+    r = merge.merge(proj, k)
+    assert r.outcome == "merged"
+    assert slices.load(proj, k)["phase"] == "DOCUMENT"
+    merges = [c for c in gate.gh_calls() if c[:2] == ["pr", "merge"]]
+    assert merges[0][-3:] == ["--squash", "--match-head-commit", HEAD]
+    row = k.split("--")[0]
+    assert f"merged {row} S1 7 {row} S1" in gate.board()
+    assert slices.load(proj, k)["merge_attempt"] is None
+
+
+def test_merge_unknown_state_no_retry(proj, gate):
+    k = gate()
+    gate.set_gh(on_merge={"fail_view": True})
+    assert merge.merge(proj, k).outcome == "unknown"
+    s = slices.load(proj, k)
+    assert s["phase"] == "GATE" and s["merge_unknown"] is True
+    assert merge.merge(proj, k).outcome == "unknown"
+    merges = [c for c in gate.gh_calls() if c[:2] == ["pr", "merge"]]
+    assert len(merges) == 1
+
+
+def test_merge_open_after_error_clears_flag(proj, gate):
+    k = gate()
+    s = slices.load(proj, k)
+    s["merge_unknown"] = True
+    slices._save(proj, s)
+    r = merge.merge(proj, k)
+    assert r.outcome == "refused" and slices.load(proj, k)["merge_unknown"] is False
+    assert not [c for c in gate.gh_calls() if c[:2] == ["pr", "merge"]]
+
+
+def test_merge_crash_after_success_finishes_once(proj, gate, monkeypatch):
+    k = gate()
+    real = merge._finish
+    calls = []
+
+    def boom(*a):
+        calls.append(1)
+        raise RuntimeError("crash")
+
+    monkeypatch.setattr(merge, "_finish", boom)
+    with pytest.raises(RuntimeError):
+        merge.merge(proj, k)
+    s = slices.load(proj, k)
+    assert s["phase"] == "GATE" and s["merge_attempt"]["head"] == HEAD
+    monkeypatch.setattr(merge, "_finish", real)
+    assert merge.merge(proj, k).outcome == "merged"
+    assert merge.merge(proj, k).outcome == "refused"  # now in DOCUMENT
+    assert len([c for c in gate.gh_calls() if c[:2] == ["pr", "merge"]]) == 1
+    assert gate.board().count("merged ") == 1
+
+
+def test_merge_failed_call_with_open_pr_refuses_and_scrubs(proj, gate, monkeypatch):
+    k = gate()
+    gate.set_gh(on_merge={})
+    monkeypatch.setenv("FAKE_GH_MERGE_EXIT", "1")
+    r = merge.merge(proj, k)
+    assert r.outcome == "refused"
+    assert slices.load(proj, k)["merge_unknown"] is False
+    assert slices.load(proj, k)["merge_attempt"] is None
+
+
+@pytest.mark.parametrize(
+    "rollup",
+    [
+        [{"name": "ci", "conclusion": "FAILURE"}],
+        [
+            {"name": "ci", "conclusion": "SUCCESS"},
+            {"name": "lint", "status": "IN_PROGRESS"},
+        ],
+        [
+            {"name": "ci", "conclusion": "SUCCESS"},
+            {"name": "x", "conclusion": "FAILURE"},
+        ],
+        [{"name": "ci", "conclusion": "SKIPPED"}],
+    ],
+)
+def test_merge_refuses_red_or_pending_check(proj, gate, rollup):
+    k = gate()
+    gate.set_gh(statusCheckRollup=rollup)
+    assert merge.merge(proj, k).outcome == "refused"
+
+
+def test_merge_refuses_missing_required_check(proj, gate):
+    k = gate()
+    gate.set_gh(statusCheckRollup=[])
+    r = merge.merge(proj, k)
+    assert r.outcome == "refused" and "required check ci" in r.reason
+
+
+def test_merge_refuses_evidence_without_run_dir(proj, gate):
+    import shutil
+
+    k = gate()
+    shutil.rmtree(store.run_dir(proj, "c-g1"))
+    r = merge.merge(proj, k)
+    assert r.outcome == "refused" and "code review codex" in r.reason
+
+
+def test_merge_refuses_wrong_base(proj, gate):
+    k = gate()
+    gate.set_gh(baseRefName="feature-parent")
+    assert "does not target main" in merge.merge(proj, k).reason
+
+
+def test_merge_refuses_unknown_merge_state(proj, gate, cfg_edit):
+    cfg_edit(lambda c: c["merge"].update(require_up_to_date=True))
+    k = gate()
+    gate.set_gh(mergeStateStatus="UNKNOWN")
+    assert merge.merge(proj, k).outcome == "refused"
+    gate.set_gh(mergeStateStatus="CLEAN")
+    assert merge.merge(proj, k).outcome == "merged"
+
+
+def test_merge_changelog_glob_per_repo(proj, gate, cfg_edit):
+    def edit(c):
+        c["repos"].append({"name": "eng", "path": c["repos"][0]["path"]})
+        c["merge"]["repos"]["main"]["changelog_glob"] = "CHANGELOG.md"
+        c["merge"]["repos"]["eng"] = {
+            "required_checks": ["ci"],
+            "changelog_glob": "changelog.d/*",
+        }
+
+    cfg_edit(edit)
+    eng = gate(repo="eng")
+    assert "changelog" in merge.merge(proj, eng).reason  # eng wants changelog.d/*
+    main = gate()
+    assert merge.merge(proj, main).outcome == "merged"  # main wants CHANGELOG.md
+
+
+def test_merge_changelog_glob_missing_refuses(proj, gate, cfg_edit):
+    cfg_edit(
+        lambda c: c["merge"]["repos"]["main"].update(changelog_glob="changelog.d/*")
+    )
+    assert "changelog" in merge.merge(proj, gate()).reason
+
+
+def test_merge_refuses_gate_dispatch_before_codex_go(proj, gate, cfg_edit):
+    def edit(c):
+        c["merge"]["repos"]["main"].update(
+            dispatch_workflow="gate", gate_status="gate-run"
+        )
+
+    cfg_edit(edit)
+    k = gate()
+    roll = [
+        {"name": "ci", "conclusion": "SUCCESS"},
+        {
+            "name": "gate-run",
+            "conclusion": "SUCCESS",
+            "targetUrl": "https://x/actions/runs/99",
+        },
+    ]
+    run = {
+        "workflowName": "gate",
+        "event": "workflow_dispatch",
+        "headSha": HEAD,
+        "conclusion": "SUCCESS",
+        "jobs": [{"conclusion": "SUCCESS"}],
+        "createdAt": "2000-01-01T00:00:00Z",
+    }
+    gate.set_gh(statusCheckRollup=roll, run=run)
+    assert "gate workflow" in merge.merge(proj, k).reason
+    gate.set_gh(run={**run, "createdAt": "2999-01-01T00:00:00Z", "event": "push"})
+    assert merge.merge(proj, k).outcome == "refused"
+    gate.set_gh(run={**run, "createdAt": "2999-01-01T00:00:00Z"})
+    assert merge.merge(proj, k).outcome == "merged"
+
+
+def _origin(repo, tmp_path):
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
+
+    def g(*a, cwd=repo):
+        subprocess.run(["git", *a], cwd=cwd, check=True, capture_output=True, env=env)
+
+    bare = tmp_path / "origin.git"
+    g("init", "-q", "--bare", str(bare), cwd=tmp_path)
+    g("init", "-q", "-b", "main")
+    (repo / "f").write_text("x")
+    g("add", "-A")
+    g("commit", "-qm", "c")
+    g("remote", "add", "origin", str(bare))
+    g("push", "-q", "origin", "main")
+
+
+@pytest.mark.parametrize("code,outcome", [(0, "merged"), (1, "refused")])
+def test_merge_runs_verify_cmd(proj, gate, cfg_edit, tmp_path, code, outcome):
+    _origin(tmp_path / "repo", tmp_path)
+    cfg_edit(
+        lambda c: c["merge"]["repos"]["main"].update(
+            verify_cmd=["sh", "-c", f"test -f f && exit {code}"]
+        )
+    )
+    r = merge.merge(proj, gate())
+    assert r.outcome == outcome, r.reason
+
+
+def test_merge_with_public_selfcheck_succeeds(proj, gate):
+    k = gate()
+    s = slices.load(proj, k)
+    s["phase"] = "SELF_CHECK"
+    s["evidence"][HEAD].pop("selfcheck", None)
+    slices._save(proj, s)
+    slices.selfcheck(proj, k, "GO", head=HEAD)
+    s = slices.load(proj, k)
+    s["phase"] = "GATE"
+    slices._save(proj, s)
+    assert merge.merge(proj, k).outcome == "merged"
+
+
+def test_merge_not_allowed_refuses(proj, gate, cfg_edit):
+    cfg_edit(lambda c: c["merge"].update(allowed=False))
+    assert "not allowed" in merge.merge(proj, gate()).reason
+
+
+def test_notify_says_merging_in_fixed_words(proj, gate, tmp_path):
+    k = gate()
+    merge.merge(proj, k)
+    text = (tmp_path / "notify.log").read_text()
+    assert "Merging" in text and "PR 7" in text
+
+
+@pytest.mark.parametrize(
+    "command,denied",
+    [
+        ("gh pr merge 5 --squash", True),
+        ("gh -R o/r pr merge 5", True),
+        ("env gh pr merge 5", True),
+        ("cd x && gh pr merge 5", True),
+        ("gh pr view 5", False),
+        ("git status", False),
+    ],
+)
+def test_merge_guard_denies_gh_merge_when_headless(command, denied):
+    assert headless_merge_guard.blocked(command) is denied
+
+
+def run_guard(command, headless):
+    env = {**os.environ}
+    env.pop("DEVLOOP_HEADLESS", None)
+    if headless:
+        env["DEVLOOP_HEADLESS"] = "1"
+    return subprocess.run(
+        [sys.executable, str(ROOT / "hooks" / "headless_merge_guard.py")],
+        input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}),
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
+def test_merge_guard_only_acts_in_headless_sessions():
+    assert run_guard("gh pr merge 5", True).returncode == 2
+    assert run_guard("gh pr merge 5", False).returncode == 0
+    assert run_guard("gh pr view 5", True).returncode == 0
+
+
+def test_merge_guard_is_registered():
+    hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text())
+    cmds = [h["command"] for g in hooks["hooks"]["PreToolUse"] for h in g["hooks"]]
+    assert any("headless_merge_guard" in c for c in cmds)

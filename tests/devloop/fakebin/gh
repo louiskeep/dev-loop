@@ -28,6 +28,8 @@ if args[:2] == ["pr", "merge"]:
 if args[:2] == ["run", "view"] or args[:1] == ["api"]:
     print(json.dumps(doc.get("run", {})))
     sys.exit(0)
+if doc.get("fail_view"):
+    sys.exit(1)
 if int(os.environ.get("FAKE_GH_VIEW_EXIT", "0")) and not doc.get("view_ok"):
     sys.exit(int(os.environ["FAKE_GH_VIEW_EXIT"]))
 out = {
@@ -38,5 +40,5 @@ out = {
     "mergeStateStatus": "CLEAN",
     "files": [],
 }
-out.update({k: v for k, v in doc.items() if k not in ("on_merge", "run", "view_ok")})
+out.update({k: v for k, v in doc.items() if k not in ("on_merge", "run", "view_ok", "fail_view")})
 print(json.dumps(out))

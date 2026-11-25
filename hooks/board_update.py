@@ -27,7 +27,14 @@ except ImportError:  # run standalone: python hooks/board_update.py
 
 # Commands that plausibly moved the loop or HEAD; other Bash calls are skipped
 # so the board is not re-rendered on every unrelated command.
-_TRIGGERS = ("loop_state.py", "git commit", "git merge", "git push", "git checkout", "git reset")
+_TRIGGERS = (
+    "loop_state.py",
+    "git commit",
+    "git merge",
+    "git push",
+    "git checkout",
+    "git reset",
+)
 
 
 def _board_path(project_root: Path, cfg: dict) -> Path:
@@ -56,7 +63,11 @@ def _update(cwd: Path) -> None:
     lb.refresh(board, cfg, project_root)
     lb.save_board(path, board)
     out = cfg.get("html_out")
-    html_path = (Path(out) if out and Path(out).is_absolute() else project_root / (out or "board.html"))
+    html_path = (
+        Path(out)
+        if out and Path(out).is_absolute()
+        else project_root / (out or "board.html")
+    )
     html_path.write_text(lb.render_html(board))
 
 

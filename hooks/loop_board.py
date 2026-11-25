@@ -118,7 +118,9 @@ def _is_authored(card: dict) -> bool:
 # --------------------------------------------------------------------------
 
 # "## 2026-10-26 (engine): cross-column PR1, ..." -> date, scope, title.
-_SHIPPED_RE = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2})(?:\s+\(([^)]*)\))?\s*:\s*(.+?)\s*$")
+_SHIPPED_RE = re.compile(
+    r"^##\s+(\d{4}-\d{2}-\d{2})(?:\s+\(([^)]*)\))?\s*:\s*(.+?)\s*$"
+)
 # "- **A-4 File-access authorization.**" -> id, title. IDs look like A-4, B-12, D2.
 _TASK_RE = re.compile(r"^\s*-\s+\*\*([A-Z]+-?\d+[a-z]?)\s+(.+?)\.?\*\*")
 
@@ -156,7 +158,13 @@ def parse_shipped(text: str, count: int) -> list[dict]:
         seen[base] = seen.get(base, 0) + 1
         card_id = base if seen[base] == 1 else f"{base}-{seen[base]}"  # keep ids unique
         cards.append(
-            {"id": card_id, "title": title, "date": date, "scope": scope, "source": "shipped-log"}
+            {
+                "id": card_id,
+                "title": title,
+                "date": date,
+                "scope": scope,
+                "source": "shipped-log",
+            }
         )
         if len(cards) >= count:
             break
@@ -197,7 +205,12 @@ def parse_current_assignment(text: str, section: str) -> list[dict]:
         idm = re.match(r"([A-Z]+-?\d+[a-z]?(?:/[A-Z]+-?\d+[a-z]?)*)", label)
         card_id = (idm.group(1) if idm else label[:24]).strip()
         title = label[idm.end() :].strip(" .-") if idm else label
-        card = {"id": card_id, "title": title or label, "lane": lane, "source": "roadmap"}
+        card = {
+            "id": card_id,
+            "title": title or label,
+            "lane": lane,
+            "source": "roadmap",
+        }
         if len(cells) >= 5:
             card["note"] = re.sub(r"\s+", " ", cells[4])
         cards.append(card)
@@ -280,15 +293,23 @@ def refresh(board: dict, cfg: dict, project_root: Path) -> dict:
     # derived rebuild must not re-add a card the conductor deliberately moved to
     # another column (e.g. `move A-1 recently_completed` while the roadmap still
     # lists A-1), or the card would show in two columns at once.
-    authored_anywhere = {c["id"] for col in cols.values() for c in col if _is_authored(c)}
+    authored_anywhere = {
+        c["id"] for col in cols.values() for c in col if _is_authored(c)
+    }
 
     # recently_completed: re-derive from the shipped log; keep authored + pinned.
     if shipped and shipped.exists():
-        keep = [c for c in cols["recently_completed"] if _is_authored(c) or c.get("pinned")]
+        keep = [
+            c for c in cols["recently_completed"] if _is_authored(c) or c.get("pinned")
+        ]
         keep_ids = {c["id"] for c in keep}
-        fresh = parse_shipped(shipped.read_text(), cfg.get("recently_completed_count", 8))
+        fresh = parse_shipped(
+            shipped.read_text(), cfg.get("recently_completed_count", 8)
+        )
         cols["recently_completed"] = keep + [
-            c for c in fresh if c["id"] not in keep_ids and c["id"] not in authored_anywhere
+            c
+            for c in fresh
+            if c["id"] not in keep_ids and c["id"] not in authored_anywhere
         ]
 
     # current: rebuild from the roadmap, dropping derived cards no longer in it.
@@ -304,7 +325,9 @@ def refresh(board: dict, cfg: dict, project_root: Path) -> dict:
                     if cand.get(k) is not None:
                         existing.setdefault(k, cand[k])
                 continue
-            if cand["id"] in authored_anywhere:  # moved to another column; do not duplicate
+            if (
+                cand["id"] in authored_anywhere
+            ):  # moved to another column; do not duplicate
                 continue
             _carry_pin(cand, prev_current.get(cand["id"]))
             rebuilt.append(cand)
@@ -444,12 +467,12 @@ def _card_html(card: dict) -> str:
 
 
 def _column_html(title: str, cards: list[dict], extra: str = "") -> str:
-    body = "".join(_card_html(c) for c in cards) if cards else (
-        '<div class="empty">nothing here</div>' if not extra else ""
+    body = (
+        "".join(_card_html(c) for c in cards)
+        if cards
+        else ('<div class="empty">nothing here</div>' if not extra else "")
     )
-    head = (
-        f'<h2>{html.escape(title)}<span class="count">{len(cards)}</span></h2>'
-    )
+    head = f'<h2>{html.escape(title)}<span class="count">{len(cards)}</span></h2>'
     return f'<div class="column">{head}{body}{extra}</div>'
 
 
@@ -535,7 +558,9 @@ def _serve(path: Path, cfg: dict, project_root: Path, host: str, port: int) -> i
             self.wfile.write(payload)
 
     srv = HTTPServer((host, port), Handler)
-    print(f"serving board from {path} at http://{host}:{srv.server_port}/ (Ctrl-C to stop)")
+    print(
+        f"serving board from {path} at http://{host}:{srv.server_port}/ (Ctrl-C to stop)"
+    )
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -549,13 +574,21 @@ def main(argv: list[str] | None = None) -> int:
     import sys
 
     p = argparse.ArgumentParser(prog="loop_board")
-    p.add_argument("--repo", default=None, help="project root for config + default paths")
-    p.add_argument("--board", default=None, help=f"board file (default: <repo>/{BOARD_FILENAME})")
+    p.add_argument(
+        "--repo", default=None, help="project root for config + default paths"
+    )
+    p.add_argument(
+        "--board", default=None, help=f"board file (default: <repo>/{BOARD_FILENAME})"
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pi = sub.add_parser("init")
     pi.add_argument("--title", default="Program Board")
-    pi.add_argument("--force", action="store_true", help="overwrite an existing board (explicit reset)")
+    pi.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing board (explicit reset)",
+    )
     sub.add_parser("refresh")
     pr = sub.add_parser("render")
     pr.add_argument("--out", default="board.html")
@@ -578,7 +611,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "init":
         if board_path.exists() and not args.force:
-            print(f"board already exists at {board_path} (use --force to reset)", file=sys.stderr)
+            print(
+                f"board already exists at {board_path} (use --force to reset)",
+                file=sys.stderr,
+            )
             return 1
         save_board(board_path, empty_board(args.title))
         print(f"wrote {board_path}")
@@ -586,10 +622,18 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.cmd == "serve":
-            return _serve(board_path, load_config(project_root), project_root, args.host, args.port)
+            return _serve(
+                board_path,
+                load_config(project_root),
+                project_root,
+                args.host,
+                args.port,
+            )
         board = load_board(board_path)
         if args.cmd == "refresh":
-            save_board(board_path, refresh(board, load_config(project_root), project_root))
+            save_board(
+                board_path, refresh(board, load_config(project_root), project_root)
+            )
             print(f"refreshed {board_path}")
         elif args.cmd == "render":
             Path(args.out).write_text(render_html(board))
@@ -610,15 +654,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{args.card_id} -> {args.phase}")
         elif args.cmd == "move":
             src = next(
-                (c for col in _COLUMNS for c in board["columns"][col] if c["id"] == args.card_id),
+                (
+                    c
+                    for col in _COLUMNS
+                    for c in board["columns"][col]
+                    if c["id"] == args.card_id
+                ),
                 None,
             )
             if src is None:
                 print(f"no card {args.card_id!r}", file=sys.stderr)
                 return 1
             for col in _COLUMNS:
-                board["columns"][col] = [c for c in board["columns"][col] if c["id"] != args.card_id]
-            src["source"] = "authored"  # a deliberate move makes the card authored, so refresh keeps it
+                board["columns"][col] = [
+                    c for c in board["columns"][col] if c["id"] != args.card_id
+                ]
+            src["source"] = (
+                "authored"  # a deliberate move makes the card authored, so refresh keeps it
+            )
             board["columns"][args.column].append(src)
             save_board(board_path, board)
             print(f"{args.card_id} -> {args.column}")

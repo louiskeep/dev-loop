@@ -139,7 +139,13 @@ def test_refresh_preserves_authored_content(tmp_path):
     board = lb.empty_board()
     board["questions"].append({"id": "q1", "title": "keep me"})
     board["columns"]["current"].append(
-        {"id": "A-4/B-5", "title": "file-access", "note": "authored note", "phase": "VERIFY", "phase_locked": True}
+        {
+            "id": "A-4/B-5",
+            "title": "file-access",
+            "note": "authored note",
+            "phase": "VERIFY",
+            "phase_locked": True,
+        }
     )
     board["columns"]["next_up"].append({"id": "CUSTOM-1", "title": "hand-added"})
     lb.refresh(board, cfg, tmp_path)
@@ -156,8 +162,14 @@ def test_refresh_overlays_loop_state_phase_when_unlocked(tmp_path):
     sub = tmp_path / "proj"
     sub.mkdir()
     (sub / ".loop-state.json").write_text(
-        json.dumps({"slice": "A-2 100M scale run", "risk": "R2",
-                    "gates": {"dennis": {"status": "green"}}, "remediation": {"open_findings": 0}})
+        json.dumps(
+            {
+                "slice": "A-2 100M scale run",
+                "risk": "R2",
+                "gates": {"dennis": {"status": "green"}},
+                "remediation": {"open_findings": 0},
+            }
+        )
     )
     cfg["repos"] = [str(sub)]
     board = lb.refresh(lb.empty_board(), cfg, tmp_path)
@@ -171,7 +183,9 @@ def test_refresh_overlays_loop_state_phase_when_unlocked(tmp_path):
 
 def test_render_html_has_columns_and_escapes(tmp_path):
     board = lb.empty_board("My Board")
-    board["columns"]["current"].append({"id": "x", "title": "a <script> b", "phase": "REVIEW"})
+    board["columns"]["current"].append(
+        {"id": "x", "title": "a <script> b", "phase": "REVIEW"}
+    )
     board["questions"].append({"id": "q1", "title": "why?"})
     out = lb.render_html(board)
     assert "Recently completed" in out and "Current" in out and "Next up" in out
@@ -196,7 +210,9 @@ def test_validate_rejects_bad_phase():
 def _cli(tmp, *args):
     return subprocess.run(
         [sys.executable, BOARD, "--repo", str(tmp), *args],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
 
@@ -240,7 +256,9 @@ def test_cli_move_between_columns(tmp_path):
 
 def test_hook_is_noop_without_board(tmp_path):
     # no .loop-board.json -> hook does nothing, no file created
-    assert board_update.main_from_event({"cwd": str(tmp_path), "tool_name": "Stop"}) == 0
+    assert (
+        board_update.main_from_event({"cwd": str(tmp_path), "tool_name": "Stop"}) == 0
+    )
     assert not (tmp_path / "board.html").exists()
 
 
@@ -304,7 +322,9 @@ def test_refresh_preserves_authored_cards(tmp_path):
     road.write_text(_roadmap_with("A-1 alpha", "B-1 beta"))
     board = lb.empty_board()
     lb.refresh(board, _prune_cfg(), tmp_path)
-    board["columns"]["current"].append({"id": "MANUAL-1", "title": "hand added"})  # authored
+    board["columns"]["current"].append(
+        {"id": "MANUAL-1", "title": "hand added"}
+    )  # authored
     a1 = next(c for c in board["columns"]["current"] if c["id"] == "A-1")
     a1["phase"], a1["phase_locked"] = "VERIFY", True  # pinned phase on a derived card
     board["questions"].append({"id": "q1", "title": "keep me"})
@@ -313,7 +333,9 @@ def test_refresh_preserves_authored_cards(tmp_path):
     lb.refresh(board, _prune_cfg(), tmp_path)
     cur = {c["id"]: c for c in board["columns"]["current"]}
     assert "MANUAL-1" in cur  # authored hand-added survives the re-derive
-    assert cur["A-1"]["phase"] == "VERIFY" and cur["A-1"]["phase_locked"] is True  # pin survives
+    assert (
+        cur["A-1"]["phase"] == "VERIFY" and cur["A-1"]["phase_locked"] is True
+    )  # pin survives
     assert "B-1" not in cur  # derived card dropped from the source is pruned
     assert "C-1" in cur  # newly-derived card added
     assert board["questions"] == [{"id": "q1", "title": "keep me"}]  # not over-pruned
@@ -370,8 +392,11 @@ def test_hook_refreshes_and_renders_on_trigger(tmp_path):
     (tmp_path / ".loop-config.json").write_text(json.dumps({"board": cfg}))
     _cli(tmp_path, "init")
     rc = board_update.main_from_event(
-        {"cwd": str(tmp_path), "tool_name": "Bash",
-         "tool_input": {"command": "python loop_state.py record-gate dennis"}}
+        {
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": "python loop_state.py record-gate dennis"},
+        }
     )
     assert rc == 0
     assert (tmp_path / "board.html").exists()

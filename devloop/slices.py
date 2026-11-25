@@ -555,6 +555,27 @@ def set_fields(project: str, key: str, **fields) -> dict:
 plan_file = _plan_file
 
 
+def set_merge_state(project: str, key: str, *, attempt=..., unknown=None) -> None:
+    """Merge bookkeeping: the attempt record and the unknown-state flag (merge command only)."""
+    with _edit(project, key) as s:
+        if attempt is not ...:
+            s["merge_attempt"] = attempt
+        if unknown is not None:
+            s["merge_unknown"] = bool(unknown)
+
+
+def board_merged(project: str, key: str, pr) -> None:
+    """Tell the board a PR merged. The words are fixed; no model text reaches the board."""
+    s = load(project, key)
+    cfg = projmod.load_project(project)
+    _board_call(
+        project,
+        cfg,
+        ["merged", s["row"], s["slice"], str(pr), f"{s['row']} {s['slice']}"],
+        key=key,
+    )
+
+
 def set_run(project: str, key: str, run_id) -> None:
     """Dispatch records the slice's current run; apply clears it."""
     with _edit(project, key) as s:
