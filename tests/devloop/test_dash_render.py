@@ -44,7 +44,7 @@ def test_empty_project_shows_empty_states(proj):
         "No slices in progress.",
         "No workers running.",
         "Nothing has shipped yet.",
-        "No recent activity.",
+        "No activity yet.",
         "Nothing is parked or held.",
         "Memory is not readable here.",
     ):
@@ -69,6 +69,20 @@ def test_html_escapes_planted_markup(proj, dash):
     v["rows"][0]["cards"][0]["url"] = 'https://x/"><script>1</script>'
     v["live"][0]["role"] = bad
     v["needs_you"][0]["key"] = bad
+    v["needs_you"][0]["question"] = bad
+    v["feed"].append(
+        {
+            "at": v["tick"]["last_pass_at"],
+            "tag": "SHELL",
+            "target": bad,
+            "role": bad,
+            "key": bad,
+            "words": bad,
+        }
+    )
+    v["live"][0]["key"] = bad
+    v["live"][0]["model"] = bad
+    v["drawers"][0]["calls"].append({"at": None, "tag": "READ", "target": bad})
     v["activity"].append(
         {"at": v["tick"]["last_pass_at"], "kind": "merged", "words": bad}
     )
@@ -173,3 +187,103 @@ def test_every_page_state_is_a_chip_not_a_row_colour():
 def test_counts_read_naturally(proj, dash):
     page = render.render_page(built(proj))
     assert "seen 1 time)" in page and "1 times" not in page
+
+
+# --- mission control sections ------------------------------------------------------
+
+
+def test_page_sections_in_order(proj, dash):
+    frag = render.render_fragment(built(proj))
+    found = re.findall(r'<section id="(\w+)" data-section', frag)
+    assert found == list(render.SECTION_IDS)
+
+
+def test_sparkline_is_inline_svg():
+    from devloop.dash import render_live
+
+    svg = render_live.sparkline([0, 1, 4, 2] + [0] * 11)
+    assert svg.startswith("<svg") and svg.count("<polyline") == 1
+    assert 'viewBox="0 0 60 16"' in svg and 'role="img"' in svg
+    assert "Tool calls per minute, last 15 minutes" in svg
+    assert "<img" not in svg and "href" not in svg
+    assert render_live.sparkline([0] * 15).count("<polyline") == 1
+
+
+def test_worker_card_has_role_icon_not_avatar(proj, dash):
+    page = render.render_page(built(proj))
+    assert 'class="wcard"' in page and 'data-icon="build"' in page
+    assert "<img" not in page and "avatar" not in page.lower()
+    from devloop.dash import render_live
+
+    assert set(render_live.ICON_PATHS) == set(live_icons())
+
+
+def live_icons():
+    from devloop.dash import live
+
+    return live.ICON_IDS
+
+
+def test_worker_card_wording_for_missing_and_outside(proj, dash):
+    from dash_fixture import put_run
+
+    put_run(proj, "codex-fix.a", kind="codex-fix", key=dash["plan"], alive=True)
+    page = render.render_page(built(proj))
+    assert "starting" in page and "activity not shown for this worker" in page
+
+
+def _big_view(proj):
+    v = copy.deepcopy(built(proj))
+    card = v["live"][0]
+    v["live"] = [dict(card, ref=f"w{i:06d}", key=f"ROW1--S{i}") for i in range(16)]
+    f = v["feed"][0]
+    v["feed"] = [dict(f, tag="SHELL", target="git", words=None) for _ in range(40)]
+    cards = [c for row in v["rows"] for c in row["cards"]]
+    run = {
+        "ref": "w000001",
+        "role": "Developer",
+        "harness": "claude",
+        "started_at": v["tick"]["last_pass_at"],
+        "status": "DONE",
+        "verdict": "GO",
+    }
+    call = {"at": v["tick"]["last_pass_at"], "tag": "EDIT", "target": "view.py"}
+    v["drawers"] = [
+        {
+            "key": cards[i % len(cards)]["key"],
+            "runs": [run] * 8,
+            "calls": [call] * 30,
+            "files": [{"name": f"file{j}.py", "edits": j + 1} for j in range(20)],
+        }
+        for i in range(30)
+    ]
+    return v
+
+
+def test_fragment_size_budget(proj, dash):
+    frag = render.render_fragment(_big_view(proj))
+    assert len(frag.encode()) < 200_000
+
+
+def test_no_em_dash_in_assets_and_copy(proj, dash):
+    dash_dir = WEB.parent
+    texts = [p.read_text() for p in WEB.iterdir() if p.is_file()]
+    texts += [p.read_text() for p in dash_dir.glob("*.py")]
+    texts.append(render.render_page(built(proj)))
+    for text in texts:
+        assert "\u2014" not in text
+
+
+def test_drawer_sources_capped_and_fallback_hooks(proj, dash):
+    from dash_fixture import put_slice
+
+    for i in range(31):
+        put_slice(proj, "ROWX", f"S{i:02d}", "DEVELOP")
+    page = render.render_page(built(proj))
+    assert len(re.findall(r'<div id="ds-', page)) == 30
+    keys = re.findall(r'data-card-key="([^"]+)"', page)
+    sources = set(re.findall(r'<div id="ds-([^"]+)"', page))
+    assert (
+        len(set(keys) - sources) >= 1
+    )  # a card with no source falls back to its checklist
+    assert 'id="drawer"' in page and 'id="drawer-body"' in page

@@ -324,3 +324,33 @@ def test_reader_is_not_slowed_by_a_huge_file(proj, dash, monkeypatch):
     start = time.monotonic()
     build(proj, cache=cache)
     assert time.monotonic() - start < 5
+
+
+def test_damaged_result_header_does_not_break_the_view(proj, dash):
+    rd = store.run_dir(proj, "builder.live")
+    result = store.out_dir(rd) / "result.md"
+    key = dash["review"]
+    for body in (
+        b"\xff\xfe\x00status: DONE\n---\n",
+        b"status: DONE\nverdict: GO\n" + b"x: y\n" * 400_000,  # far past the prefix
+    ):
+        result.write_bytes(body)
+        drawer = next(d for d in build(proj)["drawers"] if d["key"] == key)
+        assert len(drawer["runs"]) == 1
+    # A directory where the file belongs reads as unknown, not as an error.
+    result.unlink()
+    result.mkdir()
+    drawer = next(d for d in build(proj)["drawers"] if d["key"] == key)
+    assert drawer["runs"][0]["status"] is None
+
+
+def test_result_header_read_is_bounded(proj, dash, monkeypatch):
+    seen = []
+    real = store.read_header
+    monkeypatch.setattr(
+        store,
+        "read_header",
+        lambda p, limit=None: (seen.append(limit), real(p, limit))[1],
+    )
+    build(proj)
+    assert seen and all(n == live.HEADER_BYTES for n in seen)

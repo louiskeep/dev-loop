@@ -171,10 +171,18 @@ def read_json(path, default=None) -> dict:
     return data
 
 
-def read_header(path) -> dict:
-    """Parse `key: value` lines up to a `---` line; {} when the file is missing."""
+def read_header(path, limit=None) -> dict:
+    """Parse `key: value` lines up to a `---` line; {} when the file is missing.
+
+    `limit` reads only that many leading bytes (undecodable bytes become replacement
+    characters), for readers that must not trust the size or content of the file.
+    """
     try:
-        text = Path(path).read_text(encoding="utf-8")
+        if limit is None:
+            text = Path(path).read_text(encoding="utf-8")
+        else:
+            with open(path, "rb") as fh:
+                text = fh.read(limit).decode("utf-8", "replace")
     except FileNotFoundError:
         return {}
     out = {}

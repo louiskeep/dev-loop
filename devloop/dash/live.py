@@ -14,8 +14,9 @@ MAX_LIVE = 16  # executing runs given a card, newest first
 MAX_DRAWER_FILES = 8  # finished-run transcripts parsed per build
 DRAWER_RUNS = 8  # runs listed per slice drawer
 DRAWER_SLICES = 30  # active slices given a drawer source
-DRAWER_CALLS = 30
-DRAWER_FILES = 20
+DRAWER_CALLS = 20
+DRAWER_FILES = 12
+HEADER_BYTES = 8192  # result.md is read for its header only, never whole
 
 # Role icons are a fixed set; the page draws each one as inline SVG.
 ICONS = {
@@ -182,6 +183,14 @@ def kpi(ctx, view, states, now_s) -> dict:
     }
 
 
+def _result_header(rd) -> dict:
+    """A run's result header, or {} when the file is missing or damaged."""
+    try:
+        return store.read_header(store.out_dir(rd) / "result.md", limit=HEADER_BYTES)
+    except (OSError, ValueError):
+        return {}
+
+
 def drawers(ctx, states, keys) -> list:
     out = []
     for key in _drawer_keys(ctx, keys):
@@ -189,7 +198,7 @@ def drawers(ctx, states, keys) -> list:
         run_rows, calls, files = [], [], {}
         for r in history:
             spec = runs.KINDS[r["req"]["kind"]]
-            hdr = store.read_header(store.out_dir(r["rd"]) / "result.md")
+            hdr = _result_header(r["rd"])
             run_rows.append(
                 {
                     "ref": r["ref"],

@@ -79,15 +79,16 @@ MEMORY_STATE = {
 EVENT_ICON = "·"
 SECTION_IDS = (
     "strip",
-    "needs",
-    "problems",
-    "progress",
+    "attention",
     "workers",
+    "feed",
+    "progress",
+    "problems",
     "capacity",
     "memory",
     "shipped",
-    "activity",
     "parked",
+    "sources",
 )
 
 e = html.escape
@@ -153,16 +154,6 @@ def _bar(parts, marker=None, label=""):
 # --- sections ---------------------------------------------------------------------
 
 
-def _memory_inline(m):
-    if m is None:
-        return '<span class="muted">Memory n/a</span>'
-    icon, word, kind = MEMORY_STATE[m["state"]]
-    return (
-        f'<span class="kv"><span class="k">Memory</span> {_gb(m["headroom_mb"])} free '
-        f"{_chip(kind, icon, word)}{_memory_bar(m)}</span>"
-    )
-
-
 def _memory_bar(m):
     total = max(m["total_mb"], 1)
     used = max(m["total_mb"] - m["available_mb"], 0) / total
@@ -185,33 +176,6 @@ def _count(value):
     return str(value)
 
 
-def _strip(v, now):
-    c, t = v["counts"], v["tick"]
-    if t["capped"]:
-        loop = _chip("warn", "⏸", "Capped", "usage cap active")
-    elif t["paused"]:
-        loop = _chip("warn", "⏸", "Paused", "the loop is paused")
-    else:
-        loop = _chip("ok", "▶", "Running")
-    need = (
-        _chip("warn", "!", f"{c['needs_you']} need you")
-        if c["needs_you"]
-        else _chip("ok", "✓", "Nothing needs you")
-    )
-    return (
-        '<section id="strip" data-section="strip" class="strip" aria-label="Summary">'
-        f'<span class="project">{e(v["project"])}</span>{loop}{need}'
-        f'<span class="kv"><span class="k">Executing</span> {c["executing"]}</span>'
-        f'<span class="kv"><span class="k">Free slots</span> {c["free"]}</span>'
-        f'<span class="kv"><span class="k">Merged</span> {_count(c["merged_today"])} today, '
-        f"{_count(c['merged_week'])} this week</span>"
-        f'<span class="kv"><span class="k">Rows closed</span> {_count(c["rows_closed"])}</span>'
-        f"{_memory_inline(v['memory'])}"
-        f'<span class="kv"><span class="k">Last pass</span> {_time(t["last_pass_at"], now)}</span>'
-        "</section>"
-    )
-
-
 def _question_detail(n, project):
     parts = []
     if n["question"]:
@@ -232,24 +196,6 @@ def _question_detail(n, project):
     elif n["answer_at"]:
         parts.append(f'<div class="muted">Answer in {e(n["answer_at"])}</div>')
     return "".join(parts)
-
-
-def _needs(v, now):
-    items = []
-    for n in v["needs_you"]:
-        icon, word, text, kind = NEED_TEXT[n["kind"]]
-        key = f" <code>{e(n['key'])}</code>" if n["key"] else ""
-        items.append(
-            f"<li>{_chip(kind, icon, word)}{key} {e(text)} "
-            f'<span class="muted">{e(n["owner"])}</span> {_time(n["since"], now)}'
-            f"{_question_detail(n, v['project'])}</li>"
-        )
-    body = (
-        f'<ul class="list">{"".join(items)}</ul>'
-        if items
-        else '<p class="empty">Nothing needs you right now.</p>'
-    )
-    return _section("needs", "Needs you", body)
 
 
 def _problems(v, now):
@@ -289,10 +235,10 @@ def _phase_strip(c):
     return f'<ol class="phases" aria-label="Phase">{"".join(out)}</ol>'
 
 
-def _checklist(c):
+def _checklist_items(c):
     cl = c["checklist"]
     if not cl["available"]:
-        return '<span class="muted">checklist n/a</span>'
+        return ""
     items = []
     for i in cl["items"]:
         icon, kind = ("✓", "ok") if i["ok"] else ("✗", "bad")
@@ -300,9 +246,16 @@ def _checklist(c):
         why = f", {REASON_TEXT[i['reason']]}" if i["reason"] else ""
         word = "met" if i["ok"] else "missing"
         items.append(f"<li>{_chip(kind, icon, word)} {e(text)}{e(why)}</li>")
+    return f'<ul class="list">{"".join(items)}</ul>'
+
+
+def _checklist(c):
+    cl = c["checklist"]
+    if not cl["available"]:
+        return '<span class="muted">checklist n/a</span>'
     return (
         f'<details id="cl-{e(c["key"])}" class="cl"><summary>'
-        f'{cl["met"]}/{cl["total"]} met</summary><ul class="list">{"".join(items)}</ul></details>'
+        f"{cl['met']}/{cl['total']} met</summary>{_checklist_items(c)}</details>"
     )
 
 
@@ -325,7 +278,8 @@ def _card(c, now):
     attn = "1" if c["stuck"] or c["held"] else "0"
     text = f"{c['key']} {c['owner']} {c['phase']}".lower()
     return (
-        f'<article class="card" data-card data-risk="{e(c["risk"] or "")}" '
+        f'<article class="card" data-card data-card-key="{e(c["key"])}" '
+        f'data-risk="{e(c["risk"] or "")}" '
         f'data-attn="{attn}" data-text="{e(text)}">'
         f'<div class="l1"><strong>{e(c["slice"])}</strong> {" ".join(chips)}{pr}</div>'
         f'<div class="l2">{_phase_strip(c)}<span class="muted">{e(c["owner"])}</span> '
@@ -344,41 +298,6 @@ def _progress(v, now):
         )
     body = "".join(rows) or '<p class="empty">No slices in progress.</p>'
     return _section("progress", "In progress", body)
-
-
-def _workers(v, now):
-    rows = []
-    for w in v["live"]:
-        doing = w["doing"]
-        what = (
-            f"{doing['tag']} {doing['target'] or ''}".strip() if doing else w["state"]
-        )
-        rows.append(
-            f"<tr><td>{e(w['role'])}</td><td><code>{e(w['key'])}</code></td>"
-            f"<td>{e(w['harness'])}</td><td>{_chip('info', '▶', 'Executing')}</td>"
-            f"<td>{e(what)}</td><td>{_time(w['started_at'], now)}</td></tr>"
-        )
-    for w in v["waiting_runs"]:
-        icon, word, kind = WORKER_STATE[w["state"]]
-        rows.append(
-            f"<tr><td>{e(w['role'])}</td><td><code>{e(w['key'])}</code></td>"
-            f"<td></td><td>{_chip(kind, icon, word)}</td><td></td>"
-            f"<td>{_time(w['started_at'], now)}</td></tr>"
-        )
-    table = (
-        "<table><thead><tr><th>Role</th><th>Slice</th><th>Kind</th><th>State</th>"
-        f"<th>Doing</th><th>Started</th></tr></thead><tbody>{''.join(rows)}</tbody></table>"
-        if rows
-        else '<p class="empty">No workers running.</p>'
-    )
-    nodes = "".join(
-        f"<li>{e(n['name'])} "
-        f"{_chip('ok', chr(0x2713), 'OK') if n['ok'] else _chip('bad', chr(0x2717), 'Failing')} "
-        f"{_time(n['at'], now)}</li>"
-        for n in v["nodes"]
-    )
-    node_html = f'<ul class="inline">{nodes}</ul>' if nodes else ""
-    return _section("workers", "Workers and nodes", table + node_html)
 
 
 def _capacity(v):
@@ -455,18 +374,6 @@ def _shipped(v, now):
     return _section("shipped", "Recently shipped", body)
 
 
-def _activity(v, now):
-    items = "".join(
-        f"<li>{_time(a['at'], now)} {e(a['words'])}</li>" for a in v["activity"]
-    )
-    body = (
-        f'<ul class="list">{items}</ul>'
-        if items
-        else '<p class="empty">No recent activity.</p>'
-    )
-    return _details("activity", "Recent activity", len(v["activity"]), body)
-
-
 def _parked(v, now):
     items = []
     for c in v["parked"]:
@@ -503,16 +410,17 @@ def _details(sid, title, n, body):
 def render_fragment(view, now=None) -> str:
     now = now or datetime.datetime.now(datetime.timezone.utc)
     parts = (
-        _strip(view, now),
-        _needs(view, now),
-        _problems(view, now),
+        render_live.kpi_strip(view, now),
+        render_live.attention(view, now),
+        render_live.worker_grid(view, now),
+        render_live.feed(view, now),
         _progress(view, now),
-        _workers(view, now),
+        _problems(view, now),
         _capacity(view),
         _memory_panel(view),
         _shipped(view, now),
-        _activity(view, now),
         _parked(view, now),
+        render_live.drawer_sources(view, now),
     )
     return (
         f'<div id="app-body" data-version="{e(view["version"])}">{"".join(parts)}</div>'
@@ -535,5 +443,14 @@ def render_page(view, now=None) -> str:
         '<div id="stale" class="stale" role="status" hidden>'
         "Updates stopped. Showing the last good data.</div>"
         f'<main id="app">{render_fragment(view, now)}</main>'
+        '<aside id="drawer" class="drawer" hidden aria-label="Details">'
+        '<div class="drawer-bar"><h2 id="drawer-title"></h2>'
+        '<button id="drawer-close" type="button" aria-label="Close details">Close</button>'
+        '</div><div id="drawer-body"></div></aside>'
         '<script src="/static/dash.js" defer></script></body></html>'
     )
+
+
+# render_live formats with this module's helpers and this module composes its output, so
+# the import sits last: every helper above exists by the time render_live loads.
+from . import render_live  # noqa: E402
