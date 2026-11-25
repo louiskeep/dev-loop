@@ -31,10 +31,15 @@ def test_status_renders_counts_from_fixture_journal(proj):
             }
         },
     )
-    journal(
-        proj,
-        ("row-closed", at(days=2)),
-        ("row-closed", at(days=40)),
+    store.write_json(
+        store.state_dir(proj) / "closures.json",
+        {
+            "closures": {
+                "R1": {"attempted": True, "closed": True},
+                "R2": {"attempted": True, "closed": True},
+                "R3": {"attempted": True, "closed": False},
+            }
+        },
     )
     text = status.render_status(proj)
     assert "- This week: 2" in text and "- Total: 3" in text

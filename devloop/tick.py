@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import notes, runs, snapshot, status, store
+from . import notes, runs, slices, snapshot, status, store
 from . import project as projmod
 from .caps import detect_cap, utc_now
 
@@ -159,6 +159,7 @@ def _pass(project) -> str:
     state = store.read_json(_state_file(project))
     runs.collect(project)
     notes.reconcile_hold_questions(project)
+    slices.drain_pending_board(project)
     d = store.state_dir(project)
     if (d / "PAUSE").exists():
         status.write_status(project)

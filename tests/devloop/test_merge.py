@@ -17,7 +17,10 @@ from hooks import headless_merge_guard  # noqa: E402
 @pytest.fixture
 def gate(proj, mk_slice, give, tmp_path, cfg_edit, fakebin, monkeypatch):
     board = tmp_path / "board"
-    board.write_text('#!/bin/sh\necho "$@" >> "$BOARD_LOG"\n')
+    board.write_text(
+        '#!/bin/sh\nif [ "$1" = show ]; then cat "$BOARD_LOG" 2>/dev/null; exit 0; fi\n'
+        'echo "$@" >> "$BOARD_LOG"\n'
+    )
     board.chmod(0o755)
     monkeypatch.setenv("BOARD_LOG", str(tmp_path / "board.log"))
     monkeypatch.setenv("FAKE_GH_LOG", str(tmp_path / "gh.log"))
@@ -949,3 +952,62 @@ def test_red_rerun_after_green_blocks_merge_through_apply(proj, gate, mk_run):
     assert not slices.validate_gate(proj, k)
     slices.record_evidence(proj, k, "t1", "NO-GO", "t1-red", head=HEAD)
     assert any("t1" in p for p in slices.validate_gate(proj, k))
+
+
+def _crash_after_move(proj, gate, monkeypatch):
+    k = gate()
+    real = slices.deliver_board
+    monkeypatch.setattr(
+        slices, "deliver_board", lambda *a: (_ for _ in ()).throw(RuntimeError("crash"))
+    )
+    with pytest.raises(RuntimeError):
+        merge.merge(proj, k)
+    monkeypatch.setattr(slices, "deliver_board", real)
+    assert slices.load(proj, k)["phase"] == "DOCUMENT"
+    return k
+
+
+def test_tick_delivers_a_merge_the_crash_left_undelivered(proj, gate, monkeypatch):
+    from devloop import tick
+
+    k = _crash_after_move(proj, gate, monkeypatch)
+    assert gate.board().count("merged ") == 0
+    tick.tick(proj)
+    log = gate.board()
+    assert log.count("merged ") == 1 and f"{k.split('--')[0]} S1 [d:" in log
+    tick.tick(proj)
+    assert gate.board().count("merged ") == 1
+    assert next(iter(slices.merge_records(proj).values()))["board_done"] is True
+
+
+def test_tick_confirms_a_delivery_the_board_already_has_without_retrying(
+    proj, gate, monkeypatch, tmp_path
+):
+    from devloop import board, tick
+
+    _crash_after_move(proj, gate, monkeypatch)
+    mid = next(iter(slices.merge_records(proj)))
+    # The board call landed, then the process died before board_done was saved.
+    with open(tmp_path / "board.log", "a") as fh:
+        fh.write(f"merged ROW1 S1 7 ROW1 S1 [d:{board.delivery_id(mid)}]\n")
+    doc = store.read_json(board._merges_path(proj))
+    doc["merges"][mid]["board_attempted"] = True
+    store.write_json(board._merges_path(proj), doc)
+    tick.tick(proj)
+    assert gate.board().count("merged ") == 1  # no second call
+    assert slices.merge_records(proj)[mid]["board_done"] is True
+
+
+def test_tick_never_retries_an_ambiguous_delivery(proj, gate, monkeypatch, tmp_path):
+    from devloop import board, tick
+
+    _crash_after_move(proj, gate, monkeypatch)
+    mid = next(iter(slices.merge_records(proj)))
+    doc = store.read_json(board._merges_path(proj))
+    doc["merges"][mid]["board_attempted"] = True  # unknown whether it reached the board
+    store.write_json(board._merges_path(proj), doc)
+    tick.tick(proj)
+    tick.tick(proj)
+    rec = slices.merge_records(proj)[mid]
+    assert rec["board_ambiguous"] is True and rec["board_done"] is False
+    assert gate.board().count("merged ") == 0

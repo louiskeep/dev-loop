@@ -62,7 +62,9 @@ def counts(project, now=None) -> dict:
         ),
         "merged_week": sum(1 for t in stamps if t and t >= week),
         "merged_total": len(merged),
-        "rows_closed": sum(1 for e in _events(project) if e["kind"] == "row-closed"),
+        "rows_closed": sum(
+            1 for r in slices.closure_records(project).values() if r.get("closed")
+        ),
     }
 
 

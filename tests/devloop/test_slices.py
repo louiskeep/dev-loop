@@ -879,3 +879,67 @@ def test_gate_rejects_full_evidence_from_a_selected_run(proj, ready, cfg_edit, g
     store.register_request(proj, "fr")
     with pytest.raises(slices.TransitionError, match="selection"):
         slices.move(proj, k, "GATE", "x")
+
+
+def _close_board(tmp_path, ok_file):
+    return _board(
+        tmp_path,
+        "import os, sys\n"
+        f"sys.exit(0 if os.path.exists({str(ok_file)!r}) else 1) if sys.argv[1:2] == ['close'] else None\n",
+    )
+
+
+def test_failed_board_close_is_not_a_closure_and_a_retry_counts_once(
+    proj, cfg_edit, tmp_path
+):
+    from devloop import status
+
+    ok = tmp_path / "board-up"
+    cfg_edit(
+        lambda c: c.update(
+            board={"cmd": [str(_close_board(tmp_path, ok))], "phase_map": {}}
+        )
+    )
+    assert slices.row_close(proj, "ROW1") is False
+    assert status.counts(proj)["rows_closed"] == 0
+    ok.write_text("")
+    assert slices.row_close(proj, "ROW1") is True
+    assert slices.row_close(proj, "ROW1") is True  # a repeat is not a second closure
+    slices.row_close(proj, "ROW2")
+    assert status.counts(proj)["rows_closed"] == 2
+    assert [k for k, r in slices.closure_records(proj).items() if r["closed"]] == [
+        "ROW1",
+        "ROW2",
+    ]
+
+
+def test_close_retry_after_a_crash_checks_the_board_before_posting_again(
+    proj, cfg_edit, tmp_path
+):
+    log = tmp_path / "calls.log"
+    shown = tmp_path / "shown.txt"
+    script = _board(
+        tmp_path,
+        "import sys\n"
+        f"open({str(log)!r}, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
+        f"if sys.argv[1:2] == ['show']: print(open({str(shown)!r}).read())\n",
+    )
+    cfg_edit(lambda c: c.update(board={"cmd": [str(script)], "phase_map": {}}))
+    from devloop import board, store
+
+    # Crash after the board call: attempted, never marked closed.
+    store.write_json(
+        board._closures_path(proj),
+        {"closures": {"ROW1": {"attempted": True, "closed": False}}},
+    )
+    shown.write_text("Closed today: 1 (ROW1). Slices merged today: 0.")
+    assert slices.row_close(proj, "ROW1") is True
+    assert "close ROW1" not in log.read_text()
+    # The board does not have it: the call is made.
+    store.write_json(
+        board._closures_path(proj),
+        {"closures": {"ROW2": {"attempted": True, "closed": False}}},
+    )
+    shown.write_text("Closed today: 0. Slices merged today: 0.")
+    assert slices.row_close(proj, "ROW2") is True
+    assert "close ROW2" in log.read_text()

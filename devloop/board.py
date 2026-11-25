@@ -1,5 +1,7 @@
 """Board mirror and the persisted merge ledger (merges.json)."""
 
+import hashlib
+import re
 import subprocess
 
 from . import project as projmod
@@ -50,15 +52,76 @@ def mirror(project, cfg, s):
         )
 
 
-def row_close(project: str, row: str) -> None:
+def _board_show(project, cfg):
+    """The board's own read-only view, or None when it cannot be read."""
+    board = cfg.get("board")
+    if not board:
+        return None
+    try:
+        r = subprocess.run(
+            board["cmd"] + ["show"],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def _closures_path(project):
+    return store.state_dir(project) / "closures.json"
+
+
+def closure_records(project) -> dict:
+    return store.read_json(_closures_path(project)).get("closures", {})
+
+
+def row_close(project: str, row: str) -> bool:
+    """Close a row on the board once. Only a successful board call is a closure.
+
+    The attempt is written first. If a crash left an attempt with no closure, the
+    board's own view decides whether the call landed, so a retry never posts twice.
+    """
     if not isinstance(row, str) or slices.ID_RE.fullmatch(row) is None:
         raise slices.SliceError("bad row id")
     cfg = projmod.load_project(project)
-    _board_call(project, cfg, ["close", row], row=row)
-    store.append_event(project, "row-closed", row=row)
+    path = _closures_path(project)
+    with store.locked(path):
+        doc = store.read_json(path)
+        rec = doc.setdefault("closures", {}).get(row)
+        if rec and rec.get("closed"):
+            return True
+        if rec and rec.get("attempted"):
+            shown = _board_show(project, cfg)
+            if shown is not None and re.search(
+                rf"Closed today: \d+ \(([^)]*\b)?{re.escape(row)}\b", shown
+            ):
+                doc["closures"][row] = {
+                    "attempted": True,
+                    "closed": True,
+                    "at": store.now_iso(),
+                }
+                store.write_json(path, doc)
+                store.append_event(project, "row-closed", row=row)
+                return True
+        doc["closures"][row] = {"attempted": True, "closed": False}
+        store.write_json(path, doc)
+        ok = _board_call(project, cfg, ["close", row], row=row)
+        if ok:
+            doc["closures"][row] = {
+                "attempted": True,
+                "closed": True,
+                "at": store.now_iso(),
+            }
+            store.write_json(path, doc)
+            store.append_event(project, "row-closed", row=row)
+        return ok
 
 
-# --- creating slices ----------------------------------------------------------
+# --- merge ledger -------------------------------------------------------------
 
 
 def _merges_path(project):
@@ -88,22 +151,65 @@ def record_merge(project, ident, s) -> None:
                 "pr": ident["pr"],
                 "at": store.now_iso(),
                 "board_done": False,
+                "board_attempted": False,
+                "board_ambiguous": False,
             },
         )
         store.write_json(path, doc)
 
 
+def delivery_id(mid) -> str:
+    """A short id for one merge, sent to the board inside the WHAT text."""
+    return hashlib.sha256(mid.encode()).hexdigest()[:8]
+
+
 def deliver_board(project, ident) -> None:
-    """Tell the board about a recorded merge once; a replay finds board_done set."""
+    """Tell the board about a recorded merge once.
+
+    The attempt is saved before the call. A record that was attempted but never marked
+    done is checked against the board's own view for its delivery id; if the board cannot
+    confirm it, the record is marked ambiguous and never retried by itself.
+    """
     path = _merges_path(project)
+    mid = merge_id(ident)
     with store.locked(path):
         doc = store.read_json(path)
-        rec = (doc.get("merges") or {}).get(merge_id(ident))
-        if rec is None or rec["board_done"]:
+        rec = (doc.get("merges") or {}).get(mid)
+        if rec is None or rec["board_done"] or rec.get("board_ambiguous"):
             return
-        if board_merged(project, rec["key"], rec["pr"]):
+        if rec.get("board_attempted"):
+            cfg = projmod.load_project(project)
+            shown = _board_show(project, cfg)
+            if shown is not None and f"[d:{delivery_id(mid)}]" in shown:
+                rec["board_done"] = True
+            else:
+                rec["board_ambiguous"] = True
+                notes.problem(
+                    project,
+                    "board-ambiguous",
+                    impact="a merge may or may not have reached the board",
+                    fix="check the board, then mark the row by hand if it is missing",
+                )
+            store.write_json(path, doc)
+            return
+        rec["board_attempted"] = True
+        store.write_json(path, doc)
+        if board_merged(project, rec["key"], rec["pr"], delivery_id(mid)):
             rec["board_done"] = True
             store.write_json(path, doc)
+
+
+def drain_pending_board(project) -> int:
+    """Called every tick: deliver or reconcile every merge the board has not confirmed."""
+    n = 0
+    for mid, rec in list(merge_records(project).items()):
+        if rec["board_done"] or rec.get("board_ambiguous"):
+            continue
+        slug, rest = mid.rsplit("#", 1)
+        pr, head = rest.split("@", 1)
+        deliver_board(project, {"slug": slug, "pr": int(pr), "head": head})
+        n += 1
+    return n
 
 
 def pending_board(project, key) -> list:
@@ -117,13 +223,19 @@ def pending_board(project, key) -> list:
     return out
 
 
-def board_merged(project: str, key: str, pr) -> bool:
+def board_merged(project: str, key: str, pr, did: str = "") -> bool:
     """Tell the board a PR merged. The words are fixed; no model text reaches the board."""
     s = slices.load(project, key)
     cfg = projmod.load_project(project)
     return _board_call(
         project,
         cfg,
-        ["merged", s["row"], s["slice"], str(pr), f"{s['row']} {s['slice']}"],
+        [
+            "merged",
+            s["row"],
+            s["slice"],
+            str(pr),
+            f"{s['row']} {s['slice']}" + (f" [d:{did}]" if did else ""),
+        ],
         key=key,
     )
