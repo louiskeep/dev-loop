@@ -172,7 +172,13 @@ def _pass(project) -> str:
         and (utc_now() - datetime.datetime.fromisoformat(last)).total_seconds()
         < SKIP_WINDOW_S
     )
-    if digest == state.get("last_hash") and fresh:
+    # A finished run nobody applied yet holds its slot, so it always earns a model pass:
+    # a worker can end during the model call and be saved in last_hash unseen.
+    if (
+        digest == state.get("last_hash")
+        and fresh
+        and not snapshot.finished_unapplied(project)
+    ):
         status.write_status(project)
         return "skipped"
     outcome = _run_model(project, cfg, md)

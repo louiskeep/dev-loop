@@ -43,7 +43,7 @@ def _run_summary(rd, req):
     }
 
 
-def _finished_unapplied(project):
+def finished_unapplied(project):
     return [
         _run_summary(rd, req)
         for rd, req in runs.iter_runs(project)
@@ -169,7 +169,7 @@ def build_snapshot(project) -> tuple:
         for s in active
         if s["key"] not in running and _age(s["last_moved_at"]) > STALE_SECS
     ]
-    finished = _finished_unapplied(project)
+    finished = finished_unapplied(project)
     failed = [r for r in finished if r["status"] == "FAILED"]
     qs = _questions(project)
     sd = store.state_dir(project)

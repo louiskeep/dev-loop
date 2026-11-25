@@ -184,6 +184,9 @@ mutate "merge identity not checked" devloop/slices.py \
 mutate "up-to-date skips the ancestor check" devloop/merge.py \
   '    if not _git_ok(repo_cfg, "merge-base", "--is-ancestor", f"origin/{base}", head):' '    if False:' \
   $T/test_merge.py::test_up_to_date_needs_the_base_tip_in_the_head
+mutate "finished runs do not force a pass" devloop/tick.py \
+  '        and not snapshot.finished_unapplied(project)' '        and True' \
+  $T/test_tick.py::test_finished_unapplied_run_forces_a_model_pass_whatever_the_hash
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

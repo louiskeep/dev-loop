@@ -271,3 +271,21 @@ def test_tick_session_gets_the_configured_base_branches(proj, cfg_edit, tmp_path
     tick.tick(proj)
     env = claude_calls(tmp_path)[0]["env"]
     assert env["DEVLOOP_BASE_BRANCHES"] == "develop,main,master"
+
+
+def test_finished_unapplied_run_forces_a_model_pass_whatever_the_hash(
+    proj, mk_slice, mk_run, tmp_path, home
+):
+    from devloop import snapshot
+
+    k = mk_slice(proj, phase="DEVELOP", risk="R1")
+    mk_run(proj, "w1", kind="builder", key=k, applied=False)
+    # The state a worker leaves when it ends during the model call: the post-call
+    # snapshot already contains the finished run, so the hash looks unchanged.
+    _, digest = snapshot.build_snapshot(proj)
+    store.write_json(
+        home / "p" / "tick-state.json",
+        {"last_hash": digest, "last_model_at": store.now_iso()},
+    )
+    tick.tick(proj)
+    assert len(claude_calls(tmp_path)) == 1
