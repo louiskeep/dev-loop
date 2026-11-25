@@ -43,7 +43,9 @@ def test_playbook_covers_every_phase_and_kind():
 
 
 def _label_prefixes():
-    src = (ROOT / "devloop" / "slices.py").read_text()
+    src = "".join(
+        (ROOT / "devloop" / name).read_text() for name in ("slices.py", "evidence.py")
+    )
     out = set()
     for m in re.finditer(r'f?"([^"\n]{6,})"', src):
         out.add(m.group(1).split("{")[0].rstrip())
