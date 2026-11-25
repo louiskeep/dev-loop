@@ -201,13 +201,16 @@ def remove_tree(project, run_id, req=None) -> None:
     shutil.rmtree(tree, ignore_errors=True)
 
 
-def _exit_of(rd) -> dict:
-    return store.read_json(rd / "exit")
+def read_exit(rd) -> dict:
+    try:
+        return store.read_json(rd / "exit")
+    except store.StoreError:
+        return {}  # a damaged record reads as empty; collect repairs it once the wrapper is dead
 
 
 def _test_confirmed(rd) -> bool:
     """A test run frees its slot only when the payload itself said it finished."""
-    ex = _exit_of(rd)
+    ex = read_exit(rd)
     return (rd / "released").is_file() or (
         ex.get("reason") == "exit" and ex.get("code") in (0, 1)
     )
@@ -243,16 +246,31 @@ def writer_runs(project) -> list:
 
 
 def create_exit(rd, *, code, reason) -> bool:
-    """Create-exclusive: whoever writes `exit` first wins."""
+    """First writer wins, and `exit` is never visible half-written.
+
+    The record goes to a temp file first; os.link then publishes it under the final name
+    only if that name is free, so a crash cannot leave an empty or partial `exit`.
+    """
+    tmp = rd / f".exit.{os.getpid()}.tmp"
+    tmp.write_text(
+        json.dumps({"code": code, "reason": reason, "ended_at": store.now_iso()})
+    )
     try:
-        fd = os.open(rd / "exit", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.link(tmp, rd / "exit")
     except FileExistsError:
         return False
-    with os.fdopen(fd, "w") as fh:
-        fh.write(
-            json.dumps({"code": code, "reason": reason, "ended_at": store.now_iso()})
-        )
+    finally:
+        tmp.unlink(missing_ok=True)
     return True
+
+
+def exit_valid(rd) -> bool:
+    """An exit record with an int code and a reason; anything else is damaged."""
+    try:
+        ex = store.read_json(rd / "exit")
+    except store.StoreError:
+        return False
+    return isinstance(ex.get("code"), int) and isinstance(ex.get("reason"), str)
 
 
 def collect(project) -> list:
@@ -261,6 +279,9 @@ def collect(project) -> list:
     # Under the admission lock so a run still being launched is never read half-made.
     with store.locked(store.state_dir(project) / "admit"):
         for rd, req in iter_runs(project):
+            damaged = (rd / "exit").is_file() and not exit_valid(rd)
+            if damaged and not wrapper_alive(req):
+                (rd / "exit").unlink(missing_ok=True)  # recovered below as a lost run
             if not (rd / "exit").is_file() and not wrapper_alive(req):
                 kill_payload(req)
                 create_exit(rd, code=-1, reason="lost")
@@ -288,7 +309,7 @@ def parse_result(run_dir: Path, kind: str) -> Result:
     if kind not in KINDS:
         raise RunError("unknown kind")
     hdr = store.read_header(store.out_dir(run_dir) / "result.md")
-    ex = _exit_of(run_dir)
+    ex = read_exit(run_dir)
     status = hdr.get("status")
     body = ""
     try:

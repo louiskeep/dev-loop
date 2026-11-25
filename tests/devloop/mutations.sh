@@ -187,6 +187,12 @@ mutate "up-to-date skips the ancestor check" devloop/merge.py \
 mutate "finished runs do not force a pass" devloop/tick.py \
   '        and not snapshot.finished_unapplied(project)' '        and True' \
   $T/test_tick.py::test_finished_unapplied_run_forces_a_model_pass_whatever_the_hash
+mutate "exit is written in place" devloop/runs.py \
+  '        os.link(tmp, rd / "exit")' '        os.rename(tmp, rd / "exit")' \
+  $T/test_runs.py::test_exit_is_published_whole_or_not_at_all
+mutate "damaged exit is never recovered" devloop/runs.py \
+  '            if damaged and not wrapper_alive(req):' '            if False:' \
+  $T/test_runs.py::test_collect_recovers_a_damaged_exit_once_the_wrapper_is_dead
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

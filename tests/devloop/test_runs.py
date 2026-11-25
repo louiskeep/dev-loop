@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from devloop import notes, runs, slices, store, wrap
+from devloop import notes, runs, slices, snapshot, store, wrap
 
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
 
@@ -1003,3 +1003,28 @@ def test_test_argv_label_is_unique_per_run(proj, ready, brief, cfg_edit):
     a = runs.read_request(proj, first)["argv"]
     b = runs.read_request(proj, second)["argv"]
     assert a[-1] != b[-1] and a[-1].endswith(first) and b[-1].endswith(second)
+
+
+# --- exit record integrity -----------------------------------------------------
+
+
+def test_exit_is_published_whole_or_not_at_all(proj, ready, brief):
+    key, _, _ = ready()
+    r = go(proj, brief, "builder", key)
+    rd = store.run_dir(proj, r)
+    assert runs.create_exit(rd, code=0, reason="exit") is True
+    assert runs.create_exit(rd, code=9, reason="lost") is False  # first writer wins
+    assert store.read_json(rd / "exit")["code"] == 0
+    assert not list(rd.glob(".exit.*"))
+    assert runs.exit_valid(rd)
+
+
+@pytest.mark.parametrize("junk", ["", "{", "[1]", '{"code": "x"}'])
+def test_collect_recovers_a_damaged_exit_once_the_wrapper_is_dead(proj, ready, junk):
+    key, _, _ = ready()
+    rd = _dead_run(proj, key)
+    (rd / "exit").write_text(junk)
+    assert not runs.exit_valid(rd)
+    snapshot.build_snapshot(proj)  # never raises on a damaged record
+    assert runs.collect(proj) == ["builder.dead"]
+    assert runs.exit_valid(rd) and store.read_json(rd / "exit")["reason"] == "lost"

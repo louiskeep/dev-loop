@@ -60,7 +60,7 @@ def held_tests(project):
             and (rd / "exit").is_file()
             and runs.holds_slot(rd, req)
         ):
-            ex = store.read_json(rd / "exit")
+            ex = runs.read_exit(rd)
             out.append(
                 {
                     "id": rd.name,
