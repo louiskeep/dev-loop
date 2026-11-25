@@ -193,6 +193,9 @@ mutate "exit is written in place" devloop/apply.py \
 mutate "damaged exit is never recovered" devloop/apply.py \
   '            if damaged and not runs.wrapper_alive(req):' '            if False:' \
   $T/test_runs_integrity.py::test_collect_recovers_a_damaged_exit_once_the_wrapper_is_dead
+mutate "run view asks for a field gh lacks" devloop/merge.py \
+  '        "event,headSha,workflowName,createdAt,conclusion,jobs",' '        "event,headSha,workflowName,path,createdAt,conclusion,jobs",' \
+  $T/test_merge.py::test_workflow_file_name_is_resolved_through_the_actions_api
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

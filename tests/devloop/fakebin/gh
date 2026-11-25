@@ -25,9 +25,44 @@ if args[:2] == ["pr", "merge"]:
         doc.update(doc.get("on_merge", {}))
         json.dump(doc, open(path, "w"))
     sys.exit(0)
-if args[:2] == ["run", "view"] or args[:1] == ["api"]:
-    print(json.dumps(doc.get("run", {})))
+# Field lists as accepted by gh 2.93; anything else fails the way the real CLI does.
+RUN_VIEW_FIELDS = {
+    "attempt", "conclusion", "createdAt", "databaseId", "displayTitle", "event",
+    "headBranch", "headSha", "jobs", "name", "number", "startedAt", "status",
+    "updatedAt", "url", "workflowDatabaseId", "workflowName",
+}
+PR_VIEW_FIELDS = {
+    "additions", "assignees", "author", "autoMergeRequest", "baseRefName", "body",
+    "changedFiles", "closed", "closedAt", "closingIssuesReferences", "comments",
+    "commits", "createdAt", "deletions", "files", "fullDatabaseId", "headRefName",
+    "headRefOid", "headRepository", "headRepositoryOwner", "id", "isCrossRepository",
+    "isDraft", "labels", "latestReviews", "maintainerCanModify", "mergeCommit",
+    "mergeStateStatus", "mergeable", "mergedAt", "mergedBy", "milestone", "number",
+    "potentialMergeCommit", "projectCards", "projectItems", "reactions",
+    "reviewDecision", "reviewRequests", "reviews", "state", "statusCheckRollup",
+    "title", "updatedAt", "url",
+}
+
+
+def check_fields(allowed):
+    if "--json" not in args:
+        return
+    for f in args[args.index("--json") + 1].split(","):
+        if f not in allowed:
+            print('Unknown JSON field: "%s"' % f, file=sys.stderr)
+            sys.exit(1)
+
+
+if args[:2] == ["run", "view"]:
+    check_fields(RUN_VIEW_FIELDS)
+    print(json.dumps({k: v for k, v in doc.get("run", {}).items() if k != "path"}))
     sys.exit(0)
+if args[:1] == ["api"]:
+    # `gh api repos/O/R/actions/runs/N --jq .path` prints the workflow file path.
+    print(doc.get("run", {}).get("path", ""))
+    sys.exit(0)
+if args[:2] == ["pr", "view"]:
+    check_fields(PR_VIEW_FIELDS)
 if doc.get("fail_view"):
     sys.exit(1)
 if int(os.environ.get("FAKE_GH_VIEW_EXIT", "0")) and not doc.get("view_ok"):

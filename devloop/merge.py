@@ -220,6 +220,25 @@ def _iso(text):
     return at if at.tzinfo else at.replace(tzinfo=datetime.timezone.utc)
 
 
+def _workflow_matches(repo_cfg, wf, run_id, run):
+    """The configured workflow is a display name or a file name.
+
+    `gh run view` has no path field, so a file name is resolved through the Actions API.
+    """
+    if wf == run.get("workflowName"):
+        return True
+    if not wf.endswith((".yml", ".yaml")):
+        return False
+    rc, out, _ = _gh(
+        repo_cfg,
+        "api",
+        f"repos/{_slug(repo_cfg)}/actions/runs/{run_id}",
+        "--jq",
+        ".path",
+    )
+    return rc == 0 and Path(out.strip()).name == wf
+
+
 def _gate_dispatch(repo_cfg, rules, rollup, s, cfg):
     """The gate status must point at a green workflow_dispatch run for this head,
     created after the final cross-model GO."""
@@ -247,7 +266,7 @@ def _gate_dispatch(repo_cfg, rules, rollup, s, cfg):
         "-R",
         _slug(repo_cfg),
         "--json",
-        "event,headSha,workflowName,path,createdAt,conclusion,jobs",
+        "event,headSha,workflowName,createdAt,conclusion,jobs",
     )
     try:
         run = json.loads(out) if rc == 0 else {}
@@ -262,7 +281,7 @@ def _gate_dispatch(repo_cfg, rules, rollup, s, cfg):
     )
     created, final_at = _iso(run.get("createdAt")), _iso(final_go)
     bad = (
-        wf not in (run.get("workflowName"), Path(run.get("path") or "").name)
+        not _workflow_matches(repo_cfg, wf, m.group(1), run)
         or run.get("event") != "workflow_dispatch"
         or not _same_head(run.get("headSha"), s["head"])
         or not _success(run.get("conclusion"))

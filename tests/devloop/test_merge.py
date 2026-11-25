@@ -864,3 +864,29 @@ def test_snapshot_sends_a_ready_gate_slice_to_devloop_merge(proj, gate):
     md, _ = snapshot.build_snapshot(proj)
     assert f"  next command: devloop-merge {proj} {k}\n" in md
     assert "slice move" not in md.split("next command:")[1].split("\n")[0]
+
+
+def test_fake_gh_rejects_fields_the_real_cli_does_not_have(fakebin):
+    for argv in (
+        ["run", "view", "1", "--json", "event,path"],
+        ["pr", "view", "1", "--json", "state,nope"],
+    ):
+        r = subprocess.run([str(fakebin / "gh"), *argv], capture_output=True, text=True)
+        assert r.returncode == 1 and "Unknown JSON field" in r.stderr
+    ok = subprocess.run(
+        [str(fakebin / "gh"), "run", "view", "1", "--json", "event,workflowName,jobs"],
+        capture_output=True,
+        text=True,
+    )
+    assert ok.returncode == 0
+
+
+def test_workflow_file_name_is_resolved_through_the_actions_api(proj, gate, cfg_edit):
+    _dispatch_cfg(cfg_edit, "gate.yml")
+    k = gate()
+    roll, run = _green_run(workflowName="Some other display name")
+    gate.set_gh(statusCheckRollup=roll, run=run)
+    assert merge.merge(proj, k).outcome == "merged"
+    calls = gate.gh_calls()
+    assert any(c[:1] == ["api"] and ".path" in c for c in calls)
+    assert all("path" not in c[c.index("--json") + 1] for c in calls if "--json" in c)
