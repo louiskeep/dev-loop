@@ -196,6 +196,14 @@ mutate "damaged exit is never recovered" devloop/apply.py \
 mutate "run view asks for a field gh lacks" devloop/merge.py \
   '        "event,headSha,workflowName,createdAt,conclusion,jobs",' '        "event,headSha,workflowName,path,createdAt,conclusion,jobs",' \
   $T/test_merge.py::test_workflow_file_name_is_resolved_through_the_actions_api
+mutate "only exit 1 counts as a red test" devloop/apply.py \
+  '            and ex.get("reason") == "exit"
+        )
+        if not red_test:' '            and ex.get("code") == 1
+            and ex.get("reason") == "exit"
+        )
+        if not red_test:' \
+  $T/test_runs_apply.py::test_red_test_rerun_replaces_an_earlier_go
 mutate "tick line skips scrub" devloop/status.py \
   '    return scrub(head + body + "." + tail, LINE_LIMIT)' '    return head + body + "." + tail' \
   $T/test_tick.py::test_tick_slack_line_is_scrubbed

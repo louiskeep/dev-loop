@@ -216,14 +216,15 @@ def test_infra_exit_counts_no_failure(proj, ready, brief):
     assert s["failures"] == {} and s["evidence"] == {}
 
 
-def test_red_test_rerun_replaces_an_earlier_go(proj, ready, brief):
+@pytest.mark.parametrize("code", [1, 2, 137])
+def test_red_test_rerun_replaces_an_earlier_go(proj, ready, brief, code):
     key, _, head = ready("VERIFY")
     green = go(proj, brief, "test", key, level="t1")
     finish(proj, green, code=0, result=res("DONE", "GO", head))
     runs.apply_run(proj, green)
     assert slices.load(proj, key)["evidence"][head]["t1"]["verdict"] == "GO"
     red = go(proj, brief, "test", key, level="t1")
-    finish(proj, red, code=1, result=res("DONE", "NO-GO", head))
+    finish(proj, red, code=code, result=res("DONE", "NO-GO", head))
     runs.apply_run(proj, red)
     s = slices.load(proj, key)
     assert s["evidence"][head]["t1"]["verdict"] == "NO-GO"

@@ -92,13 +92,13 @@ def parse_result(run_dir: Path, kind: str) -> runs.Result:
     if status not in runs.STATUSES:
         status = "FAILED"
     elif status in ("DONE", "BLOCKED") and ex.get("code") != 0:
-        # A test that ran and failed (exit 1) is a real NO-GO, not a broken run: it must
-        # replace any earlier GO at that level and head.
+        # A test that ran and failed (any normal non-zero exit the wrapper classed as a
+        # failure) is a real NO-GO, not a broken run: it must replace any earlier GO at
+        # that level and head. Whether it frees the tester slot is decided apart.
         red_test = (
             kind == "test"
             and status == "DONE"
             and verdict == "NO-GO"
-            and ex.get("code") == 1
             and ex.get("reason") == "exit"
         )
         if not red_test:
