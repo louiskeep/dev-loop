@@ -7,8 +7,11 @@ sessions are not restricted.
 Threat model: this stops a headless model from merging or pushing to the base branch by
 accident; it does not stop a hostile one.
 
-One text match over the raw command, so no wrapper or shell form needs its own parser.
-Denied: `gh ... pr ... merge` (any option order), the merge and auto-merge API calls
+The executable of each shell command segment decides, so a search term or a commit message
+can name a command. Segments split on ; && || | & and newlines outside quotes. VAR=val, env,
+sudo, timeout N and xargs are skipped, and sh -c, eval and find -exec scripts are read too.
+A worker's command that cannot be parsed is denied.
+Denied:`gh ... pr ... merge` (any option order), the merge and auto-merge API calls
 (`pulls/N/merge`, mergePullRequest, enablePullRequestAutoMerge, /merges, git/refs), and a
 `git push` that targets the base branch (an explicit `main` refspec, `--all`, `--mirror`,
 or a bare push while the current branch is the base). Feature-branch pushes and any text
@@ -21,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -40,7 +44,6 @@ _ANYWHERE = re.compile(
     r"mergepullrequest|enablepullrequestautomerge|/merges|git/refs|pulls/\d+/merge\b"
 )
 _GIT_PUSH = re.compile(r"\bgit\b(?:\s+-\S+(?:\s+[^\s-]\S*)?)*?\s+push\b([^;&|`\n)]*)")
-_DEVLOOP_MERGE = re.compile(r"(?:^|[\s;&|/(`'\"])devloop-merge\b")
 _METACHARS = re.compile(r"[;&|`<>\n]|\$\(")
 _ONLY_MERGE_CMD = re.compile(r"\s*(?:/[^\s]*/)?devloop-merge(?:\s+[^\s]+)*\s*")
 
@@ -97,19 +100,203 @@ def _push_targets_base(args: str, cwd) -> bool:
     return False
 
 
+_SEPARATORS = (";", "&&", "||", "|", "&", "\n", "(", ")", "`")
+_SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+_VAR = re.compile(r"[A-Za-z_]\w*=.*")
+_PREFIXES = {
+    "env",
+    "sudo",
+    "nohup",
+    "time",
+    "command",
+    "exec",
+    "nice",
+    "timeout",
+    "xargs",
+}
+# Options of a prefix command that take a separate value.
+_OPT_VALUE = {
+    "sudo": {"-u", "-g", "-C", "-h", "-p", "-r", "-t", "-D"},
+    "env": {"-u", "-C", "-S"},
+    "timeout": {"-s", "-k", "--signal", "--kill-after"},
+    "nice": {"-n"},
+    "xargs": {"-n", "-I", "-L", "-P", "-d", "-E", "-s", "-a", "-i"},
+}
+_NETWORK_TOOLS = {"gh", "curl", "wget", "http", "https", "hub"}
+
+
+class _Unparseable(Exception):
+    pass
+
+
+def _segments(command: str) -> list[str]:
+    """Split on shell command separators and `$(` that are outside quotes."""
+    out, cur, quote, i = [], [], None, 0
+    while i < len(command):
+        c = command[i]
+        if quote:
+            cur.append(c)
+            if c == "\\" and quote == '"' and i + 1 < len(command):
+                cur.append(command[i + 1])
+                i += 1
+            elif c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+            cur.append(c)
+        elif c == "\\" and i + 1 < len(command):
+            cur.append(command[i : i + 2])
+            i += 1
+        elif command.startswith("$(", i):
+            out.append("".join(cur))
+            cur = []
+            i += 1
+        else:
+            sep = next((s for s in _SEPARATORS if command.startswith(s, i)), None)
+            if sep:
+                out.append("".join(cur))
+                cur = []
+                i += len(sep) - 1
+            else:
+                cur.append(c)
+        i += 1
+    if quote:
+        raise _Unparseable("unbalanced quote")
+    out.append("".join(cur))
+    return [s for s in (x.strip() for x in out) if s]
+
+
+def _tokens(segment: str) -> list[str]:
+    try:
+        return shlex.split(segment, posix=True)
+    except ValueError as exc:
+        raise _Unparseable(str(exc)) from exc
+
+
+def _command_start(tokens: list[str]) -> int:
+    """Index of the real executable: past VAR=val, env, sudo, timeout N, xargs and the like."""
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        name = os.path.basename(tok)
+        if _VAR.fullmatch(tok):
+            i += 1
+        elif name in _PREFIXES:
+            i += 1
+            values = _OPT_VALUE.get(name, set())
+            while i < len(tokens) and (
+                tokens[i].startswith("-") or _VAR.fullmatch(tokens[i])
+            ):
+                i += 2 if tokens[i] in values else 1
+            if name == "timeout":
+                i += 1  # the duration
+        else:
+            break
+    return i
+
+
+def _commands(command: str):
+    """Yield (executable basename, argument tokens) for every command in the text,
+    including a script handed to a shell with -c, to eval, or to find -exec."""
+    for seg in _segments(command):
+        tokens = _tokens(seg)
+        i = _command_start(tokens)
+        if i >= len(tokens):
+            continue
+        exe, args = os.path.basename(tokens[i]).lower(), tokens[i + 1 :]
+        yield exe, args
+        if exe in _SHELLS and any(re.fullmatch(r"-[a-z]*c[a-z]*", a) for a in args):
+            script = [a for a in args if not a.startswith("-")]
+            if script:
+                yield from _commands(script[0])
+        elif exe == "eval":
+            yield from _commands(" ".join(args))
+        elif exe == "find":
+            for j, a in enumerate(args):
+                if a in ("-exec", "-execdir", "-ok", "-okdir"):
+                    inner = []
+                    for b in args[j + 1 :]:
+                        if b in (";", "+"):
+                            break
+                        inner.append(b)
+                    yield from _commands(shlex.join(inner))
+
+
+def _git_push_args(args: list[str]):
+    """(directory option, push arguments) when this git call is a push, else None."""
+    i, where = 0, None
+    while i < len(args):
+        a = args[i]
+        if a == "-C" and i + 1 < len(args):
+            where = args[i + 1]
+            i += 2
+        elif a in ("-c", "--git-dir", "--work-tree", "--namespace") and i + 1 < len(
+            args
+        ):
+            i += 2
+        elif a.startswith("-"):
+            i += 1
+        else:
+            break
+    if i < len(args) and args[i] == "push":
+        return where, args[i + 1 :]
+    return None
+
+
+def _blocked_commands(command, cwd, *, worker, check_base_pushes) -> bool:
+    here = cwd
+    for exe, args in _commands(command):
+        text = " ".join([exe, *args]).lower()
+        if exe == "cd" and args:
+            path = Path(args[0])
+            here = path if path.is_absolute() or not here else Path(here) / path
+        elif exe == "devloop-merge" and worker:
+            return True
+        elif exe in _NETWORK_TOOLS and (
+            _ANYWHERE.search(text) or _GH_PR_MERGE.search(text)
+        ):
+            return True
+        elif exe == "git" and check_base_pushes:
+            push = _git_push_args(args)
+            if push is None:
+                continue
+            where, rest = push
+            root = here
+            if where:
+                path = Path(where)
+                root = path if path.is_absolute() or not here else Path(here) / path
+            if _push_targets_base(" ".join(rest), root):
+                return True
+    return False
+
+
 def blocked(command: str, cwd=None, *, worker=False, check_base_pushes=True) -> bool:
     """True when the command must be denied.
 
     A worker (loop worker or subagent) may not merge at all, devloop-merge included. The
     headless tick may merge only through a lone devloop-merge call and, with check_base_pushes
-    False, may push to a base branch (docs commits in DOCUMENT).
+    False, may push to a base branch (docs commits in DOCUMENT). The executable of each shell
+    command segment decides, so a search term or a commit message may name a command. Text
+    that cannot be parsed is denied for a worker and gets the plain text match otherwise.
     """
-    text = command.lower()
-    if worker:
-        if _DEVLOOP_MERGE.search(text):
-            return True
-    elif _ONLY_MERGE_CMD.fullmatch(command) and not _METACHARS.search(command):
+    if (
+        not worker
+        and _ONLY_MERGE_CMD.fullmatch(command)
+        and not _METACHARS.search(command)
+    ):
         return False
+    try:
+        return _blocked_commands(
+            command, cwd, worker=worker, check_base_pushes=check_base_pushes
+        )
+    except _Unparseable:
+        if worker:
+            return True
+        return _blocked_text(command, cwd, check_base_pushes)
+
+
+def _blocked_text(command: str, cwd, check_base_pushes) -> bool:
+    text = command.lower()
     if _ANYWHERE.search(text) or _GH_PR_MERGE.search(text):
         return True
     if not check_base_pushes:

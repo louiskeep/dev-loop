@@ -333,7 +333,13 @@ def test_merge_refuses_inside_a_worker(proj, gate, tmp_path):
     k = gate()
     env = {**os.environ, "DEVLOOP_RUN": "r1"}
     r = subprocess.run(
-        [sys.executable, "-c", "import sys; from devloop import merge_cli; sys.exit(merge_cli.main(sys.argv[1:]))", proj, k],
+        [
+            sys.executable,
+            "-c",
+            "import sys; from devloop import merge_cli; sys.exit(merge_cli.main(sys.argv[1:]))",
+            proj,
+            k,
+        ],
         env=env,
         capture_output=True,
         text=True,

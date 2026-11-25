@@ -366,7 +366,11 @@ def _apply(project, run_id) -> str:
             )
         outcome = slices.apply_effects(project, key, run_id, failure=fkey, **guard)
     elif res.status == "BLOCKED" or ev_kind is None:
-        writer = kind if kind in ("builder", "codex-builder") and res.status == "DONE" else None
+        writer = (
+            kind
+            if kind in ("builder", "codex-builder") and res.status == "DONE"
+            else None
+        )
         outcome = slices.apply_effects(project, key, run_id, writer=writer)
         store.append_event(
             project, "run-done", run=run_id, key=key, status=res.status, run_kind=kind

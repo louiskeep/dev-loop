@@ -1,0 +1,51 @@
+"""The merge guard reads the executable of each shell command segment."""
+
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from hooks import headless_merge_guard as guard  # noqa: E402
+
+WORKER_ALLOWED = [
+    "rg devloop-merge README.md",
+    "grep -rn devloop-merge docs/",
+    'git commit -m "mention gh pr merge"',
+    'grep "git push origin main" x',
+    "cat notes.md | grep devloop-merge",
+    "echo 'run devloop-merge later' > note.txt",
+    "ls && rg 'gh pr merge' docs",
+    "FOO=1 rg devloop-merge .",
+    "timeout 30 rg devloop-merge .",
+    "git push origin feat/x",
+]
+WORKER_DENIED = [
+    "devloop-merge proj ROW--S1",
+    "/home/x/bin/devloop-merge proj ROW--S1",
+    "FOO=1 devloop-merge proj ROW--S1",
+    "env FOO=1 devloop-merge proj ROW--S1",
+    "sudo devloop-merge proj ROW--S1",
+    "timeout 60 devloop-merge proj ROW--S1",
+    "ls; devloop-merge proj ROW--S1",
+    "ls && devloop-merge proj ROW--S1",
+    "false || devloop-merge proj ROW--S1",
+    "echo x | xargs devloop-merge",
+    "ls\ndevloop-merge proj ROW--S1",
+    "bash -c 'devloop-merge proj ROW--S1'",
+    "echo $(devloop-merge proj ROW--S1)",
+    "gh pr merge 5",
+    "git push origin main",
+    "cd x && git push origin HEAD:main",
+    "echo 'unterminated",
+]
+
+
+@pytest.mark.parametrize("command", WORKER_ALLOWED)
+def test_a_worker_may_name_a_command_without_running_it(command):
+    assert guard.blocked(command, worker=True) is False
+
+
+@pytest.mark.parametrize("command", WORKER_DENIED)
+def test_a_worker_is_denied_a_real_invocation(command):
+    assert guard.blocked(command, worker=True) is True

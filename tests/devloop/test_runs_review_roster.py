@@ -112,15 +112,11 @@ def test_claude_written_head_with_only_codex_still_passes(proj, ready, give):
     slices.apply_effects(proj, key, "b1", writer="builder")
     give(proj, key, "code:codex", "c1")
     assert all(
-        ok
-        for n, ok in slices.exit_checklist(proj, key, "GATE")
-        if "code review" in n
+        ok for n, ok in slices.exit_checklist(proj, key, "GATE") if "code review" in n
     )
 
 
-def test_a_damaged_process_record_cannot_change_the_roster(
-    proj, ready, mk_run
-):
+def test_a_damaged_process_record_cannot_change_the_roster(proj, ready, mk_run):
     key, _, head = ready("REVIEW", risk="R1", round=4)
     slices.apply_effects(proj, key, "cb1", writer="codex-builder")
     mk_run(proj, "cb1", kind="codex-builder", key=key, head=head)

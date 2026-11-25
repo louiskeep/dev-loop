@@ -190,7 +190,9 @@ def _push_writer(rd, req):
     if why is None:
         if hdr.get("head") != pushed:  # report the commit the remote confirmed
             old = path.read_text(encoding="utf-8", errors="replace")
-            store.write_text(path, re.sub(r"(?m)^head:.*$", f"head: {pushed}", old, count=1))
+            store.write_text(
+                path, re.sub(r"(?m)^head:.*$", f"head: {pushed}", old, count=1)
+            )
         return
     body = path.read_text(encoding="utf-8", errors="replace").partition("\n---")[2]
     text = f"status: FAILED\nhead: \nverdict: \ntests: {hdr.get('tests', '')}\n"

@@ -3,7 +3,7 @@ Status: plan
 updated: 2026-11-25
 ---
 
-# Dev Loop Dashboard: Mission Control Layout Implementation Plan
+# Dev Loop Dashboard: Mission Control and Loop Control Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -12,144 +12,178 @@ profiles/local-operations, feature-dev, reuse-first, proportionality, architectu
 cross-cutting-concerns, security, performance, observability-and-resilience,
 api-and-compatibility, testing, workspace-and-vcs.
 
-Risk: **R1** (read-only, local, reversible; no new writes, no new routes, no commands).
-Review: Outside reviewer only, on the plan and on each slice head. Repo
-`/home/cam/dev-loop-plugin`, branch `feat/headless-loop`, planned from head `0b867f9`.
+Risk: S1 and S2 are **R1** (read-only, local, reversible). S3 adds owner write actions over
+HTTP (a new trust boundary), so it is **R2**: written plan, adversarial review (Senior
+reviewer, then Outside reviewer, per the local operations profile), exact-head gate. Risk
+only rises; the coordinator confirms the S3 tier. Repo `/home/cam/dev-loop-plugin`, branch
+`feat/headless-loop`, planned from head `7af0177`.
 
 **Goal (owner, 2026-11-25):** "I want something more like this"
 (github.com/Dri-water/observe-agents-do-things, MIT). Rebuild the dashboard in that dense
-mission-control style and keep everything only the loop knows: slices, phases, checklists,
-owner questions, holds, capacity, memory, merges.
+mission-control style, keep everything only the loop knows, and make it "the one stop for
+loop control": the owner answers questions, pauses, resumes and runs a tick from the page.
 
-**Spec:** this plan, plus the base plan `docs/plans/2026-11-25-devloop-dashboard.md`, whose
-guarantee, routes, lifecycle and role-label rules stay in force. Reference screenshots:
-`/home/cam/scratch/oadt-ref/mission.png`, `mission-drawer.png`, `mission-mobile.png`.
-Current look: `/home/cam/scratch/devloop-dash/*.png`.
+**Spec:** this plan, plus the base plan `docs/plans/2026-11-25-devloop-dashboard.md` (its
+lifecycle and role-label rules stay in force; its read-only guarantee now covers GET routes
+only). Reference screenshots: `/home/cam/scratch/oadt-ref/mission.png`,
+`mission-drawer.png`, `mission-mobile.png`. Current look:
+`/home/cam/scratch/devloop-dash/*.png`. Outside review folded in:
+`/home/cam/scratch/devloop-review/dash-mc-plan-last.md` (see "Review record").
 
-**Architecture:** one new module, `devloop/dash/transcript.py`, reads the tail of each live
-worker's output file (Claude stream-json or Codex text), keeps an in-memory cache per file,
-and returns only structured tool-call facts: a fixed kind tag, a safe short target, a time.
-A second new module, `devloop/dash/live.py`, turns runs plus those facts into worker cards,
-the activity feed, the KPI numbers and the per-slice drawer data. `view.py` adds them to the
-sealed view (schema 2). `render.py` keeps the page shell and pipeline; a new
-`render_live.py` renders the KPI strip, attention bar, worker cards, feed and drawer sources.
-`dash.js` keeps polling `/fragment` and adds the drawer. No new route.
+**Architecture:** `devloop/dash/transcript.py` reads the tail of each worker's output file
+(Claude stream-json or Codex text), keeps an in-memory cache per file and a bounded feed
+log, and returns only structured tool-call facts. `devloop/dash/live.py` turns runs plus
+those facts into worker cards, the feed, the KPI numbers and per-slice drawer data.
+`view.py` adds them to the sealed view (schema 2). `render.py` keeps the page shell and
+pipeline; `render_live.py` renders the KPI strip, attention bar, worker cards, feed and
+drawer sources; `render_control.py` renders the decisions drawer, the "Decided for you"
+list and the loop controls. `server.py` gains one POST table, `ACTIONS`, whose handlers call
+the same state functions the CLI uses. `dash.js` polls `/fragment` and drives both drawers.
 
-**Tech Stack:** Python 3.11 stdlib (`os`, `json`, `re`, `collections`, `threading`), vanilla
-JS, CSS custom properties, inline SVG. Tests: pytest with the existing `proj`, `home`,
-`dash` fixtures. No Hypothesis in the repo, so fuzz tests use seeded `random`.
+**Tech Stack:** Python 3.11 stdlib (`os`, `json`, `re`, `collections`, `secrets`,
+`hmac`, `urllib.parse`, `subprocess`), vanilla JS, CSS custom properties, inline SVG.
+Tests: pytest with the existing `proj`, `home`, `dash` fixtures. No Hypothesis in the repo,
+so fuzz tests use seeded `random` and are named as seeded fuzz.
 
 ## Global Constraints
 
-- Read-only: the dashboard never writes loop state and runs no command. Transcript files
-  open with mode `"rb"` only.
+- GET and HEAD routes never write state and run no command. Writes happen only in POST
+  handlers listed in `server.ACTIONS`, each through an existing state function.
 - Stdlib Python only. No external network, CDN, web font or JS library.
-- Routes stay exactly `/`, `/fragment`, `/api/state`, `/static/dash.css`, `/static/dash.js`,
-  with ETag and 304 as now.
-- Role labels from `project.role_label` and `pool_label` only (Tech lead, Architect,
-  Developer, Senior reviewer, Outside reviewer, QA, Tech writer, Product owner). Run kind
-  names such as `dennis` never reach a page.
+- Role labels from `project.role_label` and `pool_label` only. Run kind names such as
+  `dennis` never reach a page.
 - Loopback default bind, `dash.host` override: unchanged.
 - Light and dark themes, both meeting the AA test in `test_dash_render.py`.
 - Works at 390 px wide with no horizontal page scroll.
 - No em dashes in any copy, CSS comment or JS string.
 - No code diff text and no avatars. Role icons are inline SVG from a fixed set.
-- Redaction: from a transcript the page shows only a tool kind tag, a file basename or a
-  command's first word, counts and times. Never arguments, prompts, outputs, model text,
-  thinking, directories or full commands.
-- Poll every 4 s; keep the open drawer, filters, open `details` and scroll position.
+- Tool-call redaction: from a transcript the page shows only a tool kind tag, a Claude file
+  basename or an allowlisted command name, counts and times.
+- Owner questions (question, detail, options, answers) are shown in full, as written
+  (owner decision, 2026-11-25; local single-user threat model).
+- Poll every 4 s; keep open drawers, filters, open `details`, form input and scroll.
+- Threat model: accidents only (double posts, stale tabs, wrong tab). Not attackers on the
+  LAN. The default bind is loopback.
 
 ## Review Focus
 
-1. A worker whose output file is huge (hundreds of MB) or has one 50 MB line: the poll must
-   stay fast and memory flat. Pinned by `test_first_read_is_bounded_by_tail_bytes` and
-   `test_huge_line_is_skipped_bounded` (Task 3).
-2. A run that is executing but has not written a byte yet, or whose output directory is
-   gone: the card shows "starting" and the page still renders. Pinned by
-   `test_missing_transcript_card_says_starting` (Task 5).
-3. A shell command whose first word is a secret or a path, or wrapped in `bash -lc`, `env`,
-   `cd x &&`: the page shows a safe word or `?`, never the rest. Pinned by
-   `test_shell_word_cases` (Task 1).
-4. The drawer is open on a slice that moves to DONE between polls: the drawer says the slice
-   is no longer active instead of going blank or throwing. Checked by
-   `test_drawer_sources_only_for_active_slices` (Task 5) and the VERIFY browser script
-   (Task 8).
-5. A Codex file written by another Codex version (no `exec` blocks, different header): the
-   card still shows the worker, with no doing-now line and no error. Pinned by
-   `test_codex_unknown_format_yields_no_calls` (Task 2).
+1. A worker whose output file is huge or has one 50 MB line: the poll stays fast and
+   memory flat (`test_first_read_is_bounded_by_tail_bytes`,
+   `test_overlimit_line_across_polls_is_dropped`, Task 3).
+2. An owner answers a question in a stale tab after the tick changed it: the answer is
+   refused with "This question changed. Reload to see the new version."
+   (`test_answer_with_old_version_is_refused`, Task 9).
+3. A double click on "Go with recommended": one answer is recorded, the second post gets
+   "Already answered" (`test_double_post_records_one_answer`, Task 11).
+4. A shell command whose first word is data (`customer42`) or hides behind quotes: the page
+   shows `?` (`test_shell_word_cases`, Task 1; leak sentry, Task 8).
+5. The 31st active slice, opened then moved to DONE: it opens checklist-only, then reads
+   "This slice is no longer active." (`test_drawer_fallback_hooks`, Task 6; VERIFY, Task 8).
 
 ## Guarantee and non-goals
 
-Guarantee: as in the base plan. The new public facts are: tool kind tags from a fixed
-table, file basenames and command first words that pass `safe_target`, model names that
-pass the `model` kind, integer counts (tools, errors, tokens), per-minute buckets,
-timestamps, and the option words of owner questions when each option passes `scrub.plain`.
+Guarantee: GET routes publish only the base plan's structured facts plus tool kind tags,
+Claude file basenames that pass `safe_target`, allowlisted command names, model names,
+counts, buckets, timestamps, and owner question records in full. POST routes change state
+only through `notes.answer`, `store.set_paused` and `tick.spawn_detached`, each refused
+without the page token and a same-origin request, and `answer` refused on a stale version.
 
-Non-goals: code diffs, `git` reads, line counts per file, cost in dollars, avatars or
-animation, SSE or websockets, write actions (no dismiss or answer buttons), reading
-`~/.codex/sessions` or any file outside the project's state dir, per-subagent trees, a JS
-build step, a settings panel, multiple projects per page, a Codex `--json` parser.
+Non-goals: code diffs, `git` reads, line counts, costs, avatars, SSE, websockets, auth or
+hostile-LAN defences, launching Claude or any agent from the page, editing slices from the
+page, reading `~/.codex/sessions` or any file outside the project's state dir, a Codex
+`--json` parser, per-subagent trees, a JS build step, multiple projects per page.
 
 ## Design notes
 
-- **Kind on a worker card means the harness**, shown as a badge `Claude`, `Codex` or
-  `Script` (tests and duties). The run kind name is internal and can be a persona name, so
-  it never shows; the role label carries the meaning.
-- **Owner question options:** an option shows as its own text only when
-  `scrub.plain(option) == option` and it is 40 characters or less (holds use the release
-  option and `keep-held`, which pass); otherwise it shows as "Option 2". Option text is
-  model-written free text up to 200 characters (`devloop/notes.py:389`), so this keeps the
-  base plan's no-free-text rule. The recommended one is marked. "Where to answer" is fixed
-  copy built from IDs, `devloop-state PROJECT answer KEY <option>` (the wording
-  `notes._post_question` already uses, `devloop/notes.py:434`), plus "or the questions
-  page". No file path is shown.
-- **Files touched in the drawer** come from EDIT and WRITE calls in the selected run's
-  transcript: basename and number of edit calls. No line counts, no git.
-- **Drawer data travels in `/fragment`**, one hidden `<section class="dsrc">` per active
-  slice (bounded below), so no route is added and `/api/state` carries the same facts.
-- **One time source per harness:** Claude events carry `timestamp`; Codex text has none, so
-  a Codex call is stamped with the time the server first read its bytes (on a first tail
-  read: the file mtime). Codex sparklines are therefore coarse; that is accepted.
-- **Doing now** is the newest tool call plus `running` (no matching `tool_result` seen yet
-  for Claude; for Codex, no `succeeded`/`exited` line after the `exec` block yet).
-- **Tokens:** Claude: `tokens_out` is the sum of `output_tokens` over distinct
-  `message.id`s (stream-json repeats one message's usage on each content block);
-  `context` is the newest message's `input_tokens + cache_read_input_tokens +
-  cache_creation_input_tokens`. Codex: the number after a `tokens used` line, else null.
-- **Needs attention** holds Product owner items only (questions, holds), then stuck slices.
-  Known problems and unreadable files move to a collapsible "Known problems" panel owned by
-  Tech lead. If a builder has already split these in the tree when Task 4 starts, Task 4
-  adapts that code to the schema below rather than adding a second split.
-- **Schema bump:** `/api/state` goes from `schema: 1` to `schema: 2`. The only consumers are
-  the page and the tests (`grep -rn '"schema"' devloop` finds no other reader).
-- **Choke point for transcript text:** `safe_target` is the only function that turns
-  transcript bytes into a string the view keeps (`shell_word` ends in it), and `_seal`'s new
-  `target` kind re-checks every such value, so a new extractor that skips `safe_target`
-  fails `_seal` (`ViewError`) before any route renders. Guard: the class 1 sentry below.
-- **Principles applied:** single responsibility (parsing and caching in `transcript.py`,
-  view assembly in `live.py`, HTML in `render_live.py`; `render.py` is at 485 lines and
-  `view.py` at 640, so new code goes in new files split by reason to change);
-  information hiding (`Cache.read` hides offsets, rotation and format; callers get a
-  `FileState`). House style: typed context objects, one place per fact, no flag arguments.
+- **Kind on a worker card means the harness**: badge `Claude`, `Codex` or `Script`. One
+  registry: `runs.Kind` gains `harness` (`claude`, `codex`, `script`) and `transcript`
+  (`stream-json`, `codex-text`, `outside`, `none`). `wrap.CODEX_KINDS` is derived from it
+  (`devloop/wrap.py:23`), `transcript_path` and the badge read it. `codex-fix` is
+  `transcript: outside` (its launcher writes `~/.cache/codex-fix/<name>/out.txt`, outside
+  the state dir), so its card reads "activity not shown for this worker", distinct from
+  "starting". `test` and `duty` are `script`/`none`.
+- **Feed tags live on the event descriptors**: `status._WORDS` (`devloop/status.py:152`)
+  becomes `status.EVENTS = {kind: EventDesc(words, tag)}`; `EVENT_KINDS`, `event_words` and
+  a new `event_tag` read it. The view reads events once into `ctx.events`; activity and the
+  feed both project from that list (today `_activity` reads them, `devloop/dash/view.py:623`).
+- **Owner questions in full** (coordinator decision): question, detail, options,
+  recommended and answers are sealed as `owner_text` (single line, at most 1000
+  characters, escaped at render). The answer hint uses the real key (`hold:KEY` for holds,
+  `devloop/notes.py:473`) and the real option values.
+- **Question class** (owner addition): `ask` takes `klass` (`tech` or `product`, default
+  `product`). Product is anything a user of the product would notice or the business
+  decides (behavior, scope, defaults, naming, pricing, release, data-handling policy,
+  roadmap order); tech is implementation, tooling, test and gate mechanics; unsure means
+  product. The class is the tick's judgment, written in TICK and PLAYBOOK; no config list.
+  Ratchet, cap or allowlist growth follows the ratchet rule (owner, 2026-11-25): it is tech
+  when a planned fix (roadmap row, plan or logged follow-up) will retire the entry, or the
+  entry is a legitimate registry site, and the answer names that fix; with no fix planned,
+  the tick logs one first; when the same class has needed entries in 3 or more places, the
+  tick adds no entry and sends it to an Architect tech review for a central handler. The
+  Decoy playbook already carries this rule (`PLAYBOOK-decoy.md` lines 129, 169, 212 in the
+  vault); the generic skill playbook gets the same rule in generic words. `tech` means:
+  the recommended option applies now, the Slack line reads "Tech lead decided KEY: OPTION. Override on the
+  dashboard.", and the page lists it under "Decided for you" with Override. `product` means
+  the question waits for the owner. `wait` is derived from the class; the CLI `--wait` flag
+  stays and forces `product`.
+- **Free-text answers** are stored as `other: <text>` (single line, 1 to 500 characters)
+  for non-hold questions. Holds accept only their two options. The tick treats an
+  `other:` answer as the owner's instruction (TICK and PLAYBOOK wording, Task 9).
+- **Question version**: `notes.question_version(q)` is 16 hex of sha256 over the canonical
+  JSON of the stored record. A dashboard answer carries it; `_apply_answer` compares it
+  inside the questions lock and refuses a mismatch. The CLI passes no version.
+- **One write path**: the dashboard calls `notes.answer(..., via="dashboard",
+  expect_version=V)`, `store.set_paused(project, on, via)` (the CLI `pause`/`resume` branch,
+  `devloop/state_cli.py:257`, moves into it) and `tick.spawn_detached(project)` (moved from
+  `wrap._wake_tick`, `devloop/wrap.py:241`, so wrapper wake-ups and the button start a tick
+  the same way). No new file format: two optional fields (`Detail`, `Class`)
+  join the existing questions page.
+- **"Run a tick now"** is refused when `tick.lock_held(project)` is true (non-blocking flock
+  probe on `tick.lock`, released at once, `devloop/tick.py:199`). The probe and spawn can
+  race with cron; the tick's own lock then coalesces the second start into
+  `tick.requested`, so the race is harmless.
+- **Token and origin**: one `secrets.token_urlsafe(32)` per server process, embedded in the
+  page and every form. A POST needs the token (compared with `hmac.compare_digest`) and an
+  `Origin` (or, without it, `Referer`) whose host and port equal the request's `Host`.
+  A stale tab after a server restart gets "This page is out of date. Reload." The token is
+  not in `/api/state` or the ETag.
+- **"Copy for Claude"** copies: "Help me decide dev loop question KEY in project PROJECT.
+  The question, its options and the background are in PATH. Read it, explain the trade-off,
+  and recommend an option." PATH is the questions file path, shown only in this copy text
+  (owner request). The clipboard API needs a secure context (loopback is one; a LAN IP over
+  http is not), so the button falls back to selecting a read-only text box.
+- **Drawers**: one shell outside `#app-body`, two kinds by hash: `#slice=KEY` and
+  `#q=KEY`. Drawer data rides in hidden sources inside `/fragment`, so GET routes stay
+  five. A slice beyond `DRAWER_SLICES` opens checklist-only from its pipeline card; only a
+  key with neither source nor card reads "no longer active".
+- **Choke points**: transcript text reaches the view only through `safe_target`, re-checked
+  by `_seal`'s `target` kind. Writes happen only in `server.ACTIONS` handlers, reached only
+  through `_post`, which checks token, origin and body size before any handler runs.
+- **Builder work assumed in the tree** (coordinator note): dashboard config reads do not
+  create files, ledger parsing is tolerant, text is normalized after truncation, and the
+  dashboard iterates `project.SLOTS`.
+- **Principles applied**: single responsibility (parsing and caching, view assembly, live
+  HTML, control HTML and actions in separate modules; `view.py` is 640 lines and `render.py`
+  485); information hiding (`Cache.read` hides offsets, rotation and format). House style:
+  typed context objects, one place per fact, no flag arguments.
 
 ## Established solutions
 
 Searched: the reference repo's protocol and mission view (`docs/PROTOCOL.md`,
 `apps/web/src/viz/mission/mission.css`, read through `gh api`), and the codebase's own
-readers. Findings used:
-- Tool categories (`read`, `search`, `edit`, `write`, `shell`, `web`, `agent`, `plan`,
-  `mcp`, `other`) and mapping a Codex `exec` of `rg` to search, from the reference's
-  PROTOCOL "Tool categories". We adopt the category idea and our own fixed tag table.
-- Tail reading follows `tail -F` semantics (follow by name, detect rotation by inode and
-  truncation by size shrink) as in GNU coreutils `tail` and Python's
-  `logging.handlers.WatchedFileHandler` (dev and inode comparison after `os.fstat`).
-- Incremental line framing with a bounded pending buffer is the usual line-reader shape
-  (`asyncio.StreamReader.readline` limit semantics: over-limit lines are discarded).
-- Stream-json event shapes are taken from live run files under
-  `~/.local/state/devloop/decoy/runs/*/out/log` (field names only), and Codex text shapes
-  from `codex.out` written by `~/bin/codex-review` (`codex exec ... > "$out" 2>&1`).
-Custom code is limited to the two small parsers and the safe extractors; no library parses
-these formats, and the stdlib covers file following.
+readers and writers. Used:
+- Tool categories and mapping a Codex `exec` of `rg` to search: the reference's PROTOCOL
+  "Tool categories". We keep our own fixed tag table.
+- File following: GNU `tail -F` semantics and Python's
+  `logging.handlers.WatchedFileHandler` (compare dev and inode after `os.fstat`).
+- Line framing with a hard per-line limit: `asyncio.StreamReader.readline` limit semantics
+  (an over-limit line is discarded, not passed on).
+- Write protection for a local page: the OWASP synchronizer-token pattern plus an `Origin`
+  check (OWASP CSRF Prevention Cheat Sheet), POST-only state changes, and optimistic
+  concurrency with a version token (HTTP `If-Match` idea, RFC 9110 section 13.1.1, carried
+  as a form field).
+- Stream-json shapes from live run files under `~/.local/state/devloop/decoy/runs/*/out/log`
+  (field names only); Codex text from `codex.out` written by `~/bin/codex-review`.
 
 ## Performance limits
 
@@ -157,577 +191,653 @@ All constants live at the top of `devloop/dash/transcript.py` and `live.py`.
 
 | Name | Value | Meaning |
 |---|---|---|
-| `TAIL_BYTES` | 524288 (512 KiB) | first read of a file starts at `max(0, size - TAIL_BYTES)`, after the next newline |
-| `STEP_BYTES` | 1048576 (1 MiB) | most bytes read from one file per build; a bigger gap jumps to the tail and sets `partial` |
-| `MAX_LINE` | 2097152 (2 MiB) | a pending partial line longer than this is dropped; reading skips to the next newline |
-| `KEEP_CALLS` | 50 | tool calls kept per file (a `deque`) |
-| `SPARK_MINUTES` | 15 | per-minute buckets kept per file |
-| `MAX_LIVE` | 16 | executing runs parsed per build, newest first; the rest show without a doing-now line |
-| `MAX_DRAWER_FILES` | 8 | finished-run transcripts parsed per build for drawers (newest run per active slice) |
+| `TAIL_BYTES` | 524288 (512 KiB) | first read starts at `max(0, size - TAIL_BYTES)` |
+| `STEP_BYTES` | 1048576 (1 MiB) | most bytes read from one file per build; a bigger gap jumps to the tail (a discontinuity) |
+| `MAX_LINE` | 2097152 (2 MiB) | any line longer than this is dropped before parsing, and so is a pending piece that passes it |
+| `KEEP_CALLS` | 50 | tool calls kept per file |
+| `SPARK_MINUTES` | 15 | per-minute buckets for the sparkline |
+| `RATE_SECONDS` | 60 | one-second buckets per file for the exact trailing-60-second rate |
+| `DEDUP_IDS` | 2000 | message ids remembered for token deduplication (oldest dropped; the total is kept apart) |
+| `MAX_LIVE` | 16 | executing runs parsed per build, newest first |
+| `MAX_DRAWER_FILES` | 8 | finished-run transcripts parsed per build for drawers |
 | `CACHE_ENTRIES` | 64 | files kept in the cache; least recently used evicted |
-| `FEED_LIMIT` | 40 | feed items (tool calls plus loop events), newest first |
+| `FEED_LIMIT` | 40 | feed items, newest first; the feed log keeps 40 safe facts apart from the file cache |
 | `DRAWER_RUNS` | 8 | runs listed per slice drawer, newest first |
-| `DRAWER_SLICES` | 30 | active slices given a drawer source; the rest open a drawer with checklist only |
+| `DRAWER_SLICES` | 30 | active slices given a drawer source |
+| `POST_BYTES` | 8192 | largest POST body accepted |
+| `TICK_DEBOUNCE_S` | 10 | a second "Run a tick now" within this window is refused |
 
 Cache identity: `(st_dev, st_ino)`. Fast path: `os.stat(path)`; if inode, size and
-`st_mtime_ns` match the entry, no open and no read. Otherwise open `"rb"`, `os.fstat` the
-open file, and use the fstat values for every decision. Steady-state cost per poll is the
-new bytes only. Budget, asserted by byte counts rather than wall time: a steady poll over
-16 growing files reads only their growth; a cold build reads at most
-`(MAX_LIVE + MAX_DRAWER_FILES) * TAIL_BYTES` (12 MiB). Live files today run to about
-400 KB per run, so most cold reads are whole files.
+`st_mtime_ns` match the entry, no open and no read. Otherwise open `"rb"`, `os.fstat`, and
+use the fstat values. The cursor advances by the bytes actually read, never to the fstat
+size. A steady poll reads only growth; a cold build reads at most
+`(MAX_LIVE + MAX_DRAWER_FILES) * TAIL_BYTES` (12 MiB). Live files today are about 400 KB.
 
 Missing or rotated transcripts:
-- File absent (run just started, or Codex writes `out/log` only): `state = "starting"` when
-  the run is executing, else `"none"`; no error, no `problems` item.
-- `PermissionError` or other `OSError` on open: `state = "unreadable"` on that card only.
-- Inode changed or size smaller than the stored offset: entry reset, tail read again,
-  `partial = True`, counts restart.
-- Run finished and not in any drawer: entry evicted on the next build.
+- File absent and run executing: `starting`; absent and run finished: `none`.
+- Kind with `transcript: outside` (`codex-fix`): `outside`, never `starting`.
+- `OSError` on open: `unreadable` on that card only.
+- Inode changed or size below the cursor: a discontinuity (below), tail read again.
+- Run finished and in no drawer: its cache entry is evicted; its last feed facts stay in
+  the feed log.
+
+A discontinuity (tail jump, rotation, truncation, dropped over-limit line) clears the
+pending bytes, the Codex parser's continuation state (an `exec` waiting for its command, an
+open patch block) and the "newest call still running" flag, and sets `partial`.
 
 ## Claude and Codex parsing
 
-Where the files are: the wrapper sends the payload's stdout and stderr to `out/log`
+Where the files are: the wrapper sends payload stdout and stderr to `out/log`
 (`devloop/wrap.py:281`). Claude workers run with `--output-format stream-json --verbose`
-(`devloop/dispatch.py:122`), so `out/log` is one JSON event per line. Codex kinds
-(`wrap.CODEX_KINDS`, `devloop/wrap.py:23`) get `out` = `out/codex.out` and
-`last_msg` = `out/final.md` (`devloop/dispatch.py:443`); `codex-review` and `codex-builder`
-write plain `codex exec` text to `codex.out`, `codex-fix` writes to `out/log`. The parser
-picks `codex.out` when it exists, else `out/log`. `final.md` is never read. Kinds `test` and
-`duty` have no transcript: the card shows elapsed time and the `Script` badge only.
+(`devloop/dispatch.py:122`). Codex review and builder runs get `out` = `out/codex.out`
+(`devloop/dispatch.py:443`) and their launchers write plain `codex exec` text there.
+`final.md` is never read.
 
-Claude (`parse_claude_line(raw: bytes) -> ClaudeFacts | None`):
-- Pre-filter on bytes before `json.loads`: only lines containing `b'"tool_use"'`,
-  `b'"tool_result"'`, `b'"subtype":"init"'` or `b'"type":"result"'` go further. Other lines
-  (thinking, progress, hooks) are never decoded.
-- `assistant` events: for each `content` block of type `tool_use`, one `Call(tag, target,
-  at, call_id)`; `at` from the event's `timestamp`; `usage` once per `message.id`.
-- `user` events with `tool_result` blocks: only `tool_use_id` and `is_error`, found with
-  bytes regexes (`rb'"tool_use_id":"(toolu_[A-Za-z0-9]{1,64})"'`, `rb'"is_error":true'`)
-  so a 256 KB result line is never decoded.
-- `system`/`init`: `model` only.
-- Tool name to tag (`TOOL_KINDS`): Read, NotebookRead to READ; Edit, MultiEdit,
-  NotebookEdit to EDIT; Write to WRITE; Bash, bash, BashOutput, Monitor to SHELL; Grep,
-  Glob, ToolSearch to SEARCH; Task, Agent to AGENT; WebFetch, WebSearch to WEB; TodoWrite,
-  Skill, ExitPlanMode to PLAN; names starting `mcp__` to MCP; anything else OTHER.
-- Target: READ, EDIT, WRITE take `safe_target(input.file_path or input.notebook_path)`.
-  SHELL takes `shell_word(input.command)`. SEARCH, WEB and PLAN take the tool's own name
-  from the fixed table (for example `Grep`). AGENT, MCP and OTHER have no target (an
-  agent's `subagent_type` or an MCP server name can be a persona or config name). Every
-  other input field is ignored.
+Claude (`parse_claude_line(raw: bytes) -> ClaudeFacts | None`), structural:
+- A byte pre-filter only skips lines that cannot matter: lines whose `"type"` is
+  `system` with a subtype other than `init`, `tool_progress`, `rate_limit_event`. Every
+  `assistant`, `user`, `system/init` and `result` line within `MAX_LINE` is decoded with
+  `json.loads` and read through typed field access.
+- `assistant`: `message.id`, `message.usage` (`output_tokens`, `input_tokens`,
+  `cache_read_input_tokens`, `cache_creation_input_tokens`; ints only), and each
+  `tool_use` block's `id`, `name` and `input`. A text-only message still yields its usage.
+- `user`: each `tool_result` block's own `tool_use_id` and its own `is_error`, block by
+  block.
+- `system/init`: `model` only.
+- Tokens: per message id, the largest `output_tokens` seen; the running total grows by the
+  difference, so repeated lines count once. The id memory is bounded (`DEDUP_IDS`); the
+  total is a separate integer.
+- Tool name to tag (`TOOL_KINDS`): Read, NotebookRead READ; Edit, MultiEdit, NotebookEdit
+  EDIT; Write WRITE; Bash, bash, BashOutput, Monitor SHELL; Grep, Glob, ToolSearch SEARCH;
+  Task, Agent AGENT; WebFetch, WebSearch WEB; TodoWrite, Skill, ExitPlanMode PLAN; names
+  starting `mcp__` MCP; anything else OTHER.
+- Target: READ, EDIT, WRITE take `safe_target(input.file_path or input.notebook_path)`
+  (a structured field). SHELL takes `shell_word(input.command)`. SEARCH, WEB, PLAN take the
+  tool's own name from the table. AGENT, MCP, OTHER have none.
 
-Codex text (`CodexParser.feed`), a small state machine:
-- `model: NAME` in the first 40 lines sets the model.
-- A line exactly `exec` starts a call; the next non-empty line is the command, cut at a
-  trailing ` in /...`; the tag is SHELL unless `shell_word` is in `CODEX_SEARCH`
-  (`rg`, `grep`, `find`, `fd`, `ls`) for SEARCH or `CODEX_READ` (`cat`, `sed`, `head`,
-  `tail`, `nl`, `wc`) for READ.
-- A line matching `^\s*(succeeded|exited \d+) in \d+ms:?` ends the running call; `exited`
-  with a non-zero code adds one error.
-- A line exactly `apply_patch`, `file update` or `file update:` (an optional trailing
-  ` auto_approved=...:` allowed) starts an edit block; each following line matching
-  `^([AMD]) (\S+)$` is one EDIT (`M`, `D`) or WRITE (`A`) call with `safe_target`; a blank
-  line ends the block.
-- `tokens used` followed by a number line (commas allowed) sets `tokens_out`.
-- `codex`, `thinking`, `user` blocks: skipped. Any other line: ignored. Unknown format:
-  no calls, no error.
+Codex text (`CodexParser.feed`): Codex text mixes commands with their output, so a line of
+output can look like a block header. Rules:
+- Tags come from block headers: a line exactly `exec` starts a call (tag SHELL, or SEARCH
+  or READ when the command name is in `CODEX_SEARCH` or `CODEX_READ`); `succeeded in Nms`
+  or `exited N in Nms` ends it (`exited` non-zero adds an error); `apply_patch` or
+  `file update` starts a patch block whose `A`/`M`/`D` lines each count one WRITE or EDIT.
+- Targets: a Codex SHELL, SEARCH or READ call shows the command name only when it is in
+  `PUBLIC_COMMANDS` and the command line has no quote, backslash, `$`, backtick or `<`.
+  Codex patch lines never show a file name (they may be command output). Otherwise `?`.
+- Model: read once per file identity from the file head (first 4 KiB, between the first two
+  `--------` lines), never from a tail. A header-looking line mid-file is ignored.
+- `tokens used` then a number line sets `tokens_out`.
+- Unknown text gives no calls and no error. Fake calls from output that mimics `exec` can
+  inflate counts; they can only show allowlisted names. Recorded as a known limit.
 
-`safe_target(name: object) -> str`: not a str gives `"?"`; else cut to the part after the
-last `/`; must fullmatch `[A-Za-z0-9][A-Za-z0-9._+-]{0,63}` and equal `scrub.plain(part)`
-(`devloop/scrub.py:51`); else `"?"`. Leading-dot files (`.env`) read `?`.
+`safe_target(name: object) -> str`: not a str gives `"?"`; else the part after the last `/`;
+it must fullmatch `[A-Za-z0-9][A-Za-z0-9._+-]{0,63}` and equal `scrub.plain(part)`
+(`devloop/scrub.py:51`); else `"?"`.
 
-`shell_word(cmd: object) -> str`, an algorithm the tests pin:
-1. Not a str gives `"?"`. Take the first 400 characters. Up to twice, if the text matches
-   `^(?:\S*/)?(?:ba|z)?sh\s+-l?c\s+(['"])(.*)` take group 2 without a trailing matching
-   quote.
-2. Split on `&&`, `||`, `;`, `|` and newlines into segments, in order.
-3. In a segment, split on whitespace; drop leading `NAME=value` tokens; drop wrapper words
-   `env`, `sudo`, `nice`, `nohup`, `time`, `command`, `exec`, and `timeout` with its next
-   token when that token matches `\d+[smhd]?`; if the first token left is `cd`, go to the
-   next segment.
-4. Return `safe_target(first token)`; with no segment left, `"?"`.
+`shell_word(cmd: object) -> str`, pinned by tests:
+1. Not a str gives `"?"`. Take the first 400 characters.
+2. If the whole text matches `^(?:/(?:usr/)?bin/)?(?:ba)?sh -l?c '([^']*)'$`, use group 1.
+3. If the text before the first `&&`, `;` or newline contains a quote, backslash, `$`,
+   backtick, `<`, `>` or `|`, return `"?"`.
+4. Split that first segment on whitespace; drop leading `NAME=value` tokens and the
+   wrappers `env`, `sudo`, `nice`, `nohup`, `time`, and `timeout` with a `\d+[smhd]?`
+   argument. If the first token left is `cd`, move to the next `&&` segment and repeat
+   step 3 on it (at most 3 segments).
+5. Return the token's basename when it is in `PUBLIC_COMMANDS`, else `"?"`.
+
+`PUBLIC_COMMANDS` (frozenset in `transcript.py`): `git gh python python3 uv uvx pip pytest
+ruff mypy node npm npx pnpm make cargo go rustc docker jq rg grep find fd ls cat sed head
+tail nl wc diff sort uniq mkdir cp mv rm touch chmod echo printf sleep curl tar bash sh
+codex claude devloop-state devloop-dash devloop-tick devloop-dispatch`. A guard test pins
+that every entry passes `safe_target`.
 
 ## Reuse inventory
 
-- `view._seal`, `VIEW_SCHEMA`, `WORDS`, `version_of`, `_try`, `_Ctx`, `_iso`
-  (`devloop/dash/view.py:201`, `:91`, `:31`, `:221`, `:269`, `:281`, `:240`): extended, not
-  copied. New scalar kinds `tag`, `target`, `model`, `icon`, `harness`, `option`.
-- `_Ctx._runs` (`devloop/dash/view.py:296`): keeps `rd` and `req` so `live.py` does not walk
-  `runs/` again.
+- `view._seal`, `VIEW_SCHEMA`, `WORDS`, `version_of`, `_try`, `_Ctx`, `_iso`,
+  `_needs_you`, `_problems` (`devloop/dash/view.py:201`, `:478`): extended, not copied.
+- `_Ctx._runs` (`devloop/dash/view.py:312`): the one walk of `runs/`; it now also keeps a
+  bounded history per active slice before it filters to slot holders.
 - `runs.iter_runs`, `run_state`, `KINDS` (`devloop/runs.py:113`, `:233`, `:26`);
-  `wrap.CODEX_KINDS`; `store.out_dir`, `store.read_header` (status and verdict of
-  `result.md` for the drawer run list).
-- `notes.load_questions` (options and recommended, `devloop/notes.py:251`),
-  `notes.HOLD_PREFIX`.
-- `scrub.plain`; `memory.read_memory` (`devloop/dash/memory.py`).
-- `status.events`, `status.event_words`, `status.EVENT_KINDS` for loop events in the feed.
-- `project.role_label`, `pool_label`.
-- `render._chip`, `_time`, `_bar`, `_phase_strip`, `_checklist`, `_section`, `_details`,
-  `PHASE_TEXT`, `CODE_TEXT`, `REASON_TEXT` (`devloop/dash/render.py:93`, `:117`, `:127`,
-  `:234`, `:249`).
-- `server.ViewCache` (`devloop/dash/server.py:41`): owns the one `transcript.Cache` and
-  passes it to `build_view`, so the cache lives as long as the server and is never a
-  module global.
+  `store.out_dir`, `store.read_header` (drawer status and verdict from `result.md`).
+- `notes.load_questions`, `ask`, `answer`, `_apply_answer`, `HOLD_PREFIX`,
+  `_post_question` (`devloop/notes.py:287`, `:371`, `:548`, `:517`, `:428`).
+- `store.locked`, `store.append_event`, `store.state_dir`; `tick.tick` lock file
+  (`devloop/tick.py:199`); `wrap._wake_tick` (moved, not copied).
+- `status.events`, `status.event_words`; `project.role_label`, `pool_label`, `SLOTS`.
+- `render._chip`, `_time`, `_bar`, `_phase_strip`, `_checklist`, `_section`, `_details`
+  (`devloop/dash/render.py:93`, `:117`, `:234`, `:249`).
+- `server.ViewCache`, `Handler._send`, `ROUTES` (`devloop/dash/server.py:41`, `:75`, `:144`).
 - `dash.js` `swap`, `poll`, filters, theme (`devloop/dash/web/dash.js:97`, `:121`).
-- Test helpers `dash_fixture.put_run` (`tests/devloop/dash_fixture.py:47`), `build`, the
-  `srv` fixture, `call` and `_plant` in `test_dash_server.py`.
-- Layout ideas only from the reference repo (KPI strip, attention bar, card grid with
-  sparkline, activity table, side drawer, tag colours). No code copied.
+- Test helpers `dash_fixture.put_run`, `build`, `put_slice`; `srv`, `call`, `_plant` in
+  `test_dash_server.py`.
+- Layout ideas only from the reference repo. No code copied.
 
 ## Frozen contracts
 
-- Unchanged: the five routes and their headers; CLI `devloop-dash`; `dash.json`,
-  `dash.lock`, `dash-port.json`, `node-status.json`; `KINDS` names; `exit_checklist` labels;
-  STATUS.md and the Slack tick line; the wrapper's output file names (`out/log`,
-  `out/codex.out`); stream-json is read, never changed.
-- Changed on purpose, frozen here: `/api/state` `schema: 2` with the Fields below.
-  `needs_you` holds owner items only; stuck items move to `stuck`; problem and unreadable
-  items move to `problems`; `workers` is replaced by `live` and `waiting_runs`.
+- Unchanged: CLI `devloop-dash`; `dash.json`, `dash.lock`, `dash-port.json`,
+  `node-status.json`; `KINDS` names; `exit_checklist` labels; the wrapper's output file
+  names; stream-json is read, never changed; `devloop-state answer KEY CHOICE`, `pause`,
+  `resume` behave as today.
+- Changed on purpose, frozen here:
+  - `/api/state` `schema: 2` with the Fields below.
+  - Routes: the five GET routes plus POST `/act/answer`, `/act/pause`, `/act/resume`,
+    `/act/tick`. `ROUTES` becomes `{(method, path): handler}`.
+  - CSP `form-action 'self'` (was `'none'`).
+  - `runs.Kind` gains `harness` and `transcript`; `wrap.CODEX_KINDS` is derived.
+  - Questions page: optional `- Detail:` and `- Class:` lines; answers may be
+    `other: <text>` for non-hold questions. A page without the new lines reads as today
+    (class `product`).
+  - `devloop-state ask` gains `--detail` and `--class tech|product`.
+  - Event kinds added: `question-answered` gains `via`; new `question-decided`,
+    `loop-paused`, `loop-resumed`, `tick-requested`, each with `via`.
 - New and frozen: `TOOL_TAGS = ("READ", "EDIT", "WRITE", "SHELL", "SEARCH", "AGENT", "WEB",
-  "PLAN", "MCP", "OTHER")`; feed event tags `DISPATCHED`, `APPLIED`, `MOVED`, `MERGED`,
-  `CLOSED`, `QUESTION`, `DROPPED` mapped from `status.EVENT_KINDS`; icon ids `plan`,
-  `build`, `review`, `test`, `docs`, `duty`; harness words `claude`, `codex`, `script`;
-  transcript states `live`, `starting`, `none`, `unreadable`.
+  "PLAN", "MCP", "OTHER")`; event tags `DISPATCHED`, `APPLIED`, `MOVED`, `MERGED`,
+  `CLOSED`, `QUESTION`, `DECIDED`, `ANSWERED`, `DROPPED`, `PAUSED`, `RESUMED`, `TICK`;
+  icon ids `plan`, `build`, `review`, `test`, `docs`, `duty`; harness words `claude`,
+  `codex`, `script`; transcript states `live`, `starting`, `outside`, `none`, `unreadable`.
 
 ## Enumerations
 
 ### Exit paths
 
-- Transcript file absent: `Cache.read` returns the entry with state `starting` (executing)
-  or `none`. No exception leaves `transcript.py` for `OSError`, `ValueError`,
-  `UnicodeError`, `RecursionError` or `TypeError` from one line or one file.
-- Open fails (`PermissionError`, `IsADirectoryError`): state `unreadable` on that card;
-  the view adds no `problems` item (the run dir belongs to the loop, not the owner).
-- Rotation or truncation (`(st_dev, st_ino)` differs, or `st_size < offset`): reset and tail.
-- A pending partial line over `MAX_LINE`: dropped, `skip_to_newline = True`.
-- Run leaves `executing` (exit file written, `devloop/runs.py:233`): its card leaves the
-  grid on the next build; its last calls stay in the feed until older than the newest
-  `FEED_LIMIT`; its cache entry is evicted unless a drawer uses it.
-- View build raises anyway: the server's existing fixed 500 (`devloop/dash/server.py:111`).
-- Client: a drawer open on a key with no source in the new fragment shows the fixed text
-  "This slice is no longer active." Escape, the close button and browser Back close it.
-  Two failed polls show the existing stale banner; the drawer stays open on old data.
+- Reader: file absent, open fails, rotation, truncation, over-limit line: see "Missing or
+  rotated transcripts". No exception leaves `transcript.py` for `OSError`, `ValueError`,
+  `UnicodeError`, `RecursionError`, `TypeError` or `KeyError` from one line or one file;
+  the per-line boundary is in `Cache.read`.
+- Run leaves `executing` (`devloop/runs.py:233`): its card leaves the grid; it stays in its
+  slice's drawer history; its feed facts stay in the feed log.
+- GET view build raises: the existing fixed 500 (`devloop/dash/server.py:107`).
+- POST refusals, each a fixed message, HTTP status, and no state change:
+  - token missing or wrong: 403 "This page is out of date. Reload."
+  - origin missing or foreign: 403 "Refused: not sent from this page."
+  - body over `POST_BYTES`, bad form encoding, unknown or missing field: 400 "Bad request."
+  - question unknown: 409 "This question is gone. Reload."
+  - version differs: 409 "This question changed. Reload to see the new version."
+  - already answered (product question with an answer, version unchanged would be
+    impossible, so this is the double post): 409 "Already answered."
+  - choice not an option and not a valid `other:` text, or `other:` on a hold: 400 with
+    the `NotesError` message (fixed strings from `notes.py`).
+  - tick lock held: 409 "A tick is running now." Within `TICK_DEBOUNCE_S`: 409 "A tick was
+    just started."
+  - a state function raises anything else: 500 "Could not save. Nothing was changed." and
+    the log gets the exception class name only.
+- POST success: 303 to `/` (no JS) or JSON `{"ok": true, "message": ...}` when the request
+  sends `Accept: application/json` (JS).
+- Client: a drawer open on a key with no source and no pipeline card reads "This slice is
+  no longer active."; a question drawer whose question left `needs_you` reads "This
+  question was answered." Two failed polls show the stale banner.
 
 ### Routes
 
-- No route is added. Drawer sources ride inside `/fragment` and `/` (hidden sections) and
-  inside `/api/state` (`drawers`). `server.ROUTES` keeps its five keys
-  (`devloop/dash/server.py:144`).
-- `/fragment` keeps `If-None-Match` and 304. The ETag changes when any fact changes, so
-  with active workers most polls return 200; the fragment budget is 200 KB with 16 workers,
-  40 feed items and 30 drawer sources (asserted in Task 6).
+- GET (read-only, as today): `/`, `/fragment`, `/api/state`, `/static/dash.css`,
+  `/static/dash.js` (`devloop/dash/server.py:144`).
+- POST (`server.ACTIONS`): `/act/answer` (fields `t`, `key`, `version`, `choice` or
+  `other`), `/act/pause` (`t`), `/act/resume` (`t`), `/act/tick` (`t`).
+- HEAD mirrors GET; any other method, or POST to a GET path, is 501 or 405 with fixed
+  text; unknown paths 404.
+- `_post` runs token, origin and size checks before looking up the handler, so a new
+  action cannot skip them.
 
 ### FK shapes
 
-- Run to slice: `req["key"]` to an active slice key. A worker whose slice is gone or not
-  active gets a card with no drawer link (`slice_active: false`).
-- Drawer run list to slice: only runs whose `req["key"]` equals the drawer's key.
-- Worker card to its transcript: the path is built from `store.out_dir(rd)` and fixed names
-  only. `req["out"]` is honoured only when it equals `str(store.out_dir(rd) / "codex.out")`
-  (`devloop/dispatch.py:443`), so a damaged request cannot point the reader at another file.
-- Run ref `KEY.N` (N is the 1-based position of the run among that key's runs by
-  `started_at`): resolves only within its slice's drawer; never a run id.
-- Feed item to worker: by role and key; a call from a run that left the grid still names
-  its role and slice.
+- Run to slice: `req["key"]` to an active slice key; otherwise `slice_active: false`, no
+  drawer link.
+- Drawer run list: only runs whose `req["key"]` equals the drawer key; selected in the
+  run walk before the slot filter.
+- Card to transcript: path from `store.out_dir(rd)` and the kind's `transcript` value;
+  `req["out"]` is honoured only when it equals `out_dir(rd) / "codex.out"`.
+- Answer form to question: `key` must exist in the questions page; `version` must equal
+  `question_version` of that record inside the lock. A hold item's form key is `hold:KEY`.
+- Tech ratchet answer to its planned fix: the TICK wording requires the answer text to
+  name the roadmap row, plan or follow-up key that retires the entry.
 
 ### Fields
 
 `VIEW_SCHEMA` additions and changes (kind in brackets, `?` nullable). Everything else as in
-the base plan.
-- top: `schema`[int] = 2; adds `kpi`, `stuck`, `problems`, `live`, `waiting_runs`, `feed`,
-  `drawers`; removes `workers`.
-- `kpi`: `running`[int], `slots`[int] (sum of caps), `needs_you`[int], `merged_today`[int?],
-  `tools_per_min`[int] (calls with `at` in the last 60 s across live files),
-  `free_mb`[int?], `memory_state`[word?], `last_pass_at`[at?].
-- `needs_you[]`: `kind`[word: question, hold], `key`[id], `owner`[label], `since`[at?],
-  `waiting`[bool], `options`[{`text`[option?], `n`[int], `recommended`[bool]}].
-- `stuck[]`: `key`[id], `owner`[label], `since`[at?].
-- `problems[]`: `kind`[word: problem, unreadable], `key`[id?], `owner`[label],
-  `count`[int?], `since`[at?].
-- `live[]` (one per executing run, newest first; transcripts parsed for the first
-  `MAX_LIVE`): `ref`[id], `role`[label], `icon`[icon], `key`[id], `slice_active`[bool],
-  `phase`[word?], `harness`[harness], `model`[model?], `started_at`[at?], `state`[word:
-  live, starting, none, unreadable], `doing`(null or {`tag`[tag], `target`[target?],
-  `at`[at?], `running`[bool]}), `tools`[int], `partial`[bool], `errors`[int],
-  `tokens_out`[int?], `context`[int?], `spark`[int list, length `SPARK_MINUTES`].
-- `waiting_runs[]`: `role`[label], `key`[id], `state`[word: awaiting-apply,
-  awaiting-release], `started_at`[at?].
+the tree at `7af0177`, which already has `needs_you` (owner items) and `problems` (stuck,
+problem, unreadable).
+- top: `schema`[int] = 2; adds `kpi`, `live`, `waiting_runs`, `feed`, `drawers`,
+  `decided`, `controls`; removes `workers`.
+- `kpi`: `running`[int], `slots`[int], `needs_you`[int], `merged_today`[int?],
+  `tools_per_min`[int] (exact trailing 60 s from second buckets), `free_mb`[int?],
+  `memory_state`[word?], `last_pass_at`[at?].
+- `needs_you[]` (tree fields plus): `answer_key`[id?] (`hold:KEY` for holds; null when no
+  question record exists, as for `merge_unknown`), `question`[owner_text?],
+  `detail`[owner_text?], `options`[owner_text list], `recommended`[owner_text?],
+  `klass`[word: tech, product], `version`[version?].
+- `decided[]` (tech questions decided by the Tech lead, newest 20): `key`[id],
+  `question`[owner_text], `detail`[owner_text?], `options`[owner_text list],
+  `applied`[owner_text], `answer`[owner_text?] (set after an override), `at`[at?],
+  `version`[version].
+- `controls`: `paused`[bool], `tick_running`[bool].
+- `live[]`: `ref`[id], `role`[label], `icon`[icon], `key`[id], `slice_active`[bool],
+  `phase`[word?], `harness`[harness], `model`[model?], `started_at`[at?], `state`[word],
+  `doing`(null or {`tag`[tag], `target`[target?], `at`[at?], `running`[bool]}),
+  `tools`[int], `partial`[bool], `errors`[int], `tokens_out`[int?], `context`[int?],
+  `spark`[int list of `SPARK_MINUTES`].
+- `waiting_runs[]`: `role`[label], `key`[id], `state`[word], `started_at`[at?].
 - `feed[]`: `at`[at], `tag`[tag], `target`[target?], `role`[label?], `key`[id?],
-  `words`[line?] (loop events only, from `status.event_words`).
+  `words`[line?].
 - `drawers[]`: `key`[id], `runs`[{`ref`[id], `role`[label], `harness`[harness],
-  `started_at`[at?], `status`[word?: DONE, BLOCKED, FAILED, running], `verdict`[word?: GO,
-  GO-WITH-FIXES, NO-GO]}], `calls`[{`at`[at?], `tag`[tag], `target`[target?]}] (newest run
-  with a transcript, up to `KEEP_CALLS`), `files`[{`name`[target], `edits`[int]}] (sorted
-  by edits, then name; at most 20). The checklist and PR link come from the card of the
-  same key in `rows`.
+  `started_at`[at?], `status`[word?], `verdict`[word?]}], `calls`[{`at`[at?], `tag`[tag],
+  `target`[target?]}], `files`[{`name`[target], `edits`[int]}] (Claude runs only).
 
-New scalar kinds in `_scalar`: `tag` (in `TOOL_TAGS` or the feed event tags), `target`
-(`safe_target(v) == v`), `model` (fullmatch `[a-z][a-z0-9.-]{1,48}` and no `scrub._TOKEN`
-match; dates in model names are allowed, which `plain`'s hex rule would refuse), `icon`,
-`harness` (fixed tuples), `option` (`plain(v) == v` and `len(v) <= 40`). `spark` is
-declared `["int"]`; `live.py` asserts its length.
+New scalar kinds: `tag`, `target` (`safe_target(v) == v`), `model` (fullmatch
+`[a-z][a-z0-9.-]{1,48}`, no `scrub._TOKEN` match), `icon`, `harness`, `owner_text` (str,
+no newline, at most 1000 characters).
 
-Not in the view: run ids, run kind names, reviewer names, tool input fields other than the
-basename or first word, commands, prompts, tool results, text and thinking blocks, session
-ids, cwd, directories, `final.md`, costs.
+Not in the view: run ids, run kind names, reviewer names, tool inputs other than the
+basename or allowlisted name, prompts, tool results, model text, session ids, directories,
+costs, the page token, the questions file path (only in the copy text, rendered from
+`answer_at` plus the state dir at render time on the server).
 
 ### Output surfaces
 
-- `/` and `/fragment` HTML: KPI strip, attention bar, worker grid, feed, pipeline, known
-  problems, capacity, memory, shipped, parked, hidden drawer sources.
+- `/` and `/fragment` HTML: KPI strip with loop controls, attention bar (owner questions,
+  then stuck), "Decided for you", worker grid, feed, pipeline, known problems, capacity,
+  memory, shipped, parked, hidden drawer sources (slices and questions).
 - `/api/state` JSON: the sealed schema 2 view.
-- Server log (`dash.log`): unchanged (method, path, status). The transcript reader logs
-  nothing; a parse failure is a counter in memory, never a line with file content.
-- CLI stdout and `devloop-state check`: unchanged.
-- Browser: theme in `localStorage` as now; drawer key in `location.hash` (`#slice=KEY`);
-  filters in the query string.
+- POST responses: fixed messages listed in Exit paths.
+- Server log: method, path, status; for POST also the action name and outcome word.
+  Never a form value or question text.
+- Events (`events.jsonl`): `question-answered via=dashboard`, `question-decided`,
+  `loop-paused`, `loop-resumed`, `tick-requested`, with IDs only.
+- Slack: the tech-decision line from `_post_question`; dashboard answers post the existing
+  answered line.
+- Questions page: `Detail` and `Class` lines; `Answer: other: ...`.
+- Browser: theme in `localStorage`; drawer key in `location.hash`; filters in the query.
 
 ## Defect classes
 
 | # | Class | Closing structure | Sentry or property test | Mutation that must fail it |
 |---|---|---|---|---|
-| 1 | value-free output | parser emits only `Call(tag, target, at, call_id)` from fixed tables plus `safe_target`; `_seal` kinds `tag`, `target`, `model`, `option` re-check | `test_transcript_secrets_reach_no_route` (Claude and Codex transcripts with secrets in every argument, prompt, output and text block; all three routes) | make `shell_word` return the whole segment instead of `safe_target(first token)` |
-| 2 | cleanup on every exit path | every read is `with open(path, "rb")`; `Cache.collect` prunes entries for runs not live and not in a drawer; LRU cap `CACHE_ENTRIES` | `test_cache_prunes_finished_runs_and_leaves_no_open_files` (counts `/proc/self/fd` before and after ten builds) | delete the prune step in `Cache.collect` |
-| 3 | state consistency (read-only) | reader opens `"rb"` only; cache in server memory; offsets only move forward or reset on rotation | `test_transcript_reader_never_writes` (patched `open` refuses any mode but `rb`; run dir listing, sizes and mtimes unchanged) and `test_build_view_writes_nothing` with transcripts present | open the file with `"r+b"` in `Cache.read` |
-| 4 | route completeness | no new route; drawers ride in `/fragment` and `/api/state` | `test_routes_unchanged_after_redesign` (`set(ROUTES)` equals the five paths) and `test_only_known_routes_and_methods` | add `"/drawer"` to `server.ROUTES` |
-| 5 | referential integrity | drawer runs filtered by `req["key"]`; worker without an active slice gets `slice_active: false`; Codex `out` path checked against `out_dir(rd)` | `test_drawer_runs_belong_to_their_slice`, `test_orphan_worker_has_no_drawer_link`, `test_request_out_path_outside_run_dir_is_ignored` | drop the key filter in `live.drawers` |
-| 6 | untrusted input | transcript bytes are untrusted: per-line `try`, byte pre-filter, `MAX_LINE`, type checks on every field (`input` must be a dict, `file_path` a str) | seeded fuzz `test_parser_never_raises_on_random_bytes` (500 random and mutated real-shape lines), `test_huge_line_is_skipped_bounded`, `test_wrong_types_in_tool_input_are_ignored` | remove the per-line `try` around `parse_claude_line` in `Cache.read` |
-| 7 | TOCTOU (check then use) | open first, `os.fstat` the open file, read up to the fstat size from the offset; identity `(st_dev, st_ino)` from fstat; `os.stat` only as a skip-if-unchanged hint | `test_rotation_between_polls_resets_offset`, `test_truncate_resets`, `test_growth_after_fstat_is_read_next_poll` | take size and inode from `os.stat(path)` before open and skip the fstat |
-| 8 | weak tests | every mutation in this table is a `mutate` entry in `tests/devloop/mutations.sh` with its named test | `mutations.sh` reports each new dash mutation killed | make the first read ignore `TAIL_BYTES` (read from 0), caught by `test_first_read_is_bounded_by_tail_bytes` |
-| 9 | refactor drift | `needs_you` split reuses `_needs_you`; `workers` replaced by `live` plus `waiting_runs`; render helpers reused, not copied | existing dash tests updated in place; `test_needs_you_has_owner_items_only`, `test_problems_panel_owned_by_tech_lead` | leave `problem` items in `needs_you` |
-| 10 | frozen contracts | `VIEW_SCHEMA` with `schema: 2`; `TOOL_TAGS` and feed tags as module tuples; routes unchanged | `test_view_keys_match_schema`, `test_schema_is_two`, `test_tool_tags_frozen` | rename `doing` to `now` in `live.py` only |
+| 1 | value-free output | transcript text reaches the view only through `safe_target` (Claude structured file fields) and `PUBLIC_COMMANDS`; Codex patch names never published; `_seal` kinds re-check | `test_transcript_secrets_reach_no_route`: asserts 200, the positive facts (`SHELL git` from Claude, `SEARCH rg` from Codex, `EDIT view.py` in a finished drawer) and the absence of `customer42` and every planted secret on all three GET routes | drop the `PUBLIC_COMMANDS` check in `shell_word` (planted `customer42 --x` then reaches the page as a sealed target) |
+| 2 | cleanup on every exit path | `with open(path, "rb")`; `Cache.collect` evicts entries for runs neither live nor in a drawer; `tick.spawn_detached` uses `start_new_session`, DEVNULL stdin, `close_fds` | `test_cache_evicts_a_previously_cached_path` (asserts the path left `cache.entries`), `test_spawn_detached_leaves_no_child_fds` | delete the eviction step in `Cache.collect` |
+| 3 | state consistency | GET never writes; POST writes only through `notes.answer`, `store.set_paused`, `tick.spawn_detached` under their existing locks; cursor advances by bytes read | `test_get_routes_write_nothing` (walks every GET in `ROUTES`, state dir listing, sizes and mtimes unchanged), `test_truncate_between_fstat_and_read_then_regrow` | advance the cursor to the fstat size instead of `start + len(data)` |
+| 4 | route completeness | `ROUTES` keyed by `(method, path)`; every POST goes through `_post` (token, origin, size) before `ACTIONS` lookup | `test_every_post_route_refuses_without_token_and_origin` (walks `ACTIONS`), `test_only_known_routes_and_methods` | call the handler before the token check in `_post` |
+| 5 | referential integrity | drawer runs selected by key in the run walk; answer key and version resolved inside the questions lock; hold forms use `hold:KEY` | `test_drawer_keeps_finished_run_history`, `test_hold_answer_uses_hold_key`, `test_unknown_question_key_is_refused` | build the hold form with the slice key instead of `answer_key` |
+| 6 | untrusted input | transcript bytes: every line length-checked before parsing, typed field access, per-line boundary in `Cache.read`; POST bodies: size cap, strict field set, `other:` text validated by `notes` | seeded fuzz `test_parser_never_raises_on_random_bytes`, `test_parser_error_on_one_line_keeps_the_next` (injected through `Cache.read`), `test_post_body_limits_and_unknown_fields` | remove the per-line `try` in `Cache.read` |
+| 7 | TOCTOU (check then use) | reader: open, then `fstat` the open file; answer: version compared inside `store.locked` of the questions page; tick: lock probe races resolved by the tick's own flock | `test_path_replaced_between_stat_and_open_reads_new_file_only`, `test_answer_with_old_version_is_refused`, `test_double_post_records_one_answer` | compare the version before taking the questions lock |
+| 8 | weak tests | every mutation here is a `mutate` entry; the runner runs each entry's tests unmutated first and counts a kill only when pytest exits 1 (failed assertions), not 2 to 5 | `mutations.sh` reports every dash entry killed; a baseline-red entry prints `RED-BASE` | make the first read ignore `TAIL_BYTES`, caught by `test_first_read_is_bounded_by_tail_bytes` |
+| 9 | refactor drift | `pause`/`resume` move into `store.set_paused`; `_wake_tick` moves into `tick.spawn_detached`; `CODEX_KINDS` derived from `runs.KINDS`; event tags on `status.EVENTS` | `test_cli_and_dashboard_pause_share_one_path`, `test_codex_kinds_derived_from_registry`, `test_every_event_kind_has_a_tag`, `test_every_run_kind_has_harness_icon_and_transcript` | hard-code `CODEX_KINDS` again without `codex-builder` |
+| 10 | frozen contracts | `VIEW_SCHEMA` schema 2; route table; questions page reads old pages unchanged; CLI answer without version works as today | `test_view_keys_match_schema`, `test_schema_is_two`, `test_old_questions_page_reads_as_product`, `test_cli_answer_unchanged` | default a missing `Class` line to `tech` |
 
 ## Acceptance tests
 
-All red first, in `tests/devloop/`. New fixture module `tests/devloop/transcript_fixture.py`
-writes synthetic files with the real shapes seen in live runs (field names only, invented
-values): `claude_events(calls) -> bytes` builds `system/init`, `assistant` lines with
-`tool_use` blocks and `timestamp`, `user` lines with `tool_result`, thinking and text
-lines, and `result`; `codex_text(blocks) -> bytes` builds the `codex exec` header, `exec`
-blocks with `succeeded in` and `exited N in`, `apply_patch` and `file update:` blocks,
-`codex` and `thinking` blocks, and `tokens used`. `dash_fixture.build` gains one executing
-Claude builder with a transcript, one executing Codex reviewer with `codex.out`, and one
-executing planner with no file yet.
+All red first. New test files live in a new subpackage `tests/devloop/dash/` (the
+`tests/devloop/` directory already holds 26 modules). It has a `conftest.py` that puts
+`tests/devloop` on `sys.path` and re-exports the `dash` fixture from `dash_fixture`;
+fixtures from `tests/devloop/conftest.py` apply as usual. Files:
+`tests/devloop/dash/transcript_fixture.py`, `test_transcript.py`, `test_live.py`,
+`test_controls.py`. Existing dash tests stay where they are and are updated in place.
 
-- `test_transcript_secrets_reach_no_route`: plants `ghp_DEMOTOKEN1234567`, `AKIAABCDEFGH1234`,
-  `password hunter2`, `https://user:pw@host/x`, `/home/someone/private-dir/` and a 40-hex
-  string in Bash commands (as arguments, after `export`, inside `bash -lc`), Edit
-  `old_string` and `new_string`, Write `content`, Grep `pattern`, WebFetch `url`, Agent
-  `prompt` and `subagent_type`, text and thinking blocks, tool results, `result.result`, the
-  init `cwd`; and in Codex `user`, `codex`, `exec` command and output blocks and
-  `file update` directory parts. A command whose first word is `ghp_DEMOTOKEN1234567` and a
-  file named `ghp_DEMOTOKEN1234567.txt` render `?`. None of the planted strings, no
-  `str(tmp_path)` and no `/home/` appear on `/`, `/fragment` or `/api/state`.
-- `test_tool_kinds_and_targets_from_claude`: a Read of `/x/y/view.py` gives `READ view.py`;
-  Bash `cd /r && uv run pytest -q` gives `SHELL uv`; Grep gives `SEARCH Grep`; Agent gives
-  `AGENT` with no target; `mcp__qmd__query` gives `MCP` with no target.
-- `test_shell_word_cases` (parametrized): `"git status"` to `git`;
-  `"/bin/bash -lc 'git diff'"` to `git`; `"FOO=1 BAR=2 make t"` to `make`;
-  `"timeout 30 pytest"` to `pytest`; `"cd /a && cd b; ls"` to `ls`;
-  `"sudo env X=1 ./scripts/run.sh"` to `run.sh`; `"ghp_DEMOTOKEN1234567 x"` to `?`;
-  `"deadbeefcafe"` to `?`; `""` to `?`; `"cd /a"` to `?`; `None` to `?`; a 10 000-character
-  command is cut at 400 characters before splitting.
-- `test_safe_target_cases`: `view.py` passes; `.env`, `a b.py`, 65-character names and
-  names with a 7+ hex run give `?`; `x/../../etc/passwd` gives `passwd` (no directory).
-- `test_codex_exec_and_patch_blocks`: two `exec` blocks (`rg` to SEARCH, `pytest` to SHELL),
-  one `exited 1` (errors 1), an `apply_patch` block with `M a/b.py` and `A c.md` (EDIT
-  `b.py`, WRITE `c.md`), `tokens used` then `12,345` (tokens_out 12345), model from the
-  header.
-- `test_codex_unknown_format_yields_no_calls`: arbitrary prose gives zero calls, no error.
-- `test_tokens_deduped_by_message_id`: three `assistant` lines sharing a `message.id` count
-  its `output_tokens` once; `context` is the newest message's sum.
-- `test_running_flag_clears_on_tool_result`: a call is `running` until its `tool_result`
-  line arrives; `is_error: true` adds one to `errors`.
-- `test_first_read_is_bounded_by_tail_bytes`: a 5 MB file; the entry's `bytes_read` is at
-  most `TAIL_BYTES` and `partial` is true.
-- `test_steady_poll_reads_only_new_bytes`: append 3 lines; the next read consumes exactly
-  their bytes; an unchanged file causes no `open` (patched `open` counter).
-- `test_partial_last_line_waits_for_newline`: a line split across two writes yields one call
-  after the second write, none after the first.
-- `test_huge_line_is_skipped_bounded`: one 3 MB line, then a normal call: the call is found
-  and `len(entry.pending)` never exceeds `MAX_LINE`.
+`transcript_fixture.py` writes synthetic files with real shapes (field names only):
+`claude_events(items) -> bytes` (`system/init`, `assistant` with `tool_use` or text only,
+repeated message ids, `user` with several `tool_result` blocks, thinking, `result`) and
+`codex_text(blocks) -> bytes` (header, `exec` blocks, `succeeded`/`exited`, `apply_patch`
+and `file update:` blocks, `codex`/`thinking`, `tokens used`).
+
+Reader and parser (S1):
+- `test_shell_word_cases` (parametrized): `"git status"` gives `git`;
+  `"/bin/bash -lc 'git diff'"` gives `git`; `"FOO=1 make t"` gives `make`;
+  `"timeout 30 pytest"` gives `pytest`; `"cd /a && git log"` gives `git`;
+  `"cd '/tmp/a; customer42 more' && git status"` gives `?`; `"customer42 --x"` gives `?`;
+  `"ghp_DEMOTOKEN1234567 x"` gives `?`; `"echo $SECRET"` gives `?`; `"cat a | sh"` gives
+  `?`; `""`, `None`, `"cd /a"` give `?`.
+- `test_public_commands_pass_safe_target`, `test_safe_target_cases` (`view.py` passes;
+  `.env`, `a b.py`, 65-character names, 7+ hex runs give `?`; `x/../../etc/passwd` gives
+  `passwd`).
+- `test_tool_kinds_and_targets_from_claude` (Read `/x/y/view.py` READ `view.py`; Grep
+  SEARCH `Grep`; Agent and `mcp__qmd__query` no target).
+- `test_text_only_message_counts_tokens`, `test_tokens_deduped_by_message_id`,
+  `test_token_total_survives_dedup_eviction` (2 500 distinct ids: total exact).
+- `test_two_results_with_different_error_flags` (one call errors, the other does not).
+- `test_codex_exec_and_patch_blocks` (tags, counts, errors, tokens; patch lines carry no
+  target), `test_codex_output_mimicking_exec_shows_no_data` (output lines `exec` then
+  `customer42`: target `?`), `test_codex_model_only_from_file_head` (a `model:` line
+  mid-tail is ignored), `test_codex_unknown_format_yields_no_calls`.
+- `test_first_read_is_bounded_by_tail_bytes`, `test_steady_poll_reads_only_new_bytes`,
+  `test_partial_last_line_waits_for_newline`, `test_aligned_tail_start_keeps_first_record`
+  (tail start exactly after a newline keeps that record),
+  `test_overlimit_line_across_polls_is_dropped` (a line grows past `MAX_LINE` over three
+  polls, and in one chunk with its newline; the next good line is parsed; pending never
+  exceeds `MAX_LINE`), `test_tail_jump_clears_codex_continuation` (a jump while an `exec`
+  waits for its command: the first line after the jump is not taken as a command).
+- `test_rotation_between_polls_resets_offset`, `test_truncate_between_fstat_and_read_then_regrow`
+  (no bytes skipped or doubled after regrowth), `test_path_replaced_between_stat_and_open_reads_new_file_only`
+  (old and new files hold distinct records; only new records appear).
+- `test_unmatched_calls_keep_state_bounded` (1 000 calls without results over 50 polls:
+  state size constant), `test_rate_is_exact_across_a_minute_boundary` (80 calls in 60 s
+  spanning a minute boundary: `tools_per_min` 80).
 - `test_invalid_utf8_and_junk_lines_are_ignored`, `test_wrong_types_in_tool_input_are_ignored`,
-  `test_parser_never_raises_on_random_bytes` (seed 1234; named as seeded fuzz, not
-  shrinking property testing).
-- `test_rotation_between_polls_resets_offset`, `test_truncate_resets`,
-  `test_growth_after_fstat_is_read_next_poll`.
-- `test_missing_transcript_card_says_starting`, `test_unreadable_transcript_marks_card_only`
-  (chmod 000; skipped when running as root).
-- `test_cache_prunes_finished_runs_and_leaves_no_open_files`, `test_cache_lru_cap`.
-- `test_transcript_reader_never_writes`, `test_request_out_path_outside_run_dir_is_ignored`.
-- `test_kpi_counts` (running, slots, owner-only needs you, merged today, tools per minute
-  from fixture timestamps with a fixed `now`, free memory and state, last pass).
-- `test_needs_you_has_owner_items_only`, `test_problems_panel_owned_by_tech_lead`,
-  `test_question_options_plain_or_numbered` (an option `approve` shows as text; an option
-  with spaces or a secret shows as `Option 2`; recommended marked),
-  `test_stuck_listed_after_owner_items`.
-- `test_live_cards_one_per_executing_run` (awaiting runs not in `live`, listed in
-  `waiting_runs`), `test_live_card_fields` (role label, icon, harness, model from argv
-  `--model`, phase, doing, tools, spark length 15), `test_max_live_cap`.
-- `test_feed_merges_calls_and_events_newest_first`, `test_feed_limit`.
+  `test_parser_never_raises_on_random_bytes` (seed 1234, 500 cases),
+  `test_parser_error_on_one_line_keeps_the_next`.
+- `test_cache_evicts_a_previously_cached_path`, `test_cache_lru_cap`,
+  `test_transcript_reader_never_writes`, `test_request_out_path_outside_run_dir_is_ignored`.
+
+Page (S2):
+- `test_html_routes_serve_200_and_schema_2`: at every S2 commit, `/` and `/fragment`
+  return 200 with the expected section ids and `/api/state` has `schema` 2.
+- `test_transcript_secrets_reach_no_route`: as class 1. Planted values:
+  `ghp_DEMOTOKEN1234567`, `AKIAABCDEFGH1234`, `password hunter2`, `https://user:pw@host/x`,
+  `/home/someone/private-dir/`, a 40-hex string, `customer42`, in Bash commands, Edit and
+  Write fields, Grep `pattern`, WebFetch `url`, Agent `prompt` and `subagent_type`, text,
+  thinking, tool results, `result.result`, init `cwd`, and Codex user, codex, exec and
+  output blocks and patch paths.
+- `test_missing_transcript_card_says_starting`, `test_codex_fix_card_says_outside`,
+  `test_unreadable_transcript_marks_card_only` (skipped as root).
+- `test_kpi_counts`, `test_live_cards_one_per_executing_run`, `test_live_card_fields`,
+  `test_max_live_cap`, `test_feed_merges_calls_and_events_newest_first`, `test_feed_limit`.
+- `test_worker_across_executing_applied_evicted` (one worker over three polls: the drawer
+  lists the run after it is applied; its calls stay in the feed after cache eviction).
 - `test_drawer_runs_belong_to_their_slice`, `test_orphan_worker_has_no_drawer_link`,
-  `test_drawer_files_from_edit_and_write_calls`, `test_drawer_sources_only_for_active_slices`,
-  `test_drawer_run_status_and_verdict_from_result_header`.
-- `test_schema_is_two`, `test_tool_tags_frozen`, `test_routes_unchanged_after_redesign`,
-  `test_view_keys_match_schema`.
-- Render: `test_page_sections_in_order` (KPI strip, attention bar, workers, feed, pipeline,
-  known problems, capacity and memory, shipped, parked), `test_sparkline_is_inline_svg`,
-  `test_worker_card_has_role_icon_not_avatar` (an `<svg>` with `data-icon`, no `<img>`),
-  `test_fragment_size_budget` (16 workers, 40 feed items, 30 drawers: under 200 KB),
-  `test_no_em_dash_in_assets_and_copy` (render output, `dash.css`, `dash.js`),
-  `test_css_tokens_meet_aa` and `test_css_light_and_dark_define_the_same_tokens` extended to
-  the tag tokens, `test_phone_rules_present` (a `@media (max-width: 640px)` block that sets
-  the grids to one column and the drawer to `inset: 0`).
-- JS behaviour (4 s poll, drawer open by click and by `#slice=` on load, drawer kept across
-  swaps, "no longer active" text, Escape and Back close, filters and scroll kept, no
-  horizontal scroll at 390 px in both themes) has no pytest runner. Task 8 VERIFY runs it
-  in a browser against the fixture server and records the steps and screenshots.
+  `test_drawer_keeps_finished_run_history`, `test_drawer_files_from_claude_edit_and_write`,
+  `test_drawer_sources_capped_and_fallback_hooks` (slice 31 has a pipeline card with
+  `data-card-key` and no source), `test_drawer_run_status_and_verdict_from_result_header`.
+- `test_owner_question_shown_in_full_with_real_hint` (question, detail and every option
+  verbatim, including an unprefixed value such as `hunter2`; the hint reads
+  `devloop-state p answer KEY <option>` with the real key),
+  `test_hold_answer_uses_hold_key`.
+- `test_schema_is_two`, `test_tool_tags_frozen`, `test_view_keys_match_schema`,
+  `test_no_persona_names_in_labels` (reviewer names and persona kind names such as
+  `dennis` and `codex-review` absent from role labels, words and feed lines; icon ids such
+  as `test` and `docs` allowed).
+- `test_every_run_kind_has_harness_icon_and_transcript`, `test_codex_kinds_derived_from_registry`,
+  `test_every_event_kind_has_a_tag`, `test_activity_and_feed_read_events_once`.
+- Render: `test_page_sections_in_order`, `test_sparkline_is_inline_svg`,
+  `test_worker_card_has_role_icon_not_avatar`, `test_fragment_size_budget` (16 workers, 40
+  feed items, 30 drawers: under 200 KB), `test_no_em_dash_in_assets_and_copy`,
+  `test_css_tokens_meet_aa` and `test_css_light_and_dark_define_the_same_tokens` (tag
+  tokens included), `test_phone_rules_present`.
+
+Control (S3):
+- `test_ask_records_class_and_detail`, `test_tech_question_is_decided_now`
+  (applied = recommended, event `question-decided`, Slack line "Tech lead decided"),
+  `test_product_question_waits`, `test_class_defaults_to_product`,
+  `test_old_questions_page_reads_as_product`, `test_wait_flag_forces_product`.
+- `test_other_answer_stored_and_validated` (`other: use the slower path` accepted;
+  empty, newline or 501 characters refused; refused on a hold),
+  `test_answer_with_old_version_is_refused`, `test_cli_answer_unchanged`,
+  `test_override_of_tech_decision_records_owner_answer`.
+- `test_cli_and_dashboard_pause_share_one_path`, `test_tick_spawn_refused_while_locked`,
+  `test_spawn_detached_leaves_no_child_fds`, `test_wrapper_wakes_tick_through_spawn_detached`.
+- `test_every_post_route_refuses_without_token_and_origin`, `test_post_body_limits_and_unknown_fields`,
+  `test_double_post_records_one_answer`, `test_stale_token_after_restart_is_refused`,
+  `test_unknown_question_key_is_refused`, `test_tick_debounce`,
+  `test_get_routes_write_nothing`, `test_post_success_json_and_redirect`,
+  `test_each_write_appends_its_event` (`via=dashboard`), `test_post_log_has_no_values`,
+  `test_server_env_is_not_headless` (the detached server child has no
+  `DEVLOOP_HEADLESS`).
+- `test_decisions_drawer_has_actions` (Go with recommended, each option, free-text box,
+  Copy for Claude with the questions file path in its text), `test_decided_for_you_list`,
+  `test_controls_render_paused_and_tick_running`.
+- JS (no pytest runner; VERIFY in Task 13): drawers by click and hash, kept across polls;
+  form input kept across swaps; fetch submit shows the server message; copy fallback on a
+  LAN IP; 390 px with no horizontal scroll, both themes.
 
 ## Placement
 
 | New file | Directory | Why there | Sits beside |
 |---|---|---|---|
-| `transcript.py` | `devloop/dash/` | dashboard-only reader; `devloop/` is near the fan-out cap, `dash/` has 6 modules | `memory.py` (the other read-only OS reader) |
-| `live.py` | `devloop/dash/` | view sections from runs; `view.py` is already 640 lines | `view.py` |
-| `render_live.py` | `devloop/dash/` | live HTML sections; `render.py` is 485 lines | `render.py` |
-| `transcript_fixture.py`, `test_dash_transcript.py`, `test_dash_live.py` | `tests/devloop/` | existing dash test home | `dash_fixture.py`, `test_dash_view.py` |
+| `transcript.py` | `devloop/dash/` | dashboard-only reader; `dash/` has 6 modules | `memory.py` |
+| `live.py` | `devloop/dash/` | live view sections; `view.py` is 640 lines | `view.py` |
+| `render_live.py` | `devloop/dash/` | live HTML; `render.py` is 485 lines | `render.py` |
+| `render_control.py` | `devloop/dash/` | decisions drawer, decided list, controls | `render.py` |
+| `actions.py` | `devloop/dash/` | POST checks and `ACTIONS` handlers | `server.py` |
+| `conftest.py`, `transcript_fixture.py`, `test_transcript.py`, `test_live.py`, `test_controls.py` | `tests/devloop/dash/` | `tests/devloop/` is over the fan-out bar | `tests/devloop/dash_fixture.py` |
 
-Present consumers: `transcript.py` is used by `live.py` (S2), `live.py` by `view.py` (S2),
-`render_live.py` by `render.py` (S3). S1 merges `transcript.py` before its consumer; that is
-the approved pair under proportionality's plan-slice exception, and S2 lands before the
-row closes.
+Present consumers: `transcript.py` (S1) is used by `live.py` (S2); the plan pairs them under
+proportionality's plan-slice exception, and S2 lands before the row closes. Everything else
+has its caller in the same slice.
 
-Expected size: 3 new source modules (about 330, 260 and 280 lines), 3 new test files
-(about 700 lines), edits to `view.py`, `server.py`, `render.py`, `dash.css` (rewrite, about
-260 lines), `dash.js` (about +90), `dash_fixture.py`, `test_dash_view.py`,
-`test_dash_render.py`, `test_dash_server.py`, `mutations.sh`. New public names:
-`TOOL_TAGS`, `TOOL_KINDS`, `CODEX_SEARCH`, `CODEX_READ`, `Call`, `ClaudeFacts`,
-`safe_target`, `shell_word`, `parse_claude_line`, `CodexParser`, `FileState`, `Cache`,
-`transcript_path`, `ICONS`, `HARNESS`, `live_cards`, `waiting_runs`, `feed`, `kpi`,
-`drawers`, `kpi_strip`, `attention`, `worker_grid`, `sparkline`, `role_icon`,
-`drawer_sources`.
+Expected size: 5 new source modules (about 330, 280, 280, 220, 200 lines); 5 new test
+files (about 1 100 lines); edits to `view.py`, `server.py`, `render.py`, `dash.css`
+(rewrite, about 300 lines), `dash.js` (about +180), `lifecycle.py`, `runs.py`, `wrap.py`,
+`status.py`, `notes.py`, `store.py`, `tick.py`, `state_cli.py`,
+`skills/dev-loop/TICK.md`, `PLAYBOOK.md`, `SKILL.md`,
+`dash_fixture.py`, existing dash tests, `mutations.sh`. New public names: those in each
+task's Interfaces block.
 
 ## Slices
 
-| Slice | Tasks | Ships | Gate |
-|---|---|---|---|
-| S1 transcript reader | 1, 2, 3 | `transcript.py` with tests; nothing on the page yet | Outside reviewer on the S1 head; T1 = `pytest tests/devloop/test_dash_transcript.py tests/devloop/test_dash_view.py` plus ruff |
-| S2 read model schema 2 | 4, 5 | attention split, `live.py`, schema 2, server cache wiring | Outside reviewer on the S2 head; T1 = `pytest tests/devloop -k dash` plus ruff |
-| S3 page | 6, 7, 8 | new render, CSS, JS drawer, leak sentry, mutations, browser VERIFY | Outside reviewer on the S3 head; T1 = `pytest tests/devloop -k dash`; `tests/devloop/mutations.sh` dash entries; VERIFY record |
+| Slice | Tasks | Risk | Ships | Gate |
+|---|---|---|---|---|
+| S1 transcript reader | 1, 2, 3 | R1 | `transcript.py`, registry fields | Outside reviewer; T1 = `pytest tests/devloop/dash tests/devloop/test_dash_view.py tests/devloop/test_runs_dispatch.py tests/devloop/test_wrap.py` plus ruff |
+| S2 mission-control page | 4, 5, 6, 7, 8 | R1 | schema 2, live model, new page, drawers, leak sentry; one PR; every commit serves 200 on `/` and `/fragment` | Outside reviewer; T1 = `pytest tests/devloop -k dash` plus `tests/devloop/dash`; dash mutations; VERIFY record |
+| S3 loop control | 9, 10, 11, 12, 13 | R2 | question class and detail, free-text answers, one write path, POST actions, decisions drawer, controls | Senior reviewer then Outside reviewer; T1 = `pytest tests/devloop -k "dash or notes or tick or state or wrap or status"`; control mutations; VERIFY record |
 
-T2 at each gate runs T1 on the exact head plus that slice's mutations. No escalation
-trigger applies (no state-file schema, lock, auth or dependency change; `/api/state` has no
-consumer outside the dashboard), so no full suite at the slice; the merge follows the
-local operations profile as usual. S2 and S3 may ship as one PR if review is short.
+T2 at each gate runs T1 on the exact head plus that slice's mutations. S3 touches a
+serialized format (questions page) and a trust boundary, so its gate escalates to the full
+suite once on its merge head, diffed against the stored main baseline.
 
 ## Pre-mortem
 
-- **A secret reaches the LAN through a command or a path.** Only `safe_target` produces
-  kept text (`shell_word` ends in it), `_seal` re-checks, and the sentry plants in every
-  field of both formats on all three routes.
-- **A big transcript makes every poll slow.** Tail start, `STEP_BYTES`, the byte pre-filter,
-  bytes regexes on tool results and a no-open fast path; tests assert bytes read.
-- **Stream-json changes shape in a Claude release.** Unknown events and fields are ignored;
-  the card falls back to elapsed time; fixture shapes are copied from current live runs and
-  documented in `transcript_fixture.py`.
-- **Codex text changes between versions.** Same fallback: no calls, no error. A `--json`
-  branch is a later slice if Codex output moves to JSONL.
-- **The ETag stops helping.** With active workers the fragment changes every few seconds;
-  the 200 KB budget and the 2 s server cache keep that cheap on a LAN.
-- **The drawer flickers or closes on each poll.** The drawer shell sits outside
-  `#app-body`; only its body is refilled from the new source, and its scroll top restored.
-- **Two writers in this repo.** S1 touches only new files. S2 and S3 edit `view.py`,
-  `render.py`, `dash.js` and `dash.css`, which another builder may be changing for the
-  attention split. Task 4 starts by reading the tree and building on it; one writer at a
-  time in this worktree.
-- **Persona names leak through `subagent_type` or MCP server names.** AGENT and MCP calls
-  carry no target by rule, asserted in `test_tool_kinds_and_targets_from_claude` and the
-  sentry.
+- **A secret or customer value reaches the page through a command.** Commands show only
+  allowlisted names, after refusing quoted or piped forms; Codex patch names never show;
+  `_seal` re-checks; the sentry asserts 200, positive facts and absence.
+- **A big or odd transcript stalls polls or invents calls.** Bounded reads, a per-line
+  length check before parsing, cursor by bytes read, continuation cleared on every
+  discontinuity; tests count bytes and records.
+- **Stream-json or Codex text changes shape.** Unknown fields and lines are ignored; cards
+  fall back to elapsed time.
+- **An owner answer lands on the wrong version, twice, or from a stale tab.** Version check
+  inside the questions lock; per-process token; same-origin check; fixed refusal messages.
+- **The dashboard and the CLI disagree on pause or answers.** One function each, shared;
+  `test_cli_and_dashboard_pause_share_one_path`.
+- **A GET starts writing.** `test_get_routes_write_nothing` walks every GET route.
+- **A tech question that the owner would care about is auto-decided.** Default class is
+  product; the ratchet rule sends repeated growth to an Architect review instead of an
+  entry; every tech decision posts to Slack and shows with Override.
+- **Anyone on the LAN can answer when `dash.host` is opened.** Accepted under the
+  accidents-only model; the default bind is loopback. Recorded as an owner decision.
+- **The server runs with `DEVLOOP_HEADLESS=1` and refuses answers.** `lifecycle` removes
+  it from the server child env; tested.
+- **Two writers in this repo.** S1 touches mostly new files. S2 and S3 edit files another
+  builder may be changing; each task starts by reading the tree. One writer at a time.
 
-## Task 1: Safe extractors and the Claude line parser
+## Review record
+
+Outside reviewer, plan round 1: GO-WITH-FIXES. All findings folded, with coordinator
+decisions:
+- V1 Codex and shell targets: allowlist `PUBLIC_COMMANDS`, quoted or piped forms give `?`,
+  Codex patch names and mid-tail model lines never published (Claude and Codex parsing).
+- V1 owner options: coordinator decision replaces the reviewer's fix. Full question, detail
+  and option text shown; the hint uses the real key (`hold:KEY` for holds) and real values.
+- V1 cursor and framing: cursor by bytes read, aligned starts, per-line limit, continuation
+  cleared on discontinuity (Task 3 tests).
+- V1 Claude usage: structural parse, text-only messages counted, per-block `is_error`,
+  separate token total.
+- V1 unbounded state and rate: newest-call flag only, 60 one-second buckets.
+- V1 `codex-fix` outside the run dir: transcript state `outside`.
+- V1 finished runs: history selected in the run walk before the slot filter; feed log apart
+  from the cache.
+- V1 31st slice: checklist-only fallback from the pipeline card.
+- V1 S2 not shippable: old S2 and S3 merged into one S2; every commit serves 200.
+- DESIGN: leak mutation that survives sealing; reader mutations that hit their tests and a
+  baseline-green runner; one harness registry; one event read with tags on descriptors;
+  new tests in `tests/devloop/dash/`.
+- V2-LOG: no inner cache lock (the server serializes builds); `read_states` passes one
+  mapping to cards, feed and KPI; the name assertion is scoped to labels and words.
+
+## Task 1: Registry fields, safe extractors and the Claude line parser
 
 **Files:**
-- Create: `devloop/dash/transcript.py`, `tests/devloop/transcript_fixture.py`,
-  `tests/devloop/test_dash_transcript.py`
+- Create: `devloop/dash/transcript.py`, `tests/devloop/dash/conftest.py`,
+  `tests/devloop/dash/transcript_fixture.py`, `tests/devloop/dash/test_transcript.py`
+- Modify: `devloop/runs.py` (`Kind` gains `harness`, `transcript`), `devloop/wrap.py`
+  (`CODEX_KINDS` derived)
 
 **Interfaces:**
-- Produces: `TOOL_TAGS: tuple[str, ...]`; `TOOL_KINDS: dict[str, str]`;
+- Produces: `runs.Kind(slot, deadline_s, idle_s, reader, writes_worktree, pinned,
+  harness, transcript)`; `runs.HARNESSES = ("claude", "codex", "script")`;
+  `runs.TRANSCRIPTS = ("stream-json", "codex-text", "outside", "none")`.
+  Values: planner, builder, dennis, docs `claude`/`stream-json`; codex-review,
+  codex-builder `codex`/`codex-text`; codex-fix `codex`/`outside`; test, duty
+  `script`/`none`. `wrap.CODEX_KINDS = tuple(k for k, s in runs.KINDS.items() if s.harness
+  == "codex")`.
+- `transcript.TOOL_TAGS`, `TOOL_KINDS`, `PUBLIC_COMMANDS`, `CODEX_SEARCH`, `CODEX_READ`;
   `safe_target(name: object) -> str`; `shell_word(cmd: object) -> str`;
-  `Call = namedtuple("Call", "tag target at call_id")` (`target` str or None, `at` ISO str
-  or None, `call_id` str or None);
-  `ClaudeFacts` dataclass: `calls: list[Call]`, `results: list[tuple[str, bool]]` (call id,
-  is error), `model: str | None`, `usage: tuple[str, int, int] | None` (message id, output
-  tokens, context tokens);
-  `parse_claude_line(raw: bytes) -> ClaudeFacts | None` (None for a skipped line).
+  `Call = namedtuple("Call", "tag target at call_id")`;
+  `ClaudeFacts` dataclass: `calls: list[Call]`, `results: list[tuple[str, bool]]`,
+  `model: str | None`, `usage: tuple[str, int, int] | None` (message id, output tokens,
+  context tokens); `parse_claude_line(raw: bytes) -> ClaudeFacts | None`.
 
-- [ ] **Step 1: Write the failing tests** `test_shell_word_cases`, `test_safe_target_cases`,
-  `test_tool_kinds_and_targets_from_claude`, `test_tokens_deduped_by_message_id` (parser
-  part: the `usage` tuple), `test_invalid_utf8_and_junk_lines_are_ignored`,
-  `test_wrong_types_in_tool_input_are_ignored`, `test_parser_never_raises_on_random_bytes`
-  (seed 1234, 500 cases: random bytes, and real-shape lines with fields deleted, retyped or
-  cut), with the values in Acceptance tests.
-- [ ] **Step 2: Run** `pytest tests/devloop/test_dash_transcript.py -q`. Expected: FAIL,
+- [ ] **Step 1: Write the failing tests** `test_every_run_kind_has_harness_icon_and_transcript`
+  (harness and transcript part), `test_codex_kinds_derived_from_registry`,
+  `test_shell_word_cases`, `test_public_commands_pass_safe_target`,
+  `test_safe_target_cases`, `test_tool_kinds_and_targets_from_claude`,
+  `test_text_only_message_counts_tokens` (parser part), `test_two_results_with_different_error_flags`
+  (parser part), `test_invalid_utf8_and_junk_lines_are_ignored`,
+  `test_wrong_types_in_tool_input_are_ignored`, `test_parser_never_raises_on_random_bytes`.
+- [ ] **Step 2: Run** `pytest tests/devloop/dash/test_transcript.py -q`. Expected: FAIL,
   `ModuleNotFoundError: devloop.dash.transcript`.
-- [ ] **Step 3: Implement** the names above as in "Claude and Codex parsing". No file access
-  in this task.
-- [ ] **Step 4: Run** the same command. Expected: PASS. Then `ruff check` and
-  `ruff format --check` on the new files.
+- [ ] **Step 3: Implement** as in "Claude and Codex parsing". No file access in this task.
+  Update every `Kind(...)` in `runs.py`.
+- [ ] **Step 4: Run** the file plus `pytest tests/devloop/test_wrap.py
+  tests/devloop/test_runs_dispatch.py tests/devloop/test_dash_shared.py -q`, ruff check and
+  format. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(devloop): parse worker tool calls into safe facts`, last line
   `cam`.
 
 ## Task 2: Codex text parser
 
 **Files:**
-- Modify: `devloop/dash/transcript.py`, `tests/devloop/transcript_fixture.py`,
-  `tests/devloop/test_dash_transcript.py`
+- Modify: `devloop/dash/transcript.py`, `tests/devloop/dash/transcript_fixture.py`,
+  `tests/devloop/dash/test_transcript.py`
 
 **Interfaces:**
-- Consumes: `Call`, `safe_target`, `shell_word` from Task 1.
-- Produces: `CODEX_SEARCH`, `CODEX_READ` (frozensets); `class CodexParser` with
-  `feed(lines: list[bytes], seen_at: str) -> tuple[list[Call], list[tuple[str, bool]]]`
-  (new calls, finished call ids with error flag), attributes `model: str | None`,
-  `tokens_out: int | None`, `lines_seen: int`. Call ids are `"c" + str(n)` per parser.
+- Consumes: Task 1.
+- Produces: `class CodexParser` with `feed(lines: list[bytes], seen_at: str) ->
+  tuple[list[Call], list[tuple[str, bool]]]` (new calls; finished call ids with error
+  flag), `reset_continuation() -> None`, `tokens_out: int | None`;
+  `codex_head_model(head: bytes) -> str | None` (first 4 KiB only).
 
 - [ ] **Step 1: Write the failing tests** `test_codex_exec_and_patch_blocks`,
-  `test_codex_unknown_format_yields_no_calls`, and a Codex half of
-  `test_parser_never_raises_on_random_bytes`.
-- [ ] **Step 2: Run** `pytest tests/devloop/test_dash_transcript.py -q -k codex`. Expected:
-  FAIL, `AttributeError` on `CodexParser`.
-- [ ] **Step 3: Implement** the state machine in "Claude and Codex parsing". `model` is read
-  only while `lines_seen < 40`. Every call gets `at = seen_at`.
-- [ ] **Step 4: Run** the same command, then the whole file. Expected: PASS.
+  `test_codex_output_mimicking_exec_shows_no_data`, `test_codex_model_only_from_file_head`,
+  `test_codex_unknown_format_yields_no_calls`, Codex half of the fuzz test.
+- [ ] **Step 2: Run** `pytest tests/devloop/dash/test_transcript.py -q -k codex`. Expected:
+  FAIL on `CodexParser`.
+- [ ] **Step 3: Implement** the rules in "Claude and Codex parsing".
+- [ ] **Step 4: Run** the file. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(devloop): read Codex exec output as tool calls`, last line
   `cam`.
 
-## Task 3: Bounded tail reader and the file cache
+## Task 3: Bounded tail reader, file cache and feed log
 
 **Files:**
-- Modify: `devloop/dash/transcript.py`, `tests/devloop/test_dash_transcript.py`,
+- Modify: `devloop/dash/transcript.py`, `tests/devloop/dash/test_transcript.py`,
   `tests/devloop/mutations.sh`
 
 **Interfaces:**
 - Consumes: Tasks 1 and 2.
 - Produces: the constants in "Performance limits";
-  `class FileState` with fields `ident: tuple[int, int] | None`, `offset: int`,
-  `mtime_ns: int`, `pending: bytearray`, `skip_to_newline: bool`, `partial: bool`,
-  `calls: deque[Call]` (maxlen `KEEP_CALLS`), `tools: int`, `errors: int`,
-  `open_calls: dict[str, Call]`, `tokens: dict[str, int]` (message id to output tokens,
-  oldest dropped past 2000 keys), `context: int | None`, `model: str | None`,
-  `minutes: dict[str, int]` (`YYYY-MM-DDTHH:MM` to count, last `SPARK_MINUTES` kept),
-  `state: str`, `bytes_read: int`, `codex: CodexParser | None`, and properties
-  `tokens_out -> int | None`, `doing -> tuple[Call, bool] | None`;
-  `class Cache` with `read(path: Path | None, harness: str, executing: bool) -> FileState`
-  and `collect(keep: set[Path]) -> None`, both under one `threading.Lock`;
-  `transcript_path(rd: Path, req: dict) -> Path | None` (Claude kinds:
-  `out_dir(rd) / "log"`; Codex kinds: `out_dir(rd) / "codex.out"` when it exists and
-  `req.get("out")` is absent or equals that path, else `out_dir(rd) / "log"`; `test` and
-  `duty`: None).
+  `class FileState` with `ident`, `offset`, `mtime_ns`, `pending: bytearray`,
+  `skip_to_newline: bool`, `partial: bool`, `calls: deque[Call]` (`KEEP_CALLS`),
+  `tools: int`, `errors: int`, `newest_id: str | None`, `newest_done: bool`,
+  `token_total: int`, `seen_tokens: OrderedDict[str, int]` (`DEDUP_IDS`),
+  `context: int | None`, `model: str | None`, `minutes: dict[str, int]`,
+  `seconds: dict[int, int]` (epoch second to count, last `RATE_SECONDS`), `state: str`,
+  `bytes_read: int`, `codex: CodexParser | None`; methods `doing() -> tuple[Call, bool] |
+  None`, `rate(now_s: int) -> int`, `spark(now) -> list[int]`.
+- `class Cache` (no inner lock; callers serialize builds): `entries: dict[Path,
+  FileState]`, `feed_log: deque` (`FEED_LIMIT` safe facts: `(at, tag, target, role, key)`),
+  `read(path: Path | None, transcript: str, executing: bool, label: tuple[str, str]) ->
+  FileState`, `collect(keep: set[Path]) -> None`.
+- `transcript_path(rd: Path, req: dict) -> Path | None` from the kind's `transcript`.
 
-- [ ] **Step 1: Write the failing tests** `test_first_read_is_bounded_by_tail_bytes`,
-  `test_steady_poll_reads_only_new_bytes`, `test_partial_last_line_waits_for_newline`,
-  `test_huge_line_is_skipped_bounded`, `test_rotation_between_polls_resets_offset`,
-  `test_truncate_resets`, `test_growth_after_fstat_is_read_next_poll` (append between the
-  patched `os.fstat` and the read; the extra bytes arrive on the next read, none lost or
-  doubled), `test_cache_prunes_finished_runs_and_leaves_no_open_files`, `test_cache_lru_cap`,
-  `test_transcript_reader_never_writes`, `test_request_out_path_outside_run_dir_is_ignored`,
-  `test_running_flag_clears_on_tool_result`, `test_tokens_deduped_by_message_id` (file part).
-- [ ] **Step 2: Run** `pytest tests/devloop/test_dash_transcript.py -q`. Expected: the new
-  tests FAIL with `AttributeError` on `Cache`.
+- [ ] **Step 1: Write the failing tests** (S1 list under Acceptance tests from
+  `test_first_read_is_bounded_by_tail_bytes` to `test_request_out_path_outside_run_dir_is_ignored`,
+  plus the file-level halves of the token and result tests).
+- [ ] **Step 2: Run** `pytest tests/devloop/dash/test_transcript.py -q`. Expected: FAIL on
+  `Cache`.
 - [ ] **Step 3: Implement** `Cache.read` in this order:
 
 ```text
-st = os.stat(path)                    # OSError: absent -> state starting or none; return entry
-if (st_dev, st_ino) == entry.ident and st_size == entry.offset and st_mtime_ns == entry.mtime_ns:
-    return entry                      # no open, no read
-with open(path, "rb") as fh:          # OSError -> state unreadable; return entry
+st = os.stat(path)                    # OSError: state starting/none (outside for transcript=outside)
+if identity, size and mtime unchanged: return entry
+with open(path, "rb") as fh:          # OSError: state unreadable
     fs = os.fstat(fh.fileno()); ident = (fs.st_dev, fs.st_ino); end = fs.st_size
-    if entry.ident is not None and (ident != entry.ident or end < entry.offset):
-        reset entry counters and pending; entry.partial = True
-    if entry.offset == 0 and end > TAIL_BYTES:      start = end - TAIL_BYTES; skip to newline; partial
-    elif end - entry.offset > STEP_BYTES:           start = end - TAIL_BYTES; clear pending; skip to newline; partial
-    else:                                           start = entry.offset
+    if entry.ident and (ident != entry.ident or end < entry.offset): discontinuity(entry)
+    if (entry.offset == 0 and end > TAIL_BYTES) or end - entry.offset > STEP_BYTES:
+        start = end - TAIL_BYTES; discontinuity(entry) if entry.offset
+        fh.seek(start - 1); aligned = fh.read(1) == b"\n"; skip_to_newline = not aligned
+    else: start = entry.offset
     fh.seek(start); data = fh.read(end - start)
-entry.ident, entry.offset, entry.mtime_ns = ident, end, fs.st_mtime_ns
-split pending + data on b"\n"; the last piece becomes pending (dropped, with skip_to_newline, past MAX_LINE)
-each complete line: try parse_claude_line or codex.feed; except the listed errors: count and continue
+entry.offset = start + len(data); entry.mtime_ns = fs.st_mtime_ns; entry.ident = ident
+frame: pending + data split on b"\n"; any complete line over MAX_LINE is dropped (discontinuity);
+       pending over MAX_LINE is dropped with skip_to_newline (discontinuity)
+each complete line: try parse; except the listed errors: count, continue
+each new call: append to entry.calls and cache.feed_log with label
 ```
 
-  `minutes` uses each call's `at` (Claude) or `seen_at` (Codex). Add the class 2, 3, 6, 7
-  and 8 `mutate` entries to `tests/devloop/mutations.sh` with their tests.
-- [ ] **Step 4: Run** the file, then `pytest tests/devloop -k dash -q`, then the five new
-  mutations. Expected: PASS, and each mutation killed.
-- [ ] **Step 5: Commit** `feat(devloop): tail worker output files with a bounded cache`, last
-  line `cam`.
+  `discontinuity(entry)` clears pending, Codex continuation and `newest_done`, and sets
+  `partial`. Add `mutate` entries for classes 2, 3, 6, 7, 8 with their named tests, and
+  change the runner: run each entry's tests unmutated first (`RED-BASE` when red), and count
+  a kill only on pytest exit code 1.
+- [ ] **Step 4: Run** the file, `pytest tests/devloop -k dash -q`, and the new mutations.
+  Expected: PASS; each mutation killed.
+- [ ] **Step 5: Commit** `feat(devloop): tail worker output files with a bounded cache`,
+  last line `cam`.
 
-## Task 4: Attention split and question options (schema 2, part 1)
-
-**Files:**
-- Modify: `devloop/dash/view.py`, `tests/devloop/test_dash_view.py`,
-  `tests/devloop/test_dash_render.py`, `tests/devloop/dash_fixture.py`
-
-**Interfaces:**
-- Consumes: the tree as it is when the task starts. First run `git log -3 --oneline --
-  devloop/dash/view.py` and read `_needs_you` (`devloop/dash/view.py:436`); if a split is
-  already there, rename its keys to match this plan and keep its tests.
-- Produces: `SCHEMA = 2`; `VIEW_SCHEMA` entries `needs_you`, `stuck`, `problems` as in
-  Fields; scalar kind `option`; `_options(q: dict) -> list[dict]`.
-
-- [ ] **Step 1: Write the failing tests** `test_needs_you_has_owner_items_only`,
-  `test_problems_panel_owned_by_tech_lead`, `test_question_options_plain_or_numbered`,
-  `test_stuck_listed_after_owner_items`, `test_schema_is_two`; update
-  `test_needs_you_lists_question_hold_stuck_problem` to the three lists.
-- [ ] **Step 2: Run** `pytest tests/devloop/test_dash_view.py -q`. Expected: FAIL on the new
-  keys.
-- [ ] **Step 3: Implement** the split in `_needs_you` and `_unreadable`. An option passes the
-  `option` kind or gets `text: None` with its 1-based `n`. Render keeps working by reading
-  `problems` for the old problem rows (full layout comes in Task 6).
-- [ ] **Step 4: Run** `pytest tests/devloop -k dash -q`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(devloop): split owner items from known problems`, last line
-  `cam`.
-
-## Task 5: Live read model `devloop/dash/live.py` (schema 2, part 2)
+## Task 4: Schema 2 with the renderer kept serving
 
 **Files:**
-- Create: `devloop/dash/live.py`, `tests/devloop/test_dash_live.py`
-- Modify: `devloop/dash/view.py` (`_Ctx._runs` keeps `rd` and `req`; new keys; scalar kinds
-  `tag`, `target`, `model`, `icon`, `harness`), `devloop/dash/server.py` (`ViewCache` holds
-  `transcript.Cache()` and calls `build_view(project, proc=self.proc,
-  cache=self.transcripts)`), `tests/devloop/dash_fixture.py` (three live runs built with
-  `transcript_fixture`), `tests/devloop/test_dash_render.py` (the old workers table test
-  reads `live`)
+- Modify: `devloop/dash/view.py`, `devloop/dash/render.py`, `devloop/status.py`,
+  `tests/devloop/test_dash_view.py`, `tests/devloop/test_dash_server.py`,
+  `tests/devloop/test_dash_render.py`, `tests/devloop/test_dash_shared.py`
 
 **Interfaces:**
-- Consumes: `transcript.Cache`, `transcript_path`, `FileState`; `_Ctx`.
-- Produces: `ICONS: dict[str, str]` (run kind to icon id: planner and codex-fix `plan`,
-  builder and codex-builder `build`, dennis and codex-review `review`, test `test`, docs
-  `docs`, duty `duty`); `HARNESS: dict[str, str]` (Claude kinds `claude`, Codex kinds
-  `codex`, test and duty `script`); `live_cards(ctx, cache, now) -> list[dict]`;
-  `waiting_runs(ctx) -> list[dict]`; `feed(ctx, states, now) -> list[dict]`;
-  `kpi(ctx, view, states, now) -> dict`; `drawers(ctx, cache, cards) -> list[dict]`;
-  `build_view(project, proc="/proc", now=None, cache=None) -> dict` (a fresh `Cache` when
-  None, so tests and one-shot callers work). `states` is `dict[str, FileState]` keyed by run
-  ref. Model: for Claude kinds, the value after `--model` in `req["argv"]`, else
-  `FileState.model`; it must pass the `model` kind or become None.
+- Consumes: the tree split at `7af0177` (`_needs_you`, `_problems`).
+- Produces: `SCHEMA = 2`; `status.EventDesc = namedtuple("EventDesc", "words tag")`,
+  `status.EVENTS`, `EVENT_KINDS = tuple(EVENTS)`, `event_tag(kind) -> str | None`;
+  `ctx.events` read once; needs_you fields `answer_key`, `detail`, `klass`, `version`
+  (detail null, klass `product`, version from `notes.question_version` once Task 9 adds it;
+  until then null); scalar kind `owner_text` replacing `line` for question fields;
+  `render._needs` updated for the new fields and the hold hint.
 
-- [ ] **Step 1: Write the failing tests** `test_live_cards_one_per_executing_run`,
-  `test_live_card_fields`, `test_max_live_cap`, `test_missing_transcript_card_says_starting`,
-  `test_unreadable_transcript_marks_card_only`,
-  `test_feed_merges_calls_and_events_newest_first`, `test_feed_limit`, `test_kpi_counts`,
-  `test_drawer_runs_belong_to_their_slice`, `test_orphan_worker_has_no_drawer_link`,
-  `test_drawer_files_from_edit_and_write_calls`, `test_drawer_sources_only_for_active_slices`,
-  `test_drawer_run_status_and_verdict_from_result_header`, `test_tool_tags_frozen`; update
-  `test_view_keys_match_schema`, `test_no_agent_names_or_run_ids_in_the_view` (also asserts
-  no run kind name in `live`, `feed` and `drawers`), `test_build_view_writes_nothing`.
-- [ ] **Step 2: Run** `pytest tests/devloop/test_dash_live.py tests/devloop/test_dash_view.py
+- [ ] **Step 1: Write the failing tests** `test_schema_is_two`,
+  `test_html_routes_serve_200_and_schema_2`, `test_owner_question_shown_in_full_with_real_hint`,
+  `test_hold_answer_uses_hold_key` (hint part), `test_every_event_kind_has_a_tag`,
+  `test_activity_and_feed_read_events_once` (activity part); update the schema 1 pin
+  (`tests/devloop/test_dash_server.py:56`).
+- [ ] **Step 2: Run** `pytest tests/devloop -k dash -q`. Expected: FAIL.
+- [ ] **Step 3: Implement.** Hold items read their `hold:KEY` record when present for
+  question, options and recommended. Hint copy: "Answer: devloop-state PROJECT answer
+  ANSWER_KEY <option>, or on the questions page."
+- [ ] **Step 4: Run** the same. Expected: PASS, `/` and `/fragment` 200.
+- [ ] **Step 5: Commit** `feat(devloop): move the dashboard view to schema 2`, last line `cam`.
+
+## Task 5: Live read model `devloop/dash/live.py`
+
+**Files:**
+- Create: `devloop/dash/live.py`, `tests/devloop/dash/test_live.py`
+- Modify: `devloop/dash/view.py` (run walk keeps history; new keys and scalar kinds),
+  `devloop/dash/server.py` (`ViewCache` owns one `transcript.Cache`),
+  `devloop/dash/render.py` (replace the workers table with a minimal live list so every
+  commit serves 200), `tests/devloop/dash_fixture.py`, `tests/devloop/test_dash_view.py`
+
+**Interfaces:**
+- Consumes: Tasks 1 to 4.
+- Produces: `ICONS: dict[str, str]` (every `runs.KINDS` key); `read_states(ctx, cache) ->
+  dict[str, FileState]` (one read per selected run, keyed by run ref); `live_cards(ctx,
+  states, now) -> list[dict]`; `waiting_runs(ctx) -> list[dict]`; `feed(ctx, cache, now) ->
+  list[dict]` (events plus `cache.feed_log`); `kpi(ctx, view, states, now) -> dict`;
+  `drawers(ctx, cache, cards) -> list[dict]`; `build_view(project, proc="/proc", now=None,
+  cache=None) -> dict`. `_Ctx.history: dict[str, list[tuple[rd, req]]]` (newest
+  `DRAWER_RUNS` per active slice, selected before the slot filter).
+
+- [ ] **Step 1: Write the failing tests** (S2 list from `test_missing_transcript_card_says_starting`
+  to `test_drawer_run_status_and_verdict_from_result_header`, plus `test_tool_tags_frozen`,
+  `test_no_persona_names_in_labels`, the icon part of
+  `test_every_run_kind_has_harness_icon_and_transcript`, the feed part of
+  `test_activity_and_feed_read_events_once`).
+- [ ] **Step 2: Run** `pytest tests/devloop/dash/test_live.py tests/devloop/test_dash_view.py
   -q`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Spark: for the minutes `now - 14` to `now`, the count from
-  `FileState.minutes` or 0. Feed events: `status.events(project)[-200:]` mapped to tags
-  (`run-dispatched` DISPATCHED, `run-applied` APPLIED, `slice-moved` MOVED, `merged` MERGED,
-  `row-closed` CLOSED, `question-waiting` and `question-defaulted` QUESTION,
-  `apply-mismatch` DROPPED), `words` from `status.event_words`. `kpi.free_mb` and
-  `memory_state` come from the `memory` section already built. Call `cache.collect(keep)`
-  once at the end with the paths used in this build.
-- [ ] **Step 4: Run** `pytest tests/devloop -k dash -q`. Expected: PASS.
+- [ ] **Step 3: Implement.** Model: for Claude kinds the value after `--model` in
+  `req["argv"]`, else `FileState.model`, sealed as `model` or None. Call
+  `cache.collect(keep)` once per build.
+- [ ] **Step 4: Run** `pytest tests/devloop -k dash -q` and `pytest tests/devloop/dash -q`.
+  Expected: PASS.
 - [ ] **Step 5: Commit** `feat(devloop): add live worker activity to the dashboard model`,
   last line `cam`.
 
@@ -738,104 +848,234 @@ each complete line: try parse_claude_line or codex.feed; except the listed error
 - Modify: `devloop/dash/render.py`, `tests/devloop/test_dash_render.py`
 
 **Interfaces:**
-- Consumes: the schema 2 view.
-- Produces, in `render_live.py`: `kpi_strip(v, now) -> str`, `attention(v, now) -> str`,
-  `worker_grid(v, now) -> str`, `sparkline(counts: list[int]) -> str` (an `<svg
-  class="spark" viewBox="0 0 60 16" role="img" aria-label="Tool calls per minute, last 15
-  minutes">` with one `<polyline>`; all zero draws a flat line), `role_icon(icon: str) ->
-  str` (one inline `<svg data-icon=...>` per id, `aria-hidden="true"`), `feed(v, now) ->
-  str`, `drawer_sources(v, now) -> str`. In `render.py`: `render_fragment` in the order of
-  `test_page_sections_in_order`; `render_page` adds `<aside id="drawer" hidden
-  aria-label="Slice details">` with a close button, outside `#app-body`.
-- Copy (exact): KPI labels "Workers", "Needs you", "Merged today", "Tools / min",
-  "Free memory", "Last tick". Attention empty state "Nothing needs you right now." Worker
-  empty state "No workers running." Feed empty state "No activity yet." Drawer gone
-  "This slice is no longer active." Card without output yet "starting". Answer hint
-  "Answer: devloop-state PROJECT answer KEY <option>, or on the questions page." Known
-  problems summary "Known problems" with the count.
-- Card layout: line 1 role icon, role label, slice key, harness badge, elapsed `<time>`;
-  line 2 phase chip and model; line 3 doing now (tag chip with `data-tag`, target in
-  `<code>` with CSS ellipsis, a `running` dot); line 4 tools (`N`, or `N+` when partial),
-  errors when non-zero, tokens out, sparkline. The card is `<article tabindex="0"
-  data-open="KEY">` only when `slice_active`.
-- Pipeline: one line per slice (key, phase strip, risk, round, PR link, owner, since,
-  "n/m met"), checklist in `<details>` as now; rows keep their header.
+- Produces: `kpi_strip(v, now)`, `attention(v, now)`, `worker_grid(v, now)`,
+  `sparkline(counts: list[int])` (`<svg class="spark" viewBox="0 0 60 16" role="img"
+  aria-label="Tool calls per minute, last 15 minutes">`, one `<polyline>`),
+  `role_icon(icon: str)` (inline `<svg data-icon=...>`), `feed(v, now)`,
+  `drawer_sources(v, now)`, all `-> str`. Pipeline cards carry `data-card-key`.
+  `render_page` adds `<aside id="drawer" hidden aria-label="Details">` outside `#app-body`.
+- Copy: KPI labels "Workers", "Needs you", "Merged today", "Tools / min", "Free memory",
+  "Last tick"; empty states "Nothing needs you right now.", "No workers running.",
+  "No activity yet."; cards "starting" and "activity not shown for this worker"; drawer
+  "This slice is no longer active."
 
-- [ ] **Step 1: Write the failing tests** `test_page_sections_in_order`,
-  `test_sparkline_is_inline_svg`, `test_worker_card_has_role_icon_not_avatar`,
-  `test_fragment_size_budget`, `test_no_em_dash_in_assets_and_copy`; update
-  `test_page_renders_from_fixture_offline`, `test_empty_project_shows_empty_states`,
-  `test_html_escapes_planted_markup` (markup cannot pass `safe_target`, so plant it in a
-  configured role label), `test_counts_read_naturally`.
+- [ ] **Step 1: Write the failing tests** render list under S2, `test_drawer_sources_capped_and_fallback_hooks`
+  (render part); update `test_page_renders_from_fixture_offline`,
+  `test_empty_project_shows_empty_states`, `test_html_escapes_planted_markup` (plant in a
+  configured role label and in a question's detail), `test_counts_read_naturally`.
 - [ ] **Step 2: Run** `pytest tests/devloop/test_dash_render.py -q`. Expected: FAIL.
 - [ ] **Step 3: Implement** with the reused helpers; every value through `html.escape`.
 - [ ] **Step 4: Run** `pytest tests/devloop -k dash -q`. Expected: PASS.
 - [ ] **Step 5: Commit** `feat(devloop): render the dashboard as mission control`, last line
   `cam`.
 
-## Task 7: Dense theme, phone layout and the drawer
+## Task 7: Dense theme, phone layout and the slice drawer
 
 **Files:**
 - Modify: `devloop/dash/web/dash.css`, `devloop/dash/web/dash.js`,
   `tests/devloop/test_dash_render.py`
 
 **Interfaces:**
-- Consumes: class names and `data-*` hooks from Task 6.
-- Produces: CSS tokens on `:root` for light, dark under `@media (prefers-color-scheme:
-  dark)` and `[data-theme=dark]`, with tag tokens `--t-read`, `--t-edit`, `--t-write`,
-  `--t-shell`, `--t-search`, `--t-agent`, `--t-web`, `--t-plan`, `--t-mcp`, `--t-other`,
-  each AA against its chip background; system font stacks only. JS: `POLL_MS = 4000`;
-  `openDrawer(key)`, `closeDrawer()`, `fillDrawer()` (called after every `swap`).
+- Produces: tokens on `:root` (light), dark under `prefers-color-scheme` and
+  `[data-theme=dark]`, tag tokens `--t-read` to `--t-other`, each AA on its chip. JS
+  `POLL_MS = 4000`, `openDrawer(kind, key)`, `closeDrawer()`, `fillDrawer()` after every
+  swap.
 
-- [ ] **Step 1: Write the failing tests** `test_phone_rules_present`; extend
-  `test_css_tokens_meet_aa` and `test_css_light_and_dark_define_the_same_tokens` to the tag
-  tokens; keep `test_static_assets_have_no_inner_html_from_data`.
+- [ ] **Step 1: Write the failing tests** `test_phone_rules_present`; extend the two CSS
+  token tests; keep `test_static_assets_have_no_inner_html_from_data`.
 - [ ] **Step 2: Run** `pytest tests/devloop/test_dash_render.py -q`. Expected: FAIL.
-- [ ] **Step 3: Implement.** Desktop: KPI strip in 6 columns; attention bar full width;
-  worker grid `repeat(auto-fill, minmax(300px, 1fr))`; feed and pipeline side by side above
-  1100 px, stacked below; drawer a right panel 420 px wide. Phone (max 640 px): KPI 3 by 2,
-  one column everywhere, feed rows as a two-line grid with `minmax(0, 1fr)` and ellipsis,
-  drawer `position: fixed; inset: 0`. JS: click or Enter on `[data-open]` sets
-  `location.hash = "slice=" + key`; `hashchange` opens or closes; `fillDrawer` copies the
-  `#ds-KEY` source's children with `cloneNode(true)` (never `innerHTML`), keeps the drawer
-  body's `scrollTop`, and shows the fixed "no longer active" text when the source is gone;
-  Escape closes; focus moves to the close button on open and back to the card on close.
+- [ ] **Step 3: Implement.** Desktop: KPI 6 columns, worker grid
+  `repeat(auto-fill, minmax(300px, 1fr))`, feed and pipeline side by side above 1100 px,
+  drawer a 420 px right panel. Phone (max 640 px): KPI 3 by 2, one column, feed rows a
+  two-line grid with `minmax(0, 1fr)` and ellipsis, drawer `position: fixed; inset: 0`.
+  `fillDrawer` clones `#ds-KEY` children with `cloneNode(true)`; without a source it clones
+  the checklist from `[data-card-key=KEY]`; with neither it shows the fixed text. Escape,
+  close and Back close; focus moves in and back.
 - [ ] **Step 4: Run** `pytest tests/devloop -k dash -q`. Expected: PASS.
-- [ ] **Step 5: Commit** `feat(devloop): add the drawer and the dense theme`, last line `cam`.
+- [ ] **Step 5: Commit** `feat(devloop): add the slice drawer and the dense theme`, last line
+  `cam`.
 
-## Task 8: Leak sentry, mutations and browser check
+## Task 8: Leak sentry, page mutations and browser check
 
 **Files:**
 - Modify: `tests/devloop/test_dash_server.py`, `tests/devloop/mutations.sh`
 
-**Interfaces:**
-- Consumes: everything above; `srv`, `call` and `_plant` in `test_dash_server.py`.
-
-- [ ] **Step 1: Write the tests** `test_transcript_secrets_reach_no_route` (values in
-  Acceptance tests; it writes Claude and Codex files into the fixture's executing runs and
-  into a finished run used by a drawer) and `test_routes_unchanged_after_redesign`. Apply
-  the class 1 mutation by hand, see the sentry FAIL, restore.
-- [ ] **Step 2: Run** `pytest tests/devloop/test_dash_server.py -q`. Expected: PASS after
-  the restore.
-- [ ] **Step 3:** Add `mutate` entries for classes 1, 4, 5, 9 and 10 (Task 3 added 2, 3, 6,
-  7 and 8), each naming its test; run `tests/devloop/mutations.sh`; every dash mutation is
-  killed.
-- [ ] **Step 4: VERIFY in a browser.** Extend a scratch copy of
-  `/home/cam/scratch/devloop-dash/make_fixture.py` to write the transcript fixtures (scratch
-  only, not committed), start `devloop-dash demo --host 0.0.0.0`, and at 1440 px and 390 px,
-  light and dark: open a worker drawer, wait two polls, and confirm the drawer, its scroll,
-  the filters and the page scroll hold; append lines to a fixture transcript and confirm the
-  doing-now line and feed update within 8 s; move the slice to DONE and confirm "This slice
-  is no longer active."; confirm no horizontal scroll at 390 px. Record steps and
-  screenshots in the PR body.
+- [ ] **Step 1: Write** `test_transcript_secrets_reach_no_route` as class 1 (asserts 200,
+  positive facts, absences). Apply the class 1 mutation by hand: the test fails on the
+  absence assertion with a 200 response. Restore.
+- [ ] **Step 2: Run** `pytest tests/devloop/test_dash_server.py -q`. Expected: PASS.
+- [ ] **Step 3:** Add `mutate` entries for classes 1, 5 (drawer part), 9 (registry and event
+  parts) and 10, each with its test; run `tests/devloop/mutations.sh`; all dash entries
+  killed, none `RED-BASE`.
+- [ ] **Step 4: VERIFY in a browser.** A scratch copy of
+  `/home/cam/scratch/devloop-dash/make_fixture.py` writes transcript fixtures (scratch only).
+  Start `devloop-dash demo --host 0.0.0.0`; at 1440 px and 390 px, light and dark: open a
+  worker drawer, wait two polls (drawer, scroll, filters hold); append transcript lines
+  (doing-now and feed update within 8 s); open slice 31 (checklist only), move it to DONE
+  ("no longer active"); no horizontal scroll at 390 px. Record steps and screenshots in
+  the PR body.
 - [ ] **Step 5: Commit** `test(devloop): guard transcript facts on every route`, last line
   `cam`.
+
+## Task 9: Question class, detail, versions and free-text answers
+
+**Files:**
+- Modify: `devloop/notes.py`, `devloop/state_cli.py`,
+  `devloop/status.py`, `skills/dev-loop/TICK.md`, `skills/dev-loop/PLAYBOOK.md`,
+  `skills/dev-loop/SKILL.md`
+- Test: `tests/devloop/dash/test_controls.py`, `tests/devloop/test_notes.py`
+
+**Interfaces:**
+- Produces: `notes.ask(project, key, *, question, options, recommended, wait=False,
+  detail="", klass="product") -> dict` (`klass` in `("tech", "product")`; product when
+  `wait`; `wait` stored as `klass == "product"`); `notes.question_version(q: dict) -> str`;
+  `notes.answer(project, key, choice, *, expect_version=None, via="cli") -> None`;
+  `notes.OTHER_PREFIX = "other: "`; `notes.valid_choice(q, choice) -> bool`;
+  questions page fields `Detail` (`_line(detail, 1000)`) and `Class`; events `question-decided`
+  (tech) and `question-answered` with `via`; `status.EVENTS` entries with tags DECIDED and
+  ANSWERED. CLI: `ask --detail TEXT --class tech|product`.
+- Slack (`_post_question`): tech reads "Tech lead decided KEY: OPTION. Override on the
+  dashboard."; product keeps today's waiting wording.
+
+- [ ] **Step 1: Write the failing tests** S3 notes list (`test_ask_records_class_and_detail`
+  to `test_override_of_tech_decision_records_owner_answer`, `test_wait_flag_forces_product`)
+  in `tests/devloop/dash/test_controls.py`; keep `tests/devloop/test_notes.py` green.
+- [ ] **Step 2: Run** `pytest tests/devloop/dash/test_controls.py tests/devloop/test_notes.py
+  -q`. Expected: FAIL.
+- [ ] **Step 3: Implement.** The version check, the answered check and the choice check run
+  inside `store.locked(_lock_for(project))` in `_apply_answer`. `read_answers` uses
+  `valid_choice` too. Docs: TICK step 10 says to pass `--class`, `--detail` (what is
+  happening, why it matters, what each option does, in short plain sentences), with the
+  product and tech definitions above and "when unsure, product". PLAYBOOK gets: the
+  question row says an `other: <text>` answer is the owner's instruction and the tick
+  follows it; a `[judgment]` rule and a Scenarios row "Fix needs a ratchet, cap or
+  allowlist to grow" carrying the ratchet rule in generic words (tech when a planned fix
+  will retire the entry or it is a legitimate registry site, the answer names the fix; no
+  fix planned means log one first; 3 or more places with the same class means no entry
+  and an Architect tech review for a central handler), modelled on the Decoy playbook rows.
+  SKILL.s answer section names the dashboard.
+- [ ] **Step 4: Run** `pytest tests/devloop -k "notes or dash or state" -q`. Expected: PASS.
+- [ ] **Step 5: Commit** `feat(devloop): classify owner questions and accept typed answers`,
+  last line `cam`.
+
+## Task 10: One write path for pause, resume and tick
+
+**Files:**
+- Modify: `devloop/store.py`, `devloop/tick.py`, `devloop/wrap.py`, `devloop/state_cli.py`,
+  `devloop/status.py`, `devloop/dash/lifecycle.py`
+- Test: `tests/devloop/dash/test_controls.py`
+
+**Interfaces:**
+- Produces: `store.set_paused(project, on: bool, via: str) -> None` (touch or unlink
+  `PAUSE`, append `loop-paused` or `loop-resumed`); `tick.lock_held(project) -> bool`;
+  `tick.spawn_detached(project, via: str) -> None` (the old `wrap._wake_tick` body, output
+  appended to `cron.log`, event `tick-requested` when `via != "wrapper"`); the CLI
+  `pause`/`resume` call `set_paused(..., via="cli")`; `wrap.finish` calls
+  `tick.spawn_detached(project, "wrapper")`; `lifecycle` drops `DEVLOOP_HEADLESS` from the
+  server child env.
+
+- [ ] **Step 1: Write the failing tests** `test_cli_and_dashboard_pause_share_one_path`,
+  `test_tick_spawn_refused_while_locked` (lock part), `test_spawn_detached_leaves_no_child_fds`,
+  `test_wrapper_wakes_tick_through_spawn_detached`, `test_server_env_is_not_headless`.
+- [ ] **Step 2: Run** `pytest tests/devloop/dash/test_controls.py -q -k "pause or spawn or
+  wakes or headless"`. Expected: FAIL.
+- [ ] **Step 3: Implement** by moving code, leaving no old copy or alias.
+- [ ] **Step 4: Run** `pytest tests/devloop -k "tick or wrap or state or dash" -q`. Expected:
+  PASS.
+- [ ] **Step 5: Commit** `refactor(devloop): share one path for pause, resume and tick
+  starts`, last line `cam`.
+
+## Task 11: POST actions with token, origin and version checks
+
+**Files:**
+- Create: `devloop/dash/actions.py`
+- Modify: `devloop/dash/server.py`
+- Test: `tests/devloop/dash/test_controls.py`, `tests/devloop/test_dash_server.py`
+
+**Interfaces:**
+- Produces: `server.ROUTES: dict[tuple[str, str], handler]`; `Handler.do_POST`;
+  `actions.ACTIONS = {"/act/answer": answer, "/act/pause": pause, "/act/resume": resume,
+  "/act/tick": run_tick}`; `actions.check_post(handler) -> dict[str, str]` (token via
+  `hmac.compare_digest`, origin, `Content-Length <= POST_BYTES`, `parse_qs` with
+  `strict_parsing=True`, `max_num_fields=8`, exact field set per action);
+  `actions.Refused(code: int, message: str)`; `DashServer.token: str`,
+  `DashServer.last_tick: float`. CSP `form-action 'self'`. Each handler returns a fixed
+  message; `_send` writes JSON or a 303 by `Accept`.
+
+- [ ] **Step 1: Write the failing tests** S3 server list
+  (`test_every_post_route_refuses_without_token_and_origin` to
+  `test_post_log_has_no_values`) and update `test_only_known_routes_and_methods` and
+  `test_every_response_sends_security_headers` (POST and 303 included).
+- [ ] **Step 2: Run** `pytest tests/devloop/dash/test_controls.py tests/devloop/test_dash_server.py
+  -q`. Expected: FAIL.
+- [ ] **Step 3: Implement.** `_post` order: method and path in `ACTIONS` (else 404), size,
+  token, origin, fields, then the handler; `NotesError` and `Refused` map to the fixed
+  messages in Exit paths; any other exception gives the fixed 500 and a class-name log.
+- [ ] **Step 4: Run** `pytest tests/devloop -k dash -q`, `pytest tests/devloop/dash -q`.
+  Expected: PASS.
+- [ ] **Step 5: Commit** `feat(devloop): let the owner act from the dashboard`, last line
+  `cam`.
+
+## Task 12: Decisions drawer, decided list and loop controls
+
+**Files:**
+- Create: `devloop/dash/render_control.py`
+- Modify: `devloop/dash/view.py` (`decided`, `controls`, needs_you `version`, `detail`,
+  `klass`), `devloop/dash/render.py`, `devloop/dash/web/dash.js`,
+  `devloop/dash/web/dash.css`
+- Test: `tests/devloop/dash/test_controls.py`, `tests/devloop/test_dash_render.py`
+
+**Interfaces:**
+- Produces: `render_control.question_sources(v, token, copy_path) -> str` (one hidden
+  `#qs-KEY` per open owner question: question, detail, options with the recommended one
+  marked, "Go with recommended" form, one form per other option, free-text form "Your
+  answer" with Save, "Copy for Claude" button with `data-copy` text);
+  `decided_list(v, token) -> str` ("Decided for you", each with Override opening the same
+  drawer kind); `controls(v, token) -> str` (Pause or Resume, "Run a tick now", disabled
+  with "A tick is running" while `tick_running`). `render_page` and `render_fragment` take
+  `token` and `copy_path` from the server, never from the view.
+- JS: `#q=KEY` opens the question drawer; forms submit through `fetch` with `Accept:
+  application/json` and show the message in the drawer; the drawer's typed text survives
+  swaps (kept by textarea `id`); copy uses `navigator.clipboard.writeText` when
+  `isSecureContext`, else selects a read-only `<textarea>` and shows "Press Ctrl+C to
+  copy."; a question drawer whose source is gone reads "This question was answered."
+
+- [ ] **Step 1: Write the failing tests** `test_decisions_drawer_has_actions`,
+  `test_decided_for_you_list`, `test_controls_render_paused_and_tick_running`.
+- [ ] **Step 2: Run** `pytest tests/devloop/dash/test_controls.py -q -k "drawer or decided or
+  controls"`. Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run** `pytest tests/devloop -k dash -q`, `pytest tests/devloop/dash -q`.
+  Expected: PASS.
+- [ ] **Step 5: Commit** `feat(devloop): add the decisions drawer and loop controls`, last
+  line `cam`.
+
+## Task 13: Control mutations and browser check
+
+**Files:**
+- Modify: `tests/devloop/mutations.sh`
+
+- [ ] **Step 1:** Add `mutate` entries for classes 3 (GET write), 4, 5 (hold key), 6 (POST
+  body), 7 (version outside the lock), 9 (pause path, `CODEX_KINDS`) and 10 (default
+  class), each with its test.
+- [ ] **Step 2: Run** `tests/devloop/mutations.sh`. Expected: every entry killed, none
+  `RED-BASE`.
+- [ ] **Step 3: VERIFY in a browser** on the fixture server at 1440 px and 390 px, light
+  and dark: answer a product question with "Go with recommended" (event and page update);
+  double click (one answer, "Already answered"); answer from a tab opened before the tick
+  re-asked (refused, "changed"); type an `other:` answer; override a tech decision; Pause,
+  Resume, "Run a tick now" twice (second refused); restart the server and post from the
+  old tab ("out of date"); "Copy for Claude" on loopback and on the LAN IP (fallback).
+  Record steps and screenshots in the PR body.
+- [ ] **Step 4: Run** the S3 T1 selection on the head. Expected: PASS.
+- [ ] **Step 5: Commit** `test(devloop): guard the dashboard write path`, last line `cam`.
 
 ## Builder brief notes
 
 Commit subjects follow Conventional Commits, 72 characters max, no body unless it explains
 why, final line `cam`, no tool-attribution trailers. Test depth: T0 the touched file's
-tests per edit, T1 the slice's selection per commit, T2 at the gate on the exact head.
+tests per edit, T1 the slice's selection per commit, T2 at the gate on the exact head; S3
+also gets one full suite on its merge head (serialized format and trust boundary).
 Name the defect class of each finding you fix; write tests first and see them red; attack
 your own diff with the listed mutations; never widen a limit or skip a test to get green;
 stop and report if a catalogued class repeats. One writer at a time in this worktree.
