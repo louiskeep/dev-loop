@@ -39,6 +39,15 @@ WORKER_DENIED = [
     "git push origin main",
     "cd x && git push origin HEAD:main",
     "echo 'unterminated",
+    "if true; then gh pr merge 1; fi",
+    "while true; do devloop-merge p k; done",
+    "for x in a b; do git push origin main; done",
+    "{ gh pr merge 1; }",
+    "! gh pr merge 1",
+    "env",
+    "ls; sudo",
+    "env -S 'gh pr merge 1'",
+    "env --split-string='gh pr merge 1'",
 ]
 
 

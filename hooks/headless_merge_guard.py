@@ -193,25 +193,44 @@ def _tokens(segment: str) -> list[str]:
         raise _Unparseable(str(exc)) from exc
 
 
+_RESERVED = {
+    "if", "then", "else", "elif", "do", "while", "until", "for", "case", "in",
+    "fi", "done", "esac", "{", "}", "!",
+}  # fmt: skip
+
+
 def _command_start(tokens: list[str]) -> int:
-    """Index of the real executable: past VAR=val, env, sudo, timeout N, xargs and the like."""
-    i = 0
+    """Index of the real executable: past reserved words, VAR=val, env, sudo, timeout N,
+    xargs and the like. A prefix that runs off the end, or env -S, is unparseable."""
+    i, after_prefix = 0, False
     while i < len(tokens):
         tok = tokens[i]
         name = os.path.basename(tok)
-        if _VAR.fullmatch(tok):
+        if tok in _RESERVED:
+            i += 1
+            after_prefix = False
+        elif _VAR.fullmatch(tok):
             i += 1
         elif name in _PREFIXES:
             i += 1
+            after_prefix = True
             values = _OPT_VALUE.get(name, set())
             while i < len(tokens) and (
                 tokens[i].startswith("-") or _VAR.fullmatch(tokens[i])
             ):
+                if name == "env" and (
+                    tokens[i].startswith("-S")
+                    or tokens[i] == "--split-string"
+                    or tokens[i].startswith("--split-string=")
+                ):
+                    raise _Unparseable("env -S runs a command string")
                 i += 2 if tokens[i] in values else 1
             if name == "timeout":
                 i += 1  # the duration
         else:
-            break
+            return i
+    if after_prefix:
+        raise _Unparseable("a command prefix with no command")
     return i
 
 
