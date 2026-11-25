@@ -3,6 +3,8 @@
 # a failure. A mutation whose tests still pass is a survivor. Usage: tests/devloop/mutations.sh
 # The edits are exact-text replacements (a stale edit fails the script, so none can rot).
 set -uo pipefail
+# A same-size edit within one second would otherwise leave a stale mutated .pyc behind.
+export PYTHONDONTWRITEBYTECODE=1
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PY="${PYTHON:-$ROOT/.venv/bin/python}"
 WORK="$(mktemp -d)"
