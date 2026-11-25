@@ -13,6 +13,8 @@ EM_DASH = chr(0x2014)
 
 def shipped():
     files = list((ROOT / "devloop").rglob("*.py"))
+    files += list((ROOT / "devloop").rglob("*.js"))
+    files += list((ROOT / "devloop").rglob("*.css"))
     files += [p for p in (ROOT / "bin").glob("devloop-*") if p.is_file()]
     files += [p for p in (ROOT / "skills" / "dev-loop").rglob("*") if p.is_file()]
     return files
