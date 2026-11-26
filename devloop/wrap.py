@@ -189,9 +189,8 @@ def _push_writer(rd, req):
     except Exception as exc:  # any failure to confirm must not leave a DONE result
         pushed, why = None, f"push confirmation failed: {type(exc).__name__}"
     if why is None:
-        store.rewrite_header(
-            path, head=pushed
-        )  # report the commit the remote confirmed
+        # Always rewrite: it also drops a stale or duplicate head the worker wrote.
+        store.rewrite_header(path, head=pushed)
         return
     text = f"status: FAILED\nhead: \nverdict: \ntests: {hdr.get('tests', '')}\n"
     text += f"push: {why}\n---\npush failed: {why}\n{body.strip()}\n"

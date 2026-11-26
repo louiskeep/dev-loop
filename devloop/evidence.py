@@ -261,9 +261,8 @@ def _applied_writer_runs(project, s):
             continue
         if req.get("plan_lineage", 0) != s["plan_lineage"]:
             continue  # a builder run for an earlier plan does not count after a redesign
-        res = runs.parse_result(
-            rd, req["kind"]
-        )  # the exit file overrides a DONE header
+        # The exit file overrides a DONE header, so a failed run is not credited.
+        res = runs.parse_result(rd, req["kind"])
         if (
             (rd / "applied").is_file()
             and store.request_matches_ledger(project, rd.name)

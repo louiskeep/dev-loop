@@ -353,7 +353,7 @@ mutate "playbook heading needs an exact match only" devloop/dispatch.py \
   $T/test_runs_dispatch.py::test_section_matches_the_plain_heading_and_the_kind_in_backticks
 
 mutate "wrapper keeps the worker's head instead of the pushed one" devloop/wrap.py \
-  '        if hdr.get("head") != pushed:' '        if False:' \
+  '        store.rewrite_header(path, head=pushed)' '        pass' \
   $T/test_push.py::test_amended_head_is_pushed_and_reported
 mutate "writer provenance is never recorded" devloop/slices.py \
   '                s["head_writer"] = writer' '                pass' \
@@ -380,7 +380,7 @@ mutate "the reservation amount is not frozen at dispatch" devloop/dispatch.py \
 
 G=$T/guard
 mutate "the push SHA header keeps duplicate or spaced head lines" devloop/store.py \
-  '    header = {**read_header(path), **fields}' '    header = read_header(path)' \
+  '{**header, **fields}.items()' 'header.items()' \
   $G/test_push_header.py
 mutate "a result that cannot be published still exits clean" devloop/wrap.py \
   '        if code == 0:  # a result that could not be published is not a success' '        if False:' \
@@ -406,10 +406,10 @@ mutate "the Senior seat accepts any reviewer kind at evidence time" devloop/evid
   '        return ("dennis",)' '        return _reviewer_kinds(cfg, name)' \
   $G/test_writer_provenance.py::test_dual_kind_codex_go_does_not_satisfy_the_senior_seat
 mutate "dispatch lets the Senior seat run a non-dennis kind" devloop/dispatch.py \
-  '        if kind != "dennis":' '        if False:' \
+  '    if purpose == "code" and kind not in evidence.code_reviewer_kinds(' '    if False and kind not in evidence.code_reviewer_kinds(' \
   $G/test_writer_provenance.py::test_dual_kind_senior_cannot_run_codex_review_on_a_codex_head
 mutate "workers run without the guard hooks" devloop/wrap.py \
-  '        env = githooks.protect_env(env, rd / "githooks", req["cwd"])' '        pass' \
+  '        env = githooks.protect_env(env, rd / "githooks")' '        pass' \
   $G/test_worker_push.py::test_worker_push_to_main_is_refused_and_a_feature_push_works
 mutate "the guard pre-push lets a base ref through" devloop/githooks.py \
   '    if [ "$rref" = "refs/heads/$base" ]; then' '    if false; then' \
@@ -463,6 +463,50 @@ mutate "capacity pools ignore the registry order" devloop/dash/view.py \
     ]' '        for pool in ("builder", "tester", "reviewer", "planner")
     ]' \
   $T/test_dash_view.py::test_displayed_pools_follow_the_registry_order
+
+G=$T/guard
+mutate "the hook resolves hooks from a fixed repository" devloop/githooks.py \
+  'dir=$(GIT_CONFIG_COUNT=0 git rev-parse' 'dir=$(GIT_CONFIG_COUNT=0 git -C /nonexistent rev-parse' \
+  $G/test_worker_push.py::test_hooks_of_the_repository_running_git_are_the_ones_that_run
+mutate "post-index-change is not forwarded" devloop/githooks.py \
+  '    "post-index-change",
+' '' \
+  $G/test_worker_push.py::test_hooks_of_the_repository_running_git_are_the_ones_that_run
+mutate "pre-push ignores a failed input copy" devloop/githooks.py \
+  'cat > "$tmp" || exit 1' 'cat > "$tmp"' \
+  $G/test_worker_push.py::test_pre_push_rejects_when_it_cannot_copy_its_input
+mutate "recovery trusts the raw DONE header" devloop/evidence.py \
+  '        res = runs.parse_result(rd, req["kind"])' \
+  '        res = runs.Result(store.read_header(store.out_dir(rd) / "result.md").get("status"), store.read_header(store.out_dir(rd) / "result.md").get("head"), None, None, None, None, "", "")' \
+  $G/test_writer_provenance.py::test_a_failed_run_with_a_done_header_is_not_credited
+mutate "an import records no commit" devloop/slices.py \
+  '            overrides["head_writer"] = writer_record("imported", head)' '            pass' \
+  $G/test_writer_provenance.py::test_the_imported_head_counts_as_claude_written
+mutate "an imported head is trusted at any commit" devloop/evidence.py \
+  '        and rec["sha"] == s["head"]' '        and True' \
+  $G/test_writer_provenance.py::test_moving_an_imported_head_restores_the_unmet_writer_item
+mutate "the Senior seat ignores the kinds a reviewer may run" devloop/evidence.py \
+  ' and "dennis" in _reviewer_kinds(cfg, n)' '' \
+  $G/test_writer_provenance.py::test_senior_seat_skips_a_dennis_kind_reviewer_that_cannot_run_dennis
+mutate "the header ends only at an exact separator line" devloop/store.py \
+  '        if line.strip() == "---":' '        if line == "---\n":' \
+  $G/test_push_header.py::test_a_separator_with_trailing_spaces_keeps_the_body
+mutate "a head that already equals the pushed one is left as written" devloop/wrap.py \
+  '        store.rewrite_header(path, head=pushed)' \
+  '        if hdr.get("head") != pushed:
+            store.rewrite_header(path, head=pushed)' \
+  $G/test_push_header.py::test_a_stale_head_before_the_correct_one_leaves_exactly_one
+mutate "a request with bad UTF-8 escapes the memory scan" devloop/store.py \
+  '    except UnicodeDecodeError:
+        text, bad = "", True' '    except ZeroDivisionError:
+        text, bad = "", True' \
+  $G/test_host_memory.py::test_damaged_request_files_are_skipped_and_healthy_runs_still_count
+mutate "a wrong-typed kind reaches the estimate lookup" devloop/runs.py \
+  '            if not isinstance(req.get("kind"), str):' '            if False:' \
+  $G/test_host_memory.py::test_damaged_request_files_are_skipped_and_healthy_runs_still_count
+mutate "a null ledger reads as a failed read" devloop/dash/view.py \
+  '        if raw is not unread and ok is None:' '        if raw is not None and raw is not unread and ok is None:' \
+  $T/dashboard/test_ledgers.py::test_a_null_ledger_is_marked_unreadable
 
 echo
 echo "killed: $killed  survived: $survived  stale: $stale"
