@@ -150,7 +150,7 @@ details > summary { cursor: pointer; list-style: revert; }
 details > summary h2 { display: inline; }
 
 /* Top bar: one line, then the detail panel */
-.topbar { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; align-items: center; }
+.topbar { display: flex; flex-wrap: wrap; gap: 0.4rem 0.8rem; align-items: center; }
 .project { font-weight: 700; }
 .stat { display: inline-flex; gap: 0.35rem; align-items: center; white-space: nowrap; }
 .stat .k { color: var(--muted); }
@@ -186,7 +186,8 @@ details > summary h2 { display: inline; }
 table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
 .tbl { table-layout: auto; }
 th, td { text-align: left; padding: 0.4rem 0.6rem 0.4rem 0; border-bottom: 1px solid var(--border); vertical-align: top; }
-th { color: var(--muted); font-weight: 600; font-size: 0.8rem; }
+th { color: var(--muted); font-weight: 600; font-size: 0.8rem; white-space: nowrap; }
+td[data-label="PR"], td[data-label="Waiting"], td[data-label="Since"] { white-space: nowrap; }
 td.clip { max-width: 28rem; overflow: hidden; text-overflow: ellipsis; display: table-cell; }
 td.act-cell { text-align: right; white-space: nowrap; }
 .mini td { padding: 0.15rem 0.6rem 0.15rem 0; }
@@ -246,7 +247,8 @@ body.drawer-open main { margin-right: 420px; }
   tr.grp { padding: 0; border-bottom: 0; margin-top: 0.4rem; }
   td { border: 0; padding: 0.1rem 0; }
   td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); font-size: 0.8rem; }
-  td.clip { max-width: none; }
+  td.clip { max-width: none; display: block; }
+  td:empty { display: none; }
   td.act-cell { text-align: left; padding-top: 0.3rem; }
   td.act-cell::before { content: none; }
 }
@@ -257,3 +259,4 @@ body.drawer-open main { margin-right: 420px; }
   .drawer { position: fixed; inset: 0; width: auto; border-left: 0; }
   #app-body > #strip { position: static; }
 }
+tr.grp th { white-space: normal; }

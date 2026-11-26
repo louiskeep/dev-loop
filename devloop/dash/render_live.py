@@ -159,8 +159,8 @@ def top_bar(v, now, token="") -> str:
 
 def _gate_items(c) -> str:
     cl = c["checklist"]
-    if not cl["available"]:
-        return '<p class="empty">No checklist for this slice.</p>'
+    if not cl["available"] or not cl["items"]:
+        return '<p class="empty">Nothing is needed for this stage.</p>'
     items = []
     for i in cl["items"]:
         text = r.CODE_TEXT[i["code"]] + (f" ({i['role']})" if i["role"] else "")
@@ -211,7 +211,7 @@ def _history(d) -> str:
 
 def slice_heading(c) -> str:
     """The row's plain name and the slice, as one line for titles."""
-    return f"{c['title'] or c['row']}, slice {c['slice']}"
+    return f"Slice {c['slice']}"
 
 
 def _drawer(d, cards, now) -> str:
