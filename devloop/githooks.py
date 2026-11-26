@@ -39,7 +39,7 @@ CHAINED = (
 
 # The repository that runs the hook is not the one that started the worker, so the
 # original hooks directory is resolved here, with this guard's config override removed.
-_ORIG = """dir=$(GIT_CONFIG_COUNT=0 git rev-parse --path-format=absolute --git-path hooks 2>/dev/null) || dir=
+_ORIG = """dir=$(GIT_CONFIG_COUNT={count} git rev-parse --path-format=absolute --git-path hooks 2>/dev/null) || dir=
 orig="$dir/{name}"
 [ -n "$dir" ] || orig=
 """
@@ -85,13 +85,13 @@ def _write_hook(path, text):
 def protect_env(env, hooks_dir) -> dict:
     """`env` plus a per-process git config that installs the guard hooks in `hooks_dir`."""
     hooks_dir.mkdir(parents=True, exist_ok=True)
-    for name in CHAINED:
-        _write_hook(hooks_dir / name, _CHAIN.format(name=name))
-    _write_hook(hooks_dir / "pre-push", _PRE_PUSH.format(name="pre-push"))
     try:
         n = int(env.get("GIT_CONFIG_COUNT") or 0)
     except ValueError:
         n = 0
+    for name in CHAINED:
+        _write_hook(hooks_dir / name, _CHAIN.format(name=name, count=n))
+    _write_hook(hooks_dir / "pre-push", _PRE_PUSH.format(name="pre-push", count=n))
     return {
         **env,
         "GIT_CONFIG_COUNT": str(n + 1),

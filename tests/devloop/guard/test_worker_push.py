@@ -114,3 +114,27 @@ def test_pre_push_rejects_when_it_cannot_copy_its_input(proj, tmp_path, repo):
         [str(hook), "origin", "u"], input=line, text=True, env=env, cwd=wt
     )
     assert r.returncode != 0
+
+
+def test_inherited_hooks_path_can_reject_a_worker_commit(
+    proj, tmp_path, repo, monkeypatch
+):
+    wt, _ = repo
+    hooks = tmp_path / "inherited"
+    hooks.mkdir()
+    hook = hooks / "pre-commit"
+    hook.write_text("#!/bin/sh\necho inherited-hook >&2\nexit 1\n")
+    hook.chmod(0o755)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(hooks))
+    before = git(wt, "rev-parse", "HEAD")
+    rd, log = run_payload(
+        proj,
+        tmp_path,
+        wt,
+        "git -c user.name=t -c user.email=t@t commit --allow-empty -qm test",
+    )
+    assert "inherited-hook" in log
+    assert store.read_json(rd / "exit")["code"] != 0
+    assert git(wt, "rev-parse", "HEAD") == before

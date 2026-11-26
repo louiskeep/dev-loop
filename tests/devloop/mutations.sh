@@ -465,8 +465,11 @@ mutate "capacity pools ignore the registry order" devloop/dash/view.py \
   $T/test_dash_view.py::test_displayed_pools_follow_the_registry_order
 
 G=$T/guard
+mutate "the hook forgets inherited Git configuration" devloop/githooks.py \
+  'GIT_CONFIG_COUNT={count} git rev-parse' 'GIT_CONFIG_COUNT=0 git rev-parse' \
+  $G/test_worker_push.py::test_inherited_hooks_path_can_reject_a_worker_commit
 mutate "the hook resolves hooks from a fixed repository" devloop/githooks.py \
-  'dir=$(GIT_CONFIG_COUNT=0 git rev-parse' 'dir=$(GIT_CONFIG_COUNT=0 git -C /nonexistent rev-parse' \
+  'dir=$(GIT_CONFIG_COUNT={count} git rev-parse' 'dir=$(GIT_CONFIG_COUNT={count} git -C /nonexistent rev-parse' \
   $G/test_worker_push.py::test_hooks_of_the_repository_running_git_are_the_ones_that_run
 mutate "post-index-change is not forwarded" devloop/githooks.py \
   '    "post-index-change",
