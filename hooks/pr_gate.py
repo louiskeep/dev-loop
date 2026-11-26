@@ -25,7 +25,7 @@ from pathlib import Path
 _CREATE = re.compile(r"\bpr\s+(create|new)\b")
 _RETARGET = re.compile(
     r"(?<![\w./-])(?:cd|pushd|popd)(?![\w./-])"
-    r"|\s-C\s|--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE|--repo|\s-R\s|--head|\s-H\s"
+    r"|\s-C\s|--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE|GH_REPO|--repo|\s-R\s|--head|\s-H\s"
 )
 _SKIP_HOOKS = re.compile(r"--no-verify|core\.hookspath", re.IGNORECASE)
 _OID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")

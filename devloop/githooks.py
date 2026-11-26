@@ -1,7 +1,9 @@
 """The ref policy for `git push`, and the git hooks that carry it.
 
-git's `pre-push` receives every ref update after git has resolved refspecs, `--all`,
-`--mirror` and `--prune`, so the policy reads facts instead of guessing from Bash text.
+git's `pre-push` receives every ref update after git has resolved refspecs, `--all` and
+`--prune`, so the policy reads facts instead of guessing from Bash text. (git leaves the
+removals of `--mirror` off that list; a mirror push is still refused because it also sends
+`refs/remotes/*`, which are not branches.)
 `check_refs` is the one place that decides. Two routes call it: the `pre-push` that
 `protect_env` gives each loop worker (this process tree only, through GIT_CONFIG_*
 variables, the repo's own config left alone), and the clone shim that `devloop-install`
@@ -102,7 +104,7 @@ _OID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 _ZERO = re.compile(r"0+")
 _SAFE_REF = re.compile(r"[\x21-\x7e]+")
 _GITHUB = re.compile(
-    r"(?:[a-z][a-z0-9+.-]*://(?:[^/@]*@)?|(?:[^/@:\s]+@)?)github\.com(?:[:/]|\Z)",
+    r"(?:[a-z][a-z0-9+.-]*://(?:[^/@]*@)?|(?:[^/@:\s]+@)?)(?:[a-z0-9-]+\.)?github\.com\.?(?:[:/]|\Z)",
     re.IGNORECASE,
 )
 _GIT_TIMEOUT_S = 20

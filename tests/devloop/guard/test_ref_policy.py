@@ -451,6 +451,8 @@ def test_a_vm_run_shaped_force_push_to_a_mirror_passes_but_not_to_origin(
         "git@github.com:a/b.git",
         "https://user:tok@github.com/a/b.git",
         "HTTPS://GitHub.com/a/b",
+        "ssh://git@ssh.github.com:443/a/b.git",
+        "https://www.github.com/a/b",
     ],
 )
 def test_github_urls_are_protected_in_any_spelling(url):

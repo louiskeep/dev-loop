@@ -520,6 +520,76 @@ mutate "slices of one row are listed as overlapping" devloop/overlap.py \
   'if a["row"] == b["row"] or files[a["key"]] is None' 'if files[a["key"]] is None' \
   $T/test_overlap.py::test_same_row_is_not_listed
 
+# PUSH-GATE S1: the ref policy in git pre-push, the PR gate, and the merge guard split.
+R=$G/test_ref_policy.py
+P=tests/test_pr_gate.py
+GH=devloop/githooks.py
+mutate "P1 lets a delete through" $GH \
+  '    if _ZERO.fullmatch(loid):' '    if False:' $R
+mutate "P2a lets a worker create a tag" $GH \
+  'and _ZERO.fullmatch(roid) and not worker:' 'and _ZERO.fullmatch(roid):' $R
+mutate "P4 treats a missing remote object as an ancestor" $GH \
+  '    if _git(["cat-file", "-e", f"{roid}^{{commit}}"], cwd)[0] != 0:' '    if False:' $R
+mutate "P6 always finds the remote tip in the reflog" $GH \
+  '    if not _in_reflog(roid, lref, cwd):' '    if False:' $R
+mutate "P3 ignores DEVLOOP_RUN" $GH \
+  '    if name in bases and worker:' '    if False:' $R
+mutate "P0 anchors with match instead of fullmatch" $GH \
+  '(_OID.fullmatch(f[1]) and _OID.fullmatch(f[3]))' '(_OID.match(f[1]) and _OID.match(f[3]))' $R
+mutate "the override is honored for a worker" $GH \
+  ' == "1" and not env.get("DEVLOOP_RUN"):' ' == "1":' $R
+mutate "the PR gate drops the retarget refusal" hooks/pr_gate.py \
+  '        if create and _RETARGET.search(command):' '        if False:' $P
+mutate "the PR gate allows on an exception" hooks/pr_gate.py \
+  '        return _deny("pr gate could not check this command; run devloop-install")' '        return 0' $P
+mutate "the skip-hooks check is gone" hooks/pr_gate.py \
+  '        if skip:
+            return _deny(SKIP_REASON)' '        if False:
+            return _deny(SKIP_REASON)' $P
+mutate "the installer writes to the worktree git dir" $GH \
+  '["rev-parse", "--path-format=absolute", "--git-common-dir"]' '["rev-parse", "--path-format=absolute", "--git-dir"]' $R
+mutate "the receipt compare is a prefix match" hooks/pr_gate.py \
+  'and receipt == head:' 'and receipt.startswith(head):' $P
+mutate "every remote is protected" $GH \
+  '    if len(argv) > 1 and not is_protected_url(argv[1], cwd):' '    if False:' $R
+mutate "P2a allows a tag update" $GH \
+  'and _ZERO.fullmatch(roid) and not worker:' 'and not worker:' $R
+mutate "no remote is protected" $GH \
+  'def is_protected_url(url, cwd=None) -> bool:
+' 'def is_protected_url(url, cwd=None) -> bool:
+    return False
+' $R
+mutate "the merge guard checks a loop worker's push text again" hooks/headless_merge_guard.py \
+  '            check_base_pushes=bool(event.get("agent_id")) and not in_run,' '            check_base_pushes=worker,' \
+  $G/test_merge_guard.py
+mutate "the PR gate imports the package at the top" hooks/pr_gate.py \
+  'import json
+import os
+import re
+' 'import json
+import os
+import re
+from devloop import project  # noqa: F401
+' $P
+mutate "the policy file imports the package at the top" $GH \
+  'import os
+import re
+' 'import os
+from devloop import store  # noqa: F401
+import re
+' $R
+mutate "the settings command turns exit 2 into the install message" $P \
+  '2) exit 2;; esac; fi; "' 'esac; fi; "' $P
+mutate "the pre-push hook leaves its temp copy" $GH \
+  "trap 'rm -f \"\$tmp\"' EXIT" ':' $R
+mutate "a refusal prints the push URL" $GH \
+  '        print(message, file=sys.stderr)' '        print(message, argv[1:2], file=sys.stderr)' $R
+mutate "a bare env feeds no pipe check" hooks/headless_merge_guard.py \
+  '            if sep == "|":
+                continue
+            raise' '            raise' \
+  $G/test_merge_guard.py
+
 echo
 echo "killed: $killed  survived: $survived  stale: $stale"
 [ "$survived" -eq 0 ] && [ "$stale" -eq 0 ]

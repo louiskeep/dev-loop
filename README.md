@@ -341,6 +341,17 @@ does not match a clean gate. A skill, `conducting-the-loop`, carries the
 judgment steps that the hooks cannot decide. The dev-rules ship under
 `rules/`.
 
+Pushes and PR opens have their own two checks, for a project with a `project.json`
+(the `devloop` loop). `devloop-install` writes a `pre-push` shim into each configured
+repo. It runs `devloop/githooks.py`, which reads the refs git resolved and refuses a
+delete, a tag that moves, a worker's tag or base-branch push, and a force push over
+commits the clone never had. It covers only the project's GitHub remotes, so a push to a
+node mirror is not checked. `DECOY_PUSH_OVERRIDE=1` lets a person, never a loop worker,
+skip it. The `pr_gate` hook (PreToolUse on Bash, copied into the installed lib and
+registered by hand in `~/.claude/settings.json`) denies `gh pr create` unless
+`devloop-gate-pass` recorded the exact HEAD, and denies `--no-verify` in a configured
+repo. A refused push is a stop, not something to work around.
+
 A sixth pattern is planning or coding from memory instead of the rules.
 The `rules_gate` hook (PreToolUse and PostToolUse on Edit, Write and
 MultiEdit) denies writing a plan (`docs/plans|specs/*.md`) or a source file in
