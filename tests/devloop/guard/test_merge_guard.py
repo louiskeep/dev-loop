@@ -132,21 +132,46 @@ def run_guard(command, headless=False, run=False, agent_id=None, raw=None, cwd=N
 WORKER_MSG = "only the orchestrator pushes to main or merges"
 
 
-def test_worker_env_base_push_denied_feature_push_allowed(tmp_path):
-    r = run_guard("git push origin main", headless=True, run=True)
+def test_loop_worker_pushes_are_left_to_the_git_policy(tmp_path):
+    # The Bash text of a loop worker's push is not inspected: pre-push sees the real refs
+    # (test_ref_policy.py, AT8). A subagent without DEVLOOP_RUN is still checked here.
+    for command, cwd in (
+        ("git push origin main", None),
+        ("git push origin HEAD:feat/x", None),
+        ("git push", _repo_on(tmp_path / "m", "main")),
+    ):
+        assert run_guard(command, headless=True, run=True, cwd=cwd).returncode == 0
+    r = run_guard("git push origin main", agent_id="a1")
     assert r.returncode == 2 and WORKER_MSG in r.stderr
-    assert (
-        run_guard("git push origin HEAD:feat/x", headless=True, run=True).returncode
-        == 0
-    )
-    assert (
-        run_guard("git push", run=True, cwd=_repo_on(tmp_path, "feat/x")).returncode
-        == 0
-    )
-    assert (
-        run_guard("git push", run=True, cwd=_repo_on(tmp_path / "m", "main")).returncode
-        == 2
-    )
+    r = run_guard("git push origin main", run=True, agent_id="a1")
+    assert r.returncode == 0
+
+
+def test_a_loop_worker_still_cannot_merge():
+    for command in ("gh pr merge 5", "devloop-merge p K"):
+        assert run_guard(command, run=True).returncode == 2
+        assert run_guard(command, run=True, agent_id="a1").returncode == 2
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env | grep -E 'DEVLOOP|GIT_CONFIG'",
+        "env | grep x",
+        "env | sort | head",
+    ],
+)
+def test_a_prefix_word_that_feeds_a_pipe_is_a_plain_command(command):
+    assert headless_merge_guard.blocked(command, worker=True) is False
+    assert run_guard(command, run=True).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "command", ["env", "ls; sudo", "ls | sudo", "echo 'x", "env -S 'ls'"]
+)
+def test_text_that_cannot_be_parsed_is_still_denied_for_a_worker(command):
+    assert headless_merge_guard.blocked(command, worker=True) is True
+    assert run_guard(command, run=True).returncode == 2
 
 
 def test_worker_cannot_run_devloop_merge_or_gh_merge():

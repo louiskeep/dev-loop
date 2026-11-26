@@ -1,8 +1,9 @@
 """Push a headless writer's commits once its worker has exited.
 
-The worker cannot push itself: a project-level PreToolUse hook may block `git push` in a
-worker's session. The loop pushes instead, as a plain git process no hook sees. The push
-is fast-forward only, targets the slice branch only, and never touches a base branch.
+A worker's own push is judged by the ref policy in git's pre-push (githooks.py), and a
+worker that cannot push, or was never told to, leaves its commits local. The loop pushes
+them once the worker has exited. The push is fast-forward only, targets the slice branch
+only, and never touches a base branch, so it passes the same policy.
 """
 
 import os

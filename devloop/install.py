@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import store
+from . import githooks, project, store
 
 
 def share_root() -> Path:
@@ -39,6 +39,10 @@ def install_package(repo: Path) -> Path:
         version / "skills" / "dev-loop",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
+    # The PR gate runs from the installed lib, next to the policy the clone shim runs, so
+    # both always come from one version.
+    (version / "hooks").mkdir()
+    shutil.copyfile(repo / "hooks" / "pr_gate.py", version / "hooks" / "pr_gate.py")
     _swap_link(root / "lib", version)
     return version
 
@@ -53,6 +57,38 @@ def install_bins(repo: Path, bin_dir: Path) -> list:
         os.replace(tmp, bin_dir / src.name)
         done.append(src.name)
     return done
+
+
+def install_clone_hooks():
+    """Write the push-policy shim into every repo of every project.
+
+    Returns (lines, failed): one `<project>/<repo>: <status>` line each, and whether any
+    repo refused the shim or any config could not be read (a repo left unguarded).
+    """
+    root = store.state_root()
+    names = sorted(d.name for d in root.iterdir()) if root.is_dir() else []
+    lines, seen, failed = [], set(), False
+    for name in names:
+        if (
+            store.NAME.fullmatch(name) is None
+            or not (root / name / "project.json").is_file()
+        ):
+            continue
+        try:
+            cfg = project.load_project(name)
+        except project.ConfigError:
+            lines.append(f"{name}: project.json cannot be loaded; no push policy")
+            failed = True
+            continue
+        for repo in cfg["repos"]:
+            key = Path(repo["path"]).resolve()
+            if key in seen:
+                continue
+            seen.add(key)
+            status = githooks.install_clone_hook(key)
+            failed = failed or status.startswith("refused")
+            lines.append(f"{name}/{repo['name']}: {status}")
+    return lines, failed
 
 
 def link_skill(version: Path) -> str:
@@ -76,4 +112,7 @@ def main(argv=None) -> int:
     version = install_package(repo)
     names = install_bins(repo, Path(args[0]))
     print(f"installed {len(names)} commands to {args[0]}; {link_skill(version)}")
-    return 0
+    lines, failed = install_clone_hooks()
+    for line in lines:
+        print(line)
+    return 1 if failed else 0
