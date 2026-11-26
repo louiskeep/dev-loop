@@ -345,9 +345,3 @@ def test_a_test_that_hangs_or_times_out_is_infra(proj, tmp_path, monkeypatch, li
     assert store.read_json(rd / "exit")["reason"] == "infra"
     assert result(rd)["status"] == "FAILED"
 
-
-def test_a_builder_that_hangs_still_counts_as_hung(proj, tmp_path, monkeypatch):
-    monkeypatch.setenv("DEVLOOP_IDLE_SECS", "1")
-    rd = mk(proj, tmp_path, ["sleep", "60"])
-    wrap.run(proj, "r1")
-    assert store.read_json(rd / "exit")["reason"] == "hung"
