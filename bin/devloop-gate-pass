@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Record that the quality gate passed for the current HEAD.
+
+Run it only after `dennis` reviewed the change and no BLOCKER or HIGH is left, and
+`barry` synced the docs. The receipt is the commit SHA in the worktree's git dir, so the
+next commit re-arms the gate. `hooks/pr_gate.py` is the only reader of this file.
+"""
+
+import os
+import subprocess
+import sys
+
+
+def git(*args):
+    r = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def main() -> int:
+    head = git("rev-parse", "HEAD")
+    git_dir = git("rev-parse", "--absolute-git-dir")
+    if not head or not git_dir:
+        print(
+            "devloop-gate-pass: run it inside a git worktree with a commit",
+            file=sys.stderr,
+        )
+        return 1
+    final = os.path.join(git_dir, "decoy-quality-gate")
+    tmp = final + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(head + "\n")
+        os.replace(tmp, final)
+    except OSError:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        print("devloop-gate-pass: cannot write the receipt", file=sys.stderr)
+        return 1
+    print(
+        f"quality gate recorded for HEAD {head}; gh pr create is unblocked for this commit"
+    )
+    return 0
+
+
+sys.exit(main())
