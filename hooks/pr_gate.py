@@ -34,6 +34,10 @@ RETARGET_REASON = (
     "run gh pr create by itself from the worktree of the branch; "
     "put a long body in --body-file"
 )
+UNREADABLE_REASON = (
+    "a project config cannot be read, so the guarded repos are unknown; "
+    "fix project.json, then run devloop-install"
+)
 SKIP_REASON = "git hooks must run here; do not skip them"
 
 
@@ -77,31 +81,19 @@ def _git(cwd, *args):
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-def _configured(cwd) -> bool:
-    """True when cwd is in a repo (or a linked worktree of one) that a project config lists."""
+def _configured(cwd):
+    """(listed, unreadable): is cwd in a repo (or a linked worktree of one) that a project
+    config lists, and are there project configs that could not be read."""
     # The package comes from the installed lib that holds this file, not from the cwd.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    from devloop import project, store
+    from devloop import project
 
+    repos, unreadable = project.configured_repos()
     common = _git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
     if not common:
-        return False
-    root = store.state_root()
-    names = sorted(d.name for d in root.iterdir()) if root.is_dir() else []
+        return False, unreadable
     mine = Path(common).parent.resolve()
-    for name in names:
-        if (
-            store.NAME.fullmatch(name) is None
-            or not (root / name / "project.json").is_file()
-        ):
-            continue
-        try:
-            cfg = project.load_project(name)
-        except project.ConfigError:
-            continue
-        if any(Path(r["path"]).resolve() == mine for r in cfg["repos"]):
-            return True
-    return False
+    return any(path == mine for _, _, path in repos), unreadable
 
 
 def _receipt_ok(cwd):
@@ -136,7 +128,12 @@ def main() -> int:
     try:
         if create and _RETARGET.search(command):
             return _deny(RETARGET_REASON)
-        if not _configured(cwd):
+        listed, unreadable = _configured(cwd)
+        # An unreadable config hides which repos are guarded: a create is denied (plan B2
+        # rule 5); other commands pass unless this repo is listed.
+        if create and unreadable:
+            return _deny(UNREADABLE_REASON)
+        if not listed:
             return 0
         if create:
             ok, reason = _receipt_ok(cwd)

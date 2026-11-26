@@ -203,7 +203,8 @@ def check_refs(lines, env=None, cwd=None) -> list:
 def pre_push_main(argv, text, env=None, cwd=None) -> int:
     """`pre-push <remote> <url>` with the update lines in `text`. 0 allows, 1 refuses."""
     env = os.environ if env is None else env
-    # An unknown URL is treated as the project's remote: fail closed.
+    # A URL that is not the project's remote (a node mirror) is unprotected. The fail-closed
+    # case is a missing argv[1]: with no URL to compare, the policy applies.
     if len(argv) > 1 and not is_protected_url(argv[1], cwd):
         return 0
     if env.get("DECOY_PUSH_OVERRIDE") == "1" and not env.get("DEVLOOP_RUN"):

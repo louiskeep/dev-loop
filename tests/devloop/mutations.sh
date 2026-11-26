@@ -372,7 +372,7 @@ mutate "guard denies any mention of a command" hooks/headless_merge_guard.py \
   '        elif exe == "devloop-merge" and worker:' '        elif "devloop-merge" in text and worker:' \
   $T/guard/test_guard_segments.py
 mutate "memory reservations stay per project" devloop/runs.py \
-  '    for name in _project_names():' '    for name in [n for n in _project_names() if n != "p"]:' \
+  '    for name in projmod.project_names():' '    for name in [n for n in projmod.project_names() if n != "p"]:' \
   $T/test_runs_limits.py::test_two_projects_share_the_memory_headroom
 mutate "the reservation amount is not frozen at dispatch" devloop/dispatch.py \
   '        req["memory_mb"] = projmod.memory_mb(cfg, kind)' '        pass' \
@@ -589,6 +589,14 @@ mutate "a bare env feeds no pipe check" hooks/headless_merge_guard.py \
                 continue
             raise' '            raise' \
   $G/test_merge_guard.py
+mutate "the PR gate allows a create when a config is unreadable" hooks/pr_gate.py \
+  '        if create and unreadable:' '        if False:' $P
+mutate "configured_repos drops an unreadable config silently" devloop/project.py \
+  '            unreadable.append(name)' '            pass' \
+  tests/devloop/test_configured_repos.py $P
+mutate "the installer reads project configs by its own walk" devloop/install.py \
+  '    repos, unreadable = project.configured_repos()' \
+  '    repos, unreadable = [], []' tests/devloop/test_configured_repos.py
 
 echo
 echo "killed: $killed  survived: $survived  stale: $stale"

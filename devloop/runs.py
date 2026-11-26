@@ -259,15 +259,6 @@ def slot_usage(project) -> dict:
 RESERVE_WINDOW_S = 300
 
 
-def _project_names():
-    root = store.state_root()
-    return sorted(
-        d.name
-        for d in (root.iterdir() if root.is_dir() else [])
-        if d.is_dir() and store.NAME.fullmatch(d.name)
-    )
-
-
 def _frozen_requests(name):
     """(run dir, request) for each run of a project, read from the frozen request only.
 
@@ -304,7 +295,7 @@ def reserved_mb(now=None) -> int:
     now = _utc(now or datetime.datetime.now(datetime.timezone.utc))
     cutoff = now - datetime.timedelta(seconds=RESERVE_WINDOW_S)
     total = 0
-    for name in _project_names():
+    for name in projmod.project_names():
         owner_cfg = None
         for rd, req in _frozen_requests(name):
             try:

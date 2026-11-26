@@ -65,29 +65,16 @@ def install_clone_hooks():
     Returns (lines, failed): one `<project>/<repo>: <status>` line each, and whether any
     repo refused the shim or any config could not be read (a repo left unguarded).
     """
-    root = store.state_root()
-    names = sorted(d.name for d in root.iterdir()) if root.is_dir() else []
-    lines, seen, failed = [], set(), False
-    for name in names:
-        if (
-            store.NAME.fullmatch(name) is None
-            or not (root / name / "project.json").is_file()
-        ):
+    repos, unreadable = project.configured_repos()
+    lines = [f"{n}: project.json cannot be loaded; no push policy" for n in unreadable]
+    failed, seen = bool(unreadable), set()
+    for name, repo_name, key in repos:
+        if key in seen:
             continue
-        try:
-            cfg = project.load_project(name)
-        except project.ConfigError:
-            lines.append(f"{name}: project.json cannot be loaded; no push policy")
-            failed = True
-            continue
-        for repo in cfg["repos"]:
-            key = Path(repo["path"]).resolve()
-            if key in seen:
-                continue
-            seen.add(key)
-            status = githooks.install_clone_hook(key)
-            failed = failed or status.startswith("refused")
-            lines.append(f"{name}/{repo['name']}: {status}")
+        seen.add(key)
+        status = githooks.install_clone_hook(key)
+        failed = failed or status.startswith("refused")
+        lines.append(f"{name}/{repo_name}: {status}")
     return lines, failed
 
 

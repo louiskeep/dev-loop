@@ -212,6 +212,21 @@ def test_skipping_hooks_is_denied_in_a_configured_repo_only(world, command):
     assert allowed(run_hook(command, plain, env))
 
 
+def test_an_unreadable_project_config_denies_pr_create_everywhere(world):
+    """Plan B2 rule 5: a config that cannot be read leaves the repo list unknown."""
+    repo, env, tmp = world
+    state = Path(env["DEVLOOP_HOME"])
+    (state / "broken").mkdir()
+    (state / "broken" / "project.json").write_text("{not json")
+    stamp(repo)
+    assert denied(run_hook("gh pr create --fill", repo, env))
+    other = tmp / "other"
+    other.mkdir()
+    _git(other, "init", "-q", "-b", "main")
+    assert denied(run_hook("gh pr create --fill", other, env))
+    assert allowed(run_hook("git push origin feat", repo, env))
+
+
 # ---- AT25: other repos ----
 
 

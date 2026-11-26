@@ -5,6 +5,7 @@ A typo here would otherwise surface mid-tick, so every refusal names the key pat
 
 import json
 import re
+from pathlib import Path
 
 from . import store
 
@@ -339,6 +340,38 @@ def load_project(project: str) -> dict:
     if bad or not isinstance(cfg, dict):
         raise ConfigError("project.json: not a JSON object")
     return _validate(cfg, project)
+
+
+def project_names() -> list:
+    """Sorted names of the project directories under the state root."""
+    root = store.state_root()
+    if not root.is_dir():
+        return []
+    return sorted(
+        d.name for d in root.iterdir() if d.is_dir() and store.NAME.fullmatch(d.name)
+    )
+
+
+def configured_repos():
+    """The one reader of which repos the project configs list.
+
+    Returns (repos, unreadable): a (project, repo_name, resolved_path) for each repo of
+    each project that has a project.json, and the names of projects whose config cannot
+    be loaded. The caller picks the rule for an unreadable one: the installer reports it,
+    the PR gate denies.
+    """
+    repos, unreadable = [], []
+    for name in project_names():
+        if not project_path(name).is_file():
+            continue
+        try:
+            cfg = load_project(name)
+        except ConfigError:
+            unreadable.append(name)
+            continue
+        for repo in cfg["repos"]:
+            repos.append((name, repo["name"], Path(repo["path"]).resolve()))
+    return repos, unreadable
 
 
 def base_branches(cfg) -> str:

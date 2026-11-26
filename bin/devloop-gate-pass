@@ -26,7 +26,7 @@ def main() -> int:
         )
         return 1
     final = os.path.join(git_dir, "decoy-quality-gate")
-    tmp = final + ".tmp"
+    tmp = f"{final}.{os.getpid()}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(head + "\n")
@@ -42,4 +42,5 @@ def main() -> int:
     return 0
 
 
-sys.exit(main())
+if __name__ == "__main__":
+    sys.exit(main())
