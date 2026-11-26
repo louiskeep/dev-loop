@@ -641,5 +641,8 @@ def test_a_released_park_leaves_needs_you_at_once(proj, dash):
     key = dash["parked"]
     notes.ensure_hold_question(proj, key)
     notes.answer(proj, f"hold:{key}", "approve")
+    s = slices.load(proj, key)
+    s["owner_answered"] = True  # the fixture slice carries no hold link, so set it here
+    slices._save(proj, s)
     items = build(proj)["needs_you"]
     assert [n for n in items if key in (n["key"] or "")] == []
