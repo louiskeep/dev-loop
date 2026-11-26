@@ -187,7 +187,8 @@ def split_result(text: str):
 def read_result(path, *, errors="replace"):
     """`(header, body)` of a result file; `({}, "")` when it is missing."""
     try:
-        text = Path(path).read_text(encoding="utf-8", errors=errors)
+        with Path(path).open(encoding="utf-8", errors=errors, newline="") as result:
+            text = result.read()
     except FileNotFoundError:
         return {}, ""
     return split_result(text)

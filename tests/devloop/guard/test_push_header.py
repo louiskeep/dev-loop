@@ -100,3 +100,19 @@ def test_invalid_utf8_fails_publication_and_preserves_result_bytes(
     assert store.read_json(rd / "exit")["code"] != 0
     assert runs.parse_result(rd, "builder").status == "FAILED"
     assert path.read_bytes() == original
+
+
+def test_successful_publication_preserves_crlf_body_bytes(proj, tmp_path, repo):
+    wt, remote = repo
+    sha = commit(wt)
+    rd = mk(proj, tmp_path, ["true"], worktree=str(wt), branch="feat/s", bases="main")
+    path = store.out_dir(rd) / "result.md"
+    path.parent.mkdir(exist_ok=True)
+    body = "café\r\n\r\nlast line".encode()
+    path.write_bytes(f"status: DONE\nhead: stale\nhead: {sha}\n---\n".encode() + body)
+
+    wrap.run(proj, "r1")
+
+    assert store.read_json(rd / "exit")["code"] == 0
+    assert remote_head(remote) == sha
+    assert path.read_bytes() == f"status: DONE\nhead: {sha}\n---\n".encode() + body
