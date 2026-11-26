@@ -41,6 +41,17 @@ def test_main_touching_a_slice_file_does_not_carry(fx):
     assert "slice file" in carry.carry_reason(fx.path, "main", old, new)
 
 
+def test_merge_with_an_extra_edit_does_not_carry(fx):
+    old = _feature(fx)
+    fx.advance_main("other.txt")
+    git(fx.path, "merge", "-q", "--no-edit", "--no-commit", "main")
+    fx.write("sneaky.txt", "not part of either side")
+    git(fx.path, "add", "-A")
+    git(fx.path, "commit", "-q", "--no-edit")
+    new = fx.sha()
+    assert "more than a clean merge" in carry.carry_reason(fx.path, "main", old, new)
+
+
 def test_non_merge_head_change_does_not_carry(fx):
     old = _feature(fx)
     fx.write("more.txt", "y")

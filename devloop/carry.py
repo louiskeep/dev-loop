@@ -46,6 +46,11 @@ def carry_reason(path, base, old, new):
     ref = base_ref(path, base)
     if _git(path, "merge-base", "--is-ancestor", parents[1], ref) is None:
         return "the second parent is not on the base branch"
+    # The merge commit must hold nothing beyond a clean merge: redo it and compare trees.
+    redone = (_git(path, "merge-tree", "--write-tree", old, parents[1]) or "").split()
+    actual = (_git(path, "rev-parse", f"{new}^{{tree}}") or "").strip()
+    if not redone or redone[0] != actual:
+        return "the merge commit holds more than a clean merge"
     mb = (_git(path, "merge-base", old, ref) or "").strip()
     if not mb:
         return "no merge base"
