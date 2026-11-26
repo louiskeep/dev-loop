@@ -114,6 +114,7 @@
     window.scrollTo(0, y);
     applyFilters();
     tickTimes();
+    showControlMessage();
     fillDrawer();
   }
 
@@ -124,6 +125,7 @@
   var NO_QUESTION = "This question was answered.";
   var shown = null; // {kind, key, version} of the question drawer content on screen
   var changed = null; // a newer version of the open question, waiting for the owner
+  var lastSaid = ""; // the server's message for the last answer, shown once the drawer empties
 
   function hashTarget() {
     var m = /^#(slice|q)=([A-Za-z0-9._:-]+)$/.exec(location.hash);
@@ -162,7 +164,8 @@
     return ta ? ta.value : "";
   }
   function setSaveEnabled(body, on) {
-    var forms = body.querySelectorAll("form.qtext button");
+    // An old form would post an old version, so none of its buttons stay live.
+    var forms = body.querySelectorAll("form.qform button");
     for (var i = 0; i < forms.length; i++) { forms[i].disabled = !on; }
   }
   function showChanged(body, source) {
@@ -187,7 +190,7 @@
     if (!source) {
       shown = null;
       changed = null;
-      body.replaceChildren(note(NO_QUESTION));
+      body.replaceChildren(note(lastSaid ? lastSaid + " " + NO_QUESTION : NO_QUESTION));
       return;
     }
     var version = source.getAttribute("data-version");
@@ -274,7 +277,13 @@
     return form.closest("#drawer-body") ? document.querySelector("#drawer-body .qmsg") :
       document.querySelector(".cmsg");
   }
+  var ctlSaid = { text: "", at: 0 };
+  function showControlMessage() {
+    var box = document.querySelector(".cmsg");
+    if (box) { box.textContent = Date.now() - ctlSaid.at < 8000 ? ctlSaid.text : ""; }
+  }
   function say(form, text) {
+    if (!form.closest("#drawer-body")) { ctlSaid = { text: text, at: Date.now() }; }
     var box = messageBox(form);
     if (box) { box.textContent = text; }
   }
@@ -297,6 +306,7 @@
         .then(function (data) { return { ok: res.ok, data: data }; });
     }).then(function (out) {
       say(form, out.data.message || "");
+      lastSaid = out.ok && form.classList.contains("qform") ? out.data.message || "" : "";
       if (out.ok && ta) { ta.value = ""; }
       for (var j = 0; j < buttons.length; j++) { buttons[j].disabled = false; }
       refresh();

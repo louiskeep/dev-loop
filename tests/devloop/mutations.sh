@@ -427,6 +427,75 @@ mutate "a live card key is renamed in the model only" devloop/dash/live.py \
   '                "tools": st.tools if st else 0,' '                "tool_count": st.tools if st else 0,' \
   $T/test_dash_view.py::test_view_keys_match_schema $T/dash/test_live.py::test_live_card_fields
 
+mutate "a held slice shows twice in Needs you" devloop/dash/view.py \
+  '    held_keys = {s["key"] for s in ctx.slices if _is_hold(s)}' \
+  '    held_keys = {s["key"] for s in ctx.slices if s["phase"] == "HELD"}' \
+  $T/test_dash_view.py::test_each_held_or_parked_slice_shows_once
+mutate "the tick probe creates its lock file" devloop/tick.py \
+  '        st = os.stat(store.state_path(project) / "tick.lock")' \
+  '        (store.state_dir(project) / "tick.lock").touch()
+        st = os.stat(store.state_path(project) / "tick.lock")' \
+  $T/dash/test_controls.py::test_get_routes_write_nothing
+mutate "an answer is marked done before its effects and event" devloop/notes.py \
+  '        _effects(project, q["key"], receipt["choice"])
+' \
+  '        q["decision"] = {**receipt, "status": DONE}
+        q["applied"] = receipt["choice"]
+        _save_questions(path, before, qs, after, had)
+        _effects(project, q["key"], receipt["choice"])
+' \
+  $T/dash/test_controls.py::test_answer_event_once_across_append_failure
+mutate "a replayed answer appends its event again" devloop/notes.py \
+  '            once=("decision", receipt["id"]),' '            once=None,' \
+  $T/dash/test_controls.py::test_answer_event_once_across_append_failure
+mutate "a POST is not checked for its token" devloop/dash/actions.py \
+  '    if not hmac.compare_digest(token.encode(), handler.server.token.encode()):' \
+  '    if False:' \
+  $T/dash/test_controls.py::test_every_post_route_refuses_bad_token_or_origin
+mutate "a POST is not checked for its origin" devloop/dash/actions.py \
+  '    if not _origin_ok(handler):' '    if False:' \
+  $T/dash/test_controls.py::test_every_post_route_refuses_bad_token_or_origin
+mutate "the answer key is sealed as a plain id" devloop/dash/view.py \
+  '            "answer_key": "qkey?",' '            "answer_key": "id?",' \
+  $T/dash/test_controls.py::test_hold_form_key_survives_a_hex_looking_slice_name
+mutate "a blank form field is dropped from a POST" devloop/dash/actions.py \
+  '            keep_blank_values=True,' '            keep_blank_values=False,' \
+  $T/dash/test_controls.py::test_post_body_contract
+mutate "the version is compared before the questions lock" devloop/notes.py \
+  '    return _apply_answer(project, key, choice, via=via, version=expect_version)' \
+  '    pre = load_questions(questions_path(project))[1].get(key)
+    if (
+        expect_version is not None
+        and pre is not None
+        and expect_version != question_version(pre)
+    ):
+        raise AnswerStale(MSG_STALE)
+    return _apply_answer(project, key, choice, via=via, version=None)' \
+  $T/dash/test_controls.py::test_reask_between_check_and_lock_is_refused
+mutate "the command line pauses without the shared path" devloop/state_cli.py \
+  '            store.set_paused(args.project, args.cmd == "pause", "cli")' \
+  '            flag = store.state_dir(args.project) / "PAUSE"
+            flag.touch() if args.cmd == "pause" else flag.unlink(missing_ok=True)' \
+  $T/dash/test_controls.py::test_cli_and_dashboard_pause_share_one_path
+mutate "a second digest rule for question versions" devloop/notes.py \
+  '    return store.canonical_digest(q)' \
+  '    return __import__("hashlib").sha256(repr(sorted(q.items())).encode()).hexdigest()[:16]' \
+  $T/dash/test_controls.py::test_version_digest_fixtures
+mutate "a page without a Class line reads as product" devloop/notes.py \
+  '            klass = "tech" if raw.get("wait") == "no" else "product"' \
+  '            klass = "product"' \
+  $T/dash/test_controls.py::test_old_questions_page_class_from_wait
+mutate "the tick acknowledges decisions it did not carry" devloop/tick.py \
+  '        state[snapshot.ACKED] = {**(state.get(snapshot.ACKED) or {}), **snap.decisions}' \
+  '        state[snapshot.ACKED] = {**(state.get(snapshot.ACKED) or {}), **snapshot.build(project).decisions}' \
+  $T/test_tick.py::test_override_during_model_call_reaches_next_prompt
+mutate "an unacknowledged decision does not wake a fresh tick" devloop/tick.py \
+  '        and not snap.decisions' '        and True' \
+  $T/test_tick.py::test_override_during_model_call_reaches_next_prompt
+mutate "overlapping tick posts both spawn" devloop/dash/actions.py \
+  '    with srv.tick_lock:' '    with __import__("contextlib").nullcontext():' \
+  $T/dash/test_controls.py::test_overlapping_tick_posts_spawn_once
+
 echo
 echo "killed: $killed  survived: $survived  stale: $stale  red-base: $redbase"
 [ "$survived" -eq 0 ] && [ "$stale" -eq 0 ] && [ "$redbase" -eq 0 ]

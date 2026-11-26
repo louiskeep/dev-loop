@@ -1188,3 +1188,22 @@ def test_controls_render_paused_and_tick_running(proj, dash, monkeypatch):
     monkeypatch.setattr(tick, "running", lambda *a, **kw: True)
     _, page = render_page(proj, "tok")
     assert "A tick is running" in page and 'action="/act/tick"' not in page
+
+
+def test_hold_form_key_survives_a_hex_looking_slice_name(proj, dash, srv):
+    s = slices.new_slice(proj, "ROWdeadbeef1", "S1", repo="main", risk="R3")
+    s["rulebooks"] = ["a.md"]
+    slices._save(proj, s)
+    k = s["key"]
+    notes.ask(
+        proj, k, question="Spend?", options=["y", "n"], recommended="n", wait=True
+    )
+    slices.move(proj, k, "HELD", "R3 waits")
+    srv.cache._value = None
+    page = call(srv, "/")[2].decode()
+    approve = next(
+        f for f in source_forms(page, f"hold:{k}").forms if f["label"] == "approve"
+    )
+    assert approve["fields"]["key"] == f"hold:{k}"
+    assert submit(srv, approve)[0] == 303
+    assert slices.load(proj, k)["phase"] == "FRAME"

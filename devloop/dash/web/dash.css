@@ -247,7 +247,7 @@ body.drawer-open main { margin-right: 420px; }
 /* Loop controls and the decisions drawer */
 .controls { display: flex; flex-wrap: wrap; gap: 0.4rem 0.6rem; align-items: center; margin-left: auto; }
 .controls form { margin: 0; }
-button:disabled { opacity: 0.55; cursor: not-allowed; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.link { background: none; border: 0; color: var(--accent); padding: 0.1rem 0.2rem; text-decoration: underline; }
 .qforms { display: grid; gap: 0.5rem; margin: 0.6rem 0; }
 .qform { margin: 0; }
