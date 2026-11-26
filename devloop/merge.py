@@ -501,10 +501,10 @@ def record_direct(project, key, pr, head) -> MergeResult:
         )
     view = _view(repo_cfg, pr, "headRefOid,headRefName") or {}
     full = view.get("headRefOid")
-    if not _same_head(full, head) or (
-        s["branch"] and view.get("headRefName") != s["branch"]
-    ):
-        return _result("refused", "GitHub's PR head or branch is not this slice's")
+    if full != s["head"] or len(full or "") != 40:
+        return _result("refused", "GitHub's PR head is not this slice's full head")
+    if s["branch"] and view.get("headRefName") != s["branch"]:
+        return _result("refused", "GitHub's PR branch is not this slice's branch")
     # The full SHA from GitHub keeps one ledger key however the head was typed.
     board.record_merge(project, {"slug": _slug(repo_cfg), "pr": pr, "head": full}, s)
     store.append_event(project, "merged", key=key, row=s["row"], slice=s["slice"])

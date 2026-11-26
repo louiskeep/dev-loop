@@ -69,3 +69,17 @@ def test_a_prefix_then_the_full_sha_is_one_entry(proj, merged):
     assert merged(state="MERGED", headRefOid=HEAD).returncode == 0
     keys = list(board.merge_records(proj))
     assert len(keys) == 1 and keys[0].endswith(f"#7@{HEAD}")
+
+
+def test_refuses_two_full_shas_sharing_a_prefix(proj, merged):
+    other = HEAD[:7] + "b" * 33
+    r = merged(head=HEAD[:7], state="MERGED", headRefOid=other)
+    assert r.returncode == 3
+    assert board.merge_records(proj) == {}
+
+
+def test_refuses_a_branch_mismatch(proj, mk_slice, merged, tmp_path):
+    k = mk_slice(proj, phase="DOCUMENT", head=HEAD, pr=7, branch="feat/x")
+    r = merged(key=k, state="MERGED", headRefOid=HEAD, headRefName="feat/y")
+    assert r.returncode == 3
+    assert board.merge_records(proj) == {}
