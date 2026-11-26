@@ -7,6 +7,12 @@ a bug, never a `?` on the page.
 from .. import slices
 
 # The stage of a slice, in the words the owner uses. REMEDIATE adds the review round.
+# Rows the loop opens by itself each day; they are not in the roadmap tables.
+DUTY_ROWS = {
+    "DUTY-ROADMAP": "Daily roadmap update",
+    "DUTY-RELEASE": "Evening engine release",
+}
+
 STAGE = {
     "FRAME": "Framing",
     "PLAN": "Planning",

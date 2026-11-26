@@ -283,14 +283,13 @@ def _waiting_for(c):
 
 def parked(v, now) -> str:
     """Slices waiting on something other than the owner. Owner holds live in Needs you."""
-    titles = {row["row"]: row["title"] for row in v["rows"]}
     rows = []
     for c in v["parked"]:
         if c["hold"]:
             continue
         rows.append(
             "<tr>"
-            + r._cell("Row", e(titles.get(c["row"]) or c["row"]))
+            + r._cell("Row", e(c["row_title"] or c["row"]))
             + r._cell("Slice", f"<strong>{e(c['slice'])}</strong>")
             + r._cell("Waiting for", _waiting_for(c))
             + r._cell("Since", r._span(c["since"], now))

@@ -57,6 +57,7 @@ _CARD = {
     "phase_index": "int",
     "held": "bool",
     "hold": "bool",
+    "row_title": "owner_text?",
     "released": "bool",
     "waiting_text": "line?",
     "waiting_key": "id?",
@@ -476,21 +477,35 @@ class _Ctx:
 
     def title_of(self, row):
         """The plain name of a roadmap row, or None; one shared owner-text rule."""
-        return _owner_text(self.titles.get(row), roadmap.TITLE_LIMIT + 4)
+        return _owner_text(
+            self.titles.get(row) or words.DUTY_ROWS.get(row), roadmap.TITLE_LIMIT + 4
+        )
 
     def desc_of(self, row):
         """What a roadmap row is and why, scrubbed like every loop-written line."""
-        return live.view_line(self.descs.get(row), roadmap.DESC_LIMIT + 3)
+        text = self.descs.get(row) or words.DUTY_ROWS.get(row)
+        return live.view_line(text, roadmap.DESC_LIMIT + 3)
 
     def slice_desc(self, s):
         """The slice plan's goal and why; else the slice's own purpose line."""
         try:
-            text = roadmap.plan_summary(slices._plan_file(s))
+            text = roadmap.plan_summary(
+                slices._plan_file(s),
+                roadmap.SLICE_DESC_LIMIT,
+                (s["row"], s["slice"]),
+            )
         except OSError:  # a plan that cannot be read just falls back to the purpose
             text = None
-        return live.view_line(text, roadmap.SLICE_DESC_LIMIT + 3) or _plain_line(
-            s["purpose"], roadmap.SLICE_DESC_LIMIT
+        found = live.view_line(text, roadmap.SLICE_DESC_LIMIT + 3)
+        if found:
+            return found
+        purpose = _plain_line(s["purpose"], roadmap.SLICE_DESC_LIMIT)
+        # A purpose that only repeats the row and slice names says nothing more.
+        same = (
+            purpose
+            and purpose.replace(" ", "").lower() == (s["row"] + s["slice"]).lower()
         )
+        return None if same else purpose
 
     iso = staticmethod(_iso)
     when = staticmethod(_when)
@@ -637,6 +652,7 @@ def _card(ctx, s):
         "phase_index": CHIPS.index(phase),
         "held": held,
         "hold": _is_hold(s),
+        "row_title": ctx.title_of(s["row"]),
         "released": s["phase"] == "PARKED"
         and s["park_reason"] in slices.OWNER_PARKS
         and bool(s.get("owner_answered")),

@@ -79,14 +79,14 @@ def _rows(text):
 
 
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
-_CODE_PREFIX = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+:?\s+")
+_CODE_PREFIX = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+(?:\s*\([^)]*\))?:?\s+")
 
 
-def describe(text, limit) -> str:
+def describe(text, limit, sentences=DESC_SENTENCES) -> str:
     """The first sentences of `text` that fit `limit`, cut at a word if one is too long."""
     text = " ".join(text.split())
     out = ""
-    for s in _SENTENCE_END.split(text)[:DESC_SENTENCES]:
+    for s in _SENTENCE_END.split(text)[:sentences]:
         joined = f"{out} {s}" if out else s
         if len(joined) > limit:
             break
@@ -132,6 +132,7 @@ def parse_descriptions(text) -> dict:
     out = {}
     for keys, item in _entries(text):
         desc = describe(_CODE_PREFIX.sub("", _clean(item)), DESC_LIMIT)
+        desc = desc[:1].upper() + desc[1:]
         if desc:
             for k in keys:
                 out.setdefault(k, desc)
@@ -164,8 +165,11 @@ def descriptions(cfg) -> dict:
 
 _GOAL = re.compile(r"^\W*(?:goal|summary)\W*:\s*(.+)$", re.I)
 _WHY = re.compile(r"^\W*(?:why|intent|motivation)\W*:\s*(.+)$", re.I)
-_HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*$")
-_FIELD = re.compile(r"^\W*[A-Za-z][A-Za-z ]{0,24}\W*:\s")
+_HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
+_PROBLEM = re.compile(r"\bproblem\b", re.I)
+_SKIP_SECTION = re.compile(r"revision|changes|review record|deviations", re.I)
+_SKIP_LINE = ("Code head", "Status:", "Revision")
+_KEYISH = re.compile(r"[0-9][0-9A-Za-z.-]*|[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+|\([^)]*\)")
 
 
 def _paragraphs(lines):
@@ -181,49 +185,91 @@ def _paragraphs(lines):
         yield " ".join(para)
 
 
-def _goal_and_why(text):
-    lines = text.splitlines()
-    goal = why = None
-    for line in lines:
-        g, w = _GOAL.match(line), _WHY.match(line)
-        goal = goal or (g and _clean(g.group(1)))
-        why = why or (w and _clean(w.group(1)))
-    if goal:
-        return goal, why
-    # A Goal or Summary heading: the paragraph under it.
-    for i, line in enumerate(lines):
-        h = _HEADING.match(line)
-        if h and h.group(1).strip().lower() in ("goal", "summary"):
-            para = next(_paragraphs(lines[i + 1 :]), None)
+def _plain_paragraph(lines):
+    """First paragraph that is prose: not a field, list, table, code or a skipped line."""
+    for para in _paragraphs(lines):
+        if para.startswith(_SKIP_LINE + ("|", "```", "- ", "* ", ">")):
+            continue
+        if re.match(r"^\W*[A-Za-z][A-Za-z ]{0,24}\W*:\s", para):
+            continue
+        return _clean(para)
+    return None
+
+
+def _sections(lines):
+    """(heading text, body lines up to the next heading) for each heading."""
+    heads = [i for i, ln in enumerate(lines) if _HEADING.match(ln)]
+    for n, i in enumerate(heads):
+        end = heads[n + 1] if n + 1 < len(heads) else len(lines)
+        yield _HEADING.match(lines[i]).group(2), lines[i + 1 : end]
+
+
+def _what(lines, keys):
+    """The plan title without its row and slice prefix, first letter capitalised."""
+    title = next(
+        (m.group(2) for m in map(_HEADING.match, lines) if m and len(m.group(1)) == 1),
+        "",
+    )
+    title = _clean(title)
+    head, sep, rest = title.partition(": ")
+    if sep and len(head) <= 80:
+        title = rest
+    else:
+        words = title.split()
+        while words and (words[0] in keys or _KEYISH.fullmatch(words[0])):
+            words.pop(0)
+        title = " ".join(words)
+        if title.startswith("("):
+            title = ""
+    title = title.strip(" .:;")
+    return title[:1].upper() + title[1:] if title else ""
+
+
+def _why(lines):
+    for head, body in _sections(lines):
+        if _PROBLEM.search(head) and not _SKIP_SECTION.search(head):
+            para = _plain_paragraph(body)
             if para:
-                return _clean(para), why
-    # Otherwise the first plain paragraph under the title, before the next heading.
-    body = lines[1:] if lines and _HEADING.match(lines[0]) else lines
-    for i, line in enumerate(body):
-        if _HEADING.match(line):
-            body = body[:i]
-            break
-    for para in _paragraphs(body):
-        if not _FIELD.match(para) and not para.startswith(("|", "```", "- ", "* ")):
-            return _clean(para), why
-    return None, why
+                return para
+    for line in lines:
+        m = _WHY.match(line)
+        if m:
+            return _clean(m.group(1))
+    return None
 
 
-def plan_summary(path, limit=SLICE_DESC_LIMIT):
-    """The goal of a slice plan (and its why when stated), capped; None when absent."""
+def plan_summary(path, limit=SLICE_DESC_LIMIT, keys=()):
+    """`<what>. Why: <why>` from a slice plan, capped; None when the plan gives no title.
+
+    What is the plan's H1 title without its row and slice prefix; why is the first prose
+    paragraph under a Problem heading (or a `Why:` line), cut to two sentences.
+    """
     if not path or not Path(path).is_file():
         return None
     text = _read(path)
     if not text:
         return None
-    goal, why = _goal_and_why(text)
-    if not goal:
+    lines = text.splitlines()
+    what = _what(lines, set(keys))
+    if not what:
+        for line in lines:
+            m = _GOAL.match(line)
+            if m:
+                what = describe(_clean(m.group(1)), limit)
+                break
+    if not what:
         return None
-    first = describe(goal, limit)
-    if why and why not in goal:
-        both = f"{first.rstrip('.')}. {describe(why, limit)}"
-        first = both if len(both) <= limit else first
-    return first
+    what = describe(what, limit)
+    if not what.endswith("..."):
+        what = what.rstrip(". ") + "."
+    why = _why(lines)
+    room = limit - len(what) - len(" Why: ")
+    if why and room >= 40:
+        cut = describe(why, room, sentences=2)
+        if cut.endswith(":"):  # the paragraph led into a list
+            cut = cut[:-1] + "."
+        return f"{what} Why: {cut}"
+    return what
 
 
 # --- recently shipped ----------------------------------------------------------------

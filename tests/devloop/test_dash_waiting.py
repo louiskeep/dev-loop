@@ -110,3 +110,24 @@ def test_released_owner_park_shows_as_released(proj, dash):
     sec = section(render.render_page(build(proj)), "parked")
     assert "Released by you, resumes on the next tick" in sec
     assert "PARKED1" in sec
+
+
+def test_parked_row_without_active_slice_shows_the_roadmap_title(
+    proj, cfg_edit, tmp_path
+):
+    (tmp_path / "ROADMAP.md").write_text("# r\n")
+    g = tmp_path / "roadmap" / "groups"
+    g.mkdir(parents=True)
+    (g / "a.md").write_text("| PARKROW | Plain row name. More. | x |\n")
+    cfg_edit(lambda c: c["roadmap"].update(path=str(tmp_path / "ROADMAP.md")))
+    put_slice(
+        proj,
+        "PARKROW",
+        "S1",
+        "PARKED",
+        parked_from="PLAN",
+        park_reason="stuck",
+        waiting_on="something outside",
+    )
+    sec = section(render.render_page(build(proj)), "parked")
+    assert "Plain row name" in sec
