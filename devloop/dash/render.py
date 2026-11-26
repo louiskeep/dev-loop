@@ -8,6 +8,8 @@ reads state: it only formats what `view.build_view` already sealed.
 import datetime
 import html
 
+from . import words
+
 
 # Words people read for each fixed code in the view. A code with no entry is a bug, and a
 # test walks every code the evidence module can emit. Stage words live in `words.STAGE`.
@@ -204,12 +206,41 @@ def _cell(label, inner, cls=""):
     return f'<td data-label="{e(label)}"{c}>{inner}</td>'
 
 
+# --- loop steps strip ------------------------------------------------------------
+
+# One line per step, in order, for the strip at the top of the page.
+LOOP_STEPS = (
+    ("FRAME", "Pick the row and slice, write what and why"),
+    ("PLAN", "Write the plan and its acceptance tests; reviewed before build"),
+    ("DEVELOP", "A builder writes the code and its tests"),
+    ("SELF_CHECK", "The builder runs its own lint and tests"),
+    ("VERIFY", "QA runs the change's own tests on a test node"),
+    ("REVIEW", "Codex and Dennis review the diff"),
+    ("REMEDIATE", "Fix review findings, then back to review"),
+    ("GATE", "Green CI and gate tests on the exact head, then merge"),
+    ("DOCUMENT", "Docs and changelog catch up with what shipped"),
+)
+
+
+def loop_steps() -> str:
+    items = "".join(
+        f'<li><span class="step-name">{e(words.STAGE[k])}</span>'
+        f'<span class="step-desc">{e(d)}</span></li>'
+        for k, d in LOOP_STEPS
+    )
+    return (
+        '<section class="loop-steps" aria-label="Dev loop steps">'
+        f"<ol>{items}</ol></section>"
+    )
+
+
 # --- documents --------------------------------------------------------------------
 
 
 def render_fragment(view, now=None, token="", copy_path="") -> str:
     now = now or datetime.datetime.now(datetime.timezone.utc)
     parts = (
+        loop_steps(),
         render_live.top_bar(view, now, token),
         render_tables.needs_you(view, now),
         render_tables.work(view, now),
