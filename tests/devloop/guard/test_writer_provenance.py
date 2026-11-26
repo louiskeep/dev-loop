@@ -256,8 +256,8 @@ def test_push_confirmation_and_provenance_read_one_writer_registry(
 def legacy_import(proj, tmp_path):
     key = imported(proj, tmp_path)
     s = slices.load(proj, key)
-    s["head_writer"] = None
-    slices._save(proj, s)
+    del s["head_writer"]
+    store.write_json(slices.slice_path(proj, key), s)
     return key
 
 
@@ -278,7 +278,8 @@ def test_migration_keeps_codex_provenance_from_an_applied_run(proj, ready, mk_ru
     key, _, head = ready("REVIEW", risk="R1", head_writer=None)
     s = slices.load(proj, key)
     s["imported"], s["approved_plan_sha"] = True, "a" * 64
-    slices._save(proj, s)
+    del s["head_writer"]
+    store.write_json(slices.slice_path(proj, key), s)
     mk_run(proj, "cb1", kind="codex-builder", key=key, head=head)
     assert slices.migrate_imported_writers(proj) == []
     assert slices.load(proj, key)["head_writer"] is None
@@ -292,3 +293,35 @@ def test_state_cli_migrate_reports_the_slice(proj, tmp_path, home):
     r = run_state(home, "migrate")
     assert r.returncode == 0 and r.stdout.strip() == f"migrated {key}"
     assert run_state(home, "migrate").stdout == ""
+
+
+def test_migration_cannot_credit_a_current_import_without_a_head(proj, tmp_path):
+    key = imported(proj, tmp_path, head=None)
+    slices.set_fields(proj, key, head="b" * 40)
+    assert slices.migrate_imported_writers(proj) == []
+    assert evidence.head_writer(proj, slices.load(proj, key)) is None
+
+
+def test_migration_reports_a_moved_legacy_head(proj, tmp_path, home):
+    from test_runs_apply import run_state
+
+    key = legacy_import(proj, tmp_path)
+    path = slices.slice_path(proj, key)
+    legacy = store.read_json(path)
+    legacy["head"] = "b" * 40
+    store.write_json(path, legacy)
+    store.append_event(proj, "head-changed", key=key, head=legacy["head"])
+    result = run_state(home, "migrate")
+    assert result.returncode == 0
+    assert result.stdout.strip() == f"skipped {key}: head moved since import"
+    assert store.read_json(path) == legacy
+
+
+def test_headless_migration_is_refused(proj, tmp_path, home, monkeypatch):
+    from test_runs_apply import run_state
+
+    key = legacy_import(proj, tmp_path)
+    monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
+    result = run_state(home, "migrate")
+    assert result.returncode != 0 and "headless" in result.stderr
+    assert "head_writer" not in store.read_json(slices.slice_path(proj, key))

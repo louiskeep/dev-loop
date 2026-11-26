@@ -7,6 +7,7 @@ flock, so a refused move leaves the file byte for byte as it was.
 import contextlib
 import copy
 import hashlib
+import json
 import re
 import subprocess
 from pathlib import Path
@@ -454,26 +455,46 @@ def import_slice(
     return _create(project, row, slice_id, repo, risk, **overrides)
 
 
-def migrate_imported_writers(project) -> list:
-    """Give each pre-record imported slice its writer record once; returns the keys.
+def _import_head_unchanged(project, key, head):
+    """Check the audit trail starting at the slice-new event written by import."""
+    path = store.state_dir(project) / "events.jsonl"
+    created = False
+    try:
+        with store.locked(path), path.open(encoding="utf-8") as events:
+            for line in events:
+                ev = json.loads(line)
+                if ev.get("key") != key:
+                    continue
+                if ev.get("kind") == "slice-new":
+                    created = True
+                elif created and (
+                    ev.get("kind") == "head-changed" or ev.get("head", head) != head
+                ):
+                    print(f"skipped {key}: head moved since import")
+                    return False
+    except (OSError, ValueError, AttributeError) as exc:
+        raise SliceError("cannot verify import event history") from exc
+    return created
 
-    A slice imported before the record existed has the `imported` flag and nothing that
-    names its commit. One with no record and no applied writer run that recovery credits
-    is stamped with its current head and plan lineage. Every other slice is left alone,
-    so a second call changes nothing.
-    """
+
+def migrate_imported_writers(project) -> list:
+    """Stamp only legacy imports whose original head still has no known writer."""
+    store.require_interactive("migrate")
     done = []
-    for s in list_slices(project):
-        if not (s["imported"] and s["head"] and s["approved_plan_sha"]):
-            continue
-        if s["head_writer"] is not None or evidence.head_writer(project, s):
-            continue
-        with _edit(project, s["key"]) as cur:
-            if cur["head_writer"] is not None or cur["head"] != s["head"]:
+    for path in sorted(_slices_dir(project).glob("*.json")):
+        with store.locked(path):
+            s = store.read_json(path)
+            if "head_writer" in s:
                 continue
-            cur["head_writer"] = writer_record(
-                "imported", cur["head"], cur["plan_lineage"]
-            )
+            _validate(s)
+            if not (s["imported"] and s["head"] and s["approved_plan_sha"]):
+                continue
+            if evidence.head_writer(project, s):
+                continue
+            if not _import_head_unchanged(project, s["key"], s["head"]):
+                continue
+            s["head_writer"] = writer_record("imported", s["head"], s["plan_lineage"])
+            _save(project, s)
         store.append_event(project, "writer-migrated", key=s["key"])
         done.append(s["key"])
     return done
