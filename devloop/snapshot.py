@@ -116,13 +116,22 @@ def slot_resumes(project, all_slices):
         if s["phase"] == "PARKED"
         and s["parked_from"]
         and s["park_reason"] not in slices.OWNER_PARKS
-        and _SLOT_ONLY.fullmatch((s["waiting_on"] or "").strip().lower())
+        and _slot_only(s["park_reason"])
+        and _slot_only(s["waiting_on"])
     ]
 
 
-# A wait that names only a free tester slot. Anything more ("row X and tester slot")
-# is a real dependency and stays parked.
-_SLOT_ONLY = re.compile(r"(a )?(free )?tester slot( free)?")
+# Words that may sit around "tester slot" in a slot-only park. Anything else ("depends
+# on row X", "row X and tester slot") is a real dependency and stays parked.
+_SLOT_FILLER = {"no", "a", "an", "the", "free", "waiting", "wait", "for", "full", "all"}
+
+
+def _slot_only(text):
+    words = re.findall(r"[a-z0-9-]+", (text or "").lower())
+    core = {"tester", "slot", "slots"}
+    if "tester" not in words or not core & {"slot", "slots"} & set(words):
+        return False
+    return set(words) - core <= _SLOT_FILLER
 
 
 def _slice_block(project, s, running):

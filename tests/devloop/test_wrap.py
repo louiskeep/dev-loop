@@ -344,4 +344,3 @@ def test_a_test_that_hangs_or_times_out_is_infra(proj, tmp_path, monkeypatch, li
     wrap.run(proj, "r1")
     assert store.read_json(rd / "exit")["reason"] == "infra"
     assert result(rd)["status"] == "FAILED"
-
