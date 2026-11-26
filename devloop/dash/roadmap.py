@@ -7,6 +7,7 @@ answer; an unreadable one raises OSError so the view can name it.
 
 import datetime
 import re
+import subprocess
 from pathlib import Path
 
 MAX_BYTES = 1_000_000
@@ -159,6 +160,78 @@ def titles(cfg) -> dict:
 def descriptions(cfg) -> dict:
     """What each row is and why, from the same files as `titles`."""
     return _merged(cfg, parse_descriptions)
+
+
+# --- goal progress -----------------------------------------------------------------
+
+_goal_cache: dict = {}
+_H2 = re.compile(r"^##\s+(.*?)\s*$")
+
+
+def count_section(text, section) -> tuple:
+    """(open, total) rows in the tables under `## <section>`. A row is closed when its
+    State cell starts with CLOSED; the State column is found by its header."""
+    left = total = 0
+    inside, col = False, None
+    for line in text.splitlines():
+        m = _H2.match(line)
+        if m:
+            inside, col = m.group(1) == section, None
+            continue
+        if not inside or not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if set(cells[0]) <= set("-: "):
+            continue
+        if col is None:
+            col = cells.index("State") if "State" in cells else None
+            continue
+        if cells[0] in ("", "#") or col >= len(cells):
+            continue
+        total += 1
+        if not cells[col].upper().startswith("CLOSED"):
+            left += 1
+    return left, total
+
+
+def _git(repo, *args):
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise OSError("git " + args[0] + " timed out") from exc
+    if out.returncode:
+        raise OSError("git " + args[0] + " failed")
+    return out.stdout.decode("utf-8", "replace")
+
+
+def goal(cfg):
+    """The project's current goal and its rows left, read from the roadmap group tables
+    at `ref` (default origin/main) so a stale checkout cannot skew the count. None when
+    the project names no goal. Cached by the ref's commit."""
+    g = cfg.get("goal")
+    if not g:
+        return None
+    repo = g.get("repo") or Path(cfg["roadmap"]["path"]).parents[1]
+    ref = g.get("ref", "origin/main")
+    groups = g.get("groups", "docs/roadmap/groups")
+    sha = _git(repo, "rev-parse", ref).strip()
+    key = (str(repo), sha, groups, g["section"])
+    if key not in _goal_cache:
+        left = total = 0
+        for name in _git(repo, "ls-tree", "--name-only", f"{sha}:{groups}").split():
+            if name.endswith(".md"):
+                text = _git(repo, "show", f"{sha}:{groups}/{name}")[:MAX_BYTES]
+                a, b = count_section(text, g["section"])
+                left, total = left + a, total + b
+        _goal_cache.clear()
+        _goal_cache[key] = (left, total)
+    left, total = _goal_cache[key]
+    return {"title": g["title"], "left": left, "total": total}
 
 
 # --- slice plans ---------------------------------------------------------------------

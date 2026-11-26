@@ -198,6 +198,9 @@ VIEW_SCHEMA = {
         "slots": "int",
         "needs_you": "int",
         "merged_today": "int?",
+        "goal_title": "line?",
+        "goal_left": "int?",
+        "goal_total": "int?",
         "tools_per_min": "int",
         "free_mb": "int?",
         "memory_state": "word?",
@@ -1071,6 +1074,7 @@ SOURCE_FILES = (
     "nodes",
     "roadmap-titles",
     "shipped-doc",
+    "roadmap-goal",
 )
 
 
@@ -1273,6 +1277,10 @@ def build_view(project, proc="/proc", now=None, cache=None) -> dict:
     view["feed"] = live.feed(ctx, cache)
     view["drawers"] = live.drawers(ctx, states, drawer_keys)
     view["kpi"] = live.kpi(ctx, view, states, now_s)
+    g = _try(lambda: roadmap.goal(ctx.cfg), ctx.bad, "roadmap-goal", None) or {}
+    view["kpi"].update(
+        goal_title=g.get("title"), goal_left=g.get("left"), goal_total=g.get("total")
+    )
     view["sources"] = _sources(ctx)  # last: every reader above may add a damaged name
     sealed = _seal(view, VIEW_SCHEMA, _labels(cfg))
     sealed["version"] = version_of(sealed)

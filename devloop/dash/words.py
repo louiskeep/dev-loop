@@ -67,6 +67,7 @@ FILES = {
     "nodes": "Command results",
     "roadmap-titles": "Row names from the roadmap",
     "shipped-doc": "Recently shipped record",
+    "roadmap-goal": "Goal rows from the roadmap",
 }
 COMMANDS = {
     "board": "Roadmap board",
