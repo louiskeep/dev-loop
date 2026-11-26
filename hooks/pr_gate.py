@@ -32,7 +32,7 @@ _SKIP_HOOKS = re.compile(r"--no-verify|core\.hookspath", re.IGNORECASE)
 # Another command in the same call: a separator, a newline, a substitution. A redirect to
 # a stream (`2>&1`) is cut out first. A quoted `;` in a title is a false positive.
 _REDIRECT = re.compile(r"\d*>&\d*")
-_COMPOUND = re.compile(r"[;&|\r\n`]|\$\(")
+_COMPOUND = re.compile(r"[;&|\r\n`]|\$\(|[<>]\(")
 
 RETARGET_REASON = (
     "run gh pr create by itself from the worktree of the branch; "

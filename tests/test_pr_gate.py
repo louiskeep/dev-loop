@@ -455,6 +455,8 @@ def test_the_writer_in_an_unlisted_repo_uses_the_default_name(world):
         "gh pr create --fill && git checkout other",
         "echo $(git checkout other) gh pr create --fill",
         "echo `git checkout other` gh pr create --fill",
+        "gh pr create --fill <(git checkout other)",
+        "gh pr create --fill >(git checkout other)",
     ],
 )
 def test_a_create_run_with_other_commands_is_denied_with_a_clear_reason(world, command):
