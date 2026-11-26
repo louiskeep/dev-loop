@@ -59,6 +59,22 @@ def tests_carry(path, old, new):
     return incoming is not None and all(_is_doc(f) for f in incoming)
 
 
+def docs_only(path, base, head):
+    """True when the slice's own diff (merge base with the fetched base to `head`) is
+    documentation only. Such a head needs no QA run: no test reads those files (owner
+    2026-11-26: docs skip QA). Any doubt (fetch or diff failed, empty diff) is False."""
+    if not head:
+        return False
+    ref = base_ref(path, base)
+    if ref is None:
+        return False
+    mb = (_git(path, "merge-base", head, ref) or "").strip()
+    if not mb:
+        return False
+    own = _files(path, f"{mb}..{head}")
+    return bool(own) and all(_is_doc(f) for f in own)
+
+
 def carry_reason(path, base, old, new):
     """None when evidence on `old` may carry to `new`, else the reason it may not."""
     if not old or old == new:

@@ -132,7 +132,18 @@ def _reviewer_kinds(cfg, name):
     return tuple(spec.get("kinds") or [spec["kind"]])
 
 
+def _docs_only(project, s):
+    """The slice head changes documentation only, so QA is skipped (owner 2026-11-26)."""
+    from . import carry, merge
+
+    cfg = projmod.load_project(project)
+    repo_cfg, _rules, base = merge.repo_settings(cfg, s["repo"])
+    return carry.docs_only(s["worktree"] or repo_cfg["path"], base, s["head"])
+
+
 def _test_item(project, s, level, label):
+    if level == "t1" and s["head"] and _docs_only(project, s):
+        return Item(level, "t1 not needed: the diff is docs only", True)
     e = (s["evidence"].get(s["head"]) or {}).get(level) if s["head"] else None
     if not e or e["verdict"] != "GO":
         return Item(level, label, False)

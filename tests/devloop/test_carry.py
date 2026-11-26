@@ -239,3 +239,65 @@ def test_a_stale_tracking_ref_is_not_the_base(fx):
     git(fx.path, "merge", "-q", "--no-edit", "ghost")
     new = fx.sha()
     assert "not on the base" in carry.carry_reason(fx.path, "main", old, new)
+
+
+# --- docs-only heads skip QA (owner 2026-11-26) -------------------------------
+
+
+def _docs_feature(fx, name="docs/guide.md"):
+    fx.branch("docs")
+    fx.write(name, "words")
+    sha = fx.commit("docs work")
+    git(fx.path, "push", "-q", "origin", "docs")
+    return sha
+
+
+def test_docs_only_diff_is_docs_only(fx):
+    head = _docs_feature(fx)
+    assert carry.docs_only(fx.path, "main", head) is True
+
+
+def test_a_code_file_in_the_diff_is_not_docs_only(fx):
+    _docs_feature(fx)
+    fx.write("src.py", "x = 1")
+    head = fx.commit("code too")
+    assert carry.docs_only(fx.path, "main", head) is False
+
+
+def test_main_moving_ahead_does_not_count_as_the_slice_diff(fx):
+    head = _docs_feature(fx, "README.md")
+    fx.advance_main("code.py")
+    assert carry.docs_only(fx.path, "main", head) is True
+
+
+def test_an_empty_diff_or_missing_head_is_not_docs_only(fx):
+    assert carry.docs_only(fx.path, "main", fx.sha("main")) is False
+    assert carry.docs_only(fx.path, "main", None) is False
+
+
+def test_a_failed_fetch_is_not_docs_only(fx):
+    head = _docs_feature(fx)
+    git(fx.path, "remote", "set-url", "origin", str(fx.path / "nowhere.git"))
+    assert carry.docs_only(fx.path, "main", head) is False
+
+
+def test_docs_only_head_passes_t1_without_a_run(proj, mk_slice, cfg_edit, fx):
+    cfg_edit(lambda c: c["repos"][0].update(path=str(fx.path), base="main"))
+    head = _docs_feature(fx)
+    k = mk_slice(proj, phase="SELF_CHECK", risk="R1", head=head)
+    slices.selfcheck(proj, k, "GO", head=head)
+    slices.move(proj, k, "VERIFY", reason="docs")
+    s = slices.move(proj, k, "REVIEW", reason="docs only, QA skipped")
+    assert s["phase"] == "REVIEW"
+    assert not any("t1" in m for m in _gate_missing(proj, k))
+
+
+def test_code_head_still_needs_t1(proj, mk_slice, cfg_edit, fx):
+    cfg_edit(lambda c: c["repos"][0].update(path=str(fx.path), base="main"))
+    head = _feature(fx)
+    k = mk_slice(proj, phase="SELF_CHECK", risk="R1", head=head)
+    slices.selfcheck(proj, k, "GO", head=head)
+    slices.move(proj, k, "VERIFY", reason="code")
+    with pytest.raises(Exception):
+        slices.move(proj, k, "REVIEW", reason="no t1")
+    assert any("t1" in m for m in _gate_missing(proj, k))
