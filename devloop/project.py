@@ -6,6 +6,7 @@ A typo here would otherwise surface mid-tick, so every refusal names the key pat
 import json
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 from . import githooks, store
 
@@ -86,7 +87,10 @@ def pool_label(cfg, slot) -> str:
 # choice (the `push_gate` block); these are the neutral defaults. The override name is
 # the one fact githooks.py also needs, so its default lives there (stdlib-only module).
 PUSH_GATE_RECEIPT = "devloop-quality-gate"
-_FILE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
+# The receipt is a file in the git dir, next to `index`, `HEAD` and `config`, and
+# `devloop-gate-pass` replaces it. Every accepted name ends in `-quality-gate`, which no
+# git file does, so a project's choice (`acme-quality-gate` is one) cannot hit git's own.
+RECEIPT_NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*-quality-gate")
 
 
 class ConfigError(Exception):
@@ -325,7 +329,7 @@ def _validate(cfg: dict, project: str) -> dict:
             _fail("dash.host", "must be str")
     gate = _opt(cfg, "push_gate", dict)
     for key, value in (gate or {}).items():
-        pattern = {"override_env": githooks.ENV_NAME, "receipt": _FILE_NAME}.get(key)
+        pattern = {"override_env": githooks.ENV_NAME, "receipt": RECEIPT_NAME}.get(key)
         if pattern is None:
             _fail(f"push_gate.{key}", "unknown key")
         if not isinstance(value, str) or not pattern.fullmatch(value):
@@ -379,17 +383,27 @@ def load_all():
     return loaded, unreadable
 
 
-def configured_repos(loaded=None):
-    """The one reader of which repos the project configs list.
+class Repo(NamedTuple):
+    """One configured repo: its project, name, resolved path and push gate names."""
 
-    Returns (repos, unreadable): a (project, repo_name, resolved_path) for each repo of
-    each project that has a project.json, and the names of projects whose config cannot
-    be loaded. The caller picks the rule for an unreadable one: the installer reports it,
-    the PR gate denies. `loaded` is a `load_all()` result, for a caller that reads once.
+    project: str
+    name: str
+    path: Path
+    gate: dict
+
+
+def configured_repos(loaded=None):
+    """The one reader of which repos the project configs list, and of their gate names.
+
+    Returns (repos, unreadable): a `Repo` for each repo of each project that has a
+    project.json (its `gate` has the defaults filled), and the names of projects whose
+    config cannot be loaded. The caller picks the rule for an unreadable one: the
+    installer reports it, the PR gate denies. `loaded` is a `load_all()` result, for a
+    caller that reads once.
     """
     loaded, unreadable = loaded or load_all()
     repos = [
-        (name, repo["name"], Path(repo["path"]).resolve())
+        Repo(name, repo["name"], Path(repo["path"]).resolve(), push_gate(cfg))
         for name, cfg in loaded
         for repo in cfg["repos"]
     ]
@@ -405,15 +419,12 @@ def push_gate(cfg) -> dict:
     }
 
 
-def push_gate_names(repo_path, loaded=None) -> dict:
-    """The push gate names for `repo_path`: those of the first project that lists it, or
-    the defaults when none does. No caller fills defaults itself.
-
-    `loaded` is a `load_all()` result, for a caller that reads once."""
-    configs, _ = loaded or load_all()
-    for _, cfg in configs:
-        if any(Path(r["path"]).resolve() == repo_path for r in cfg["repos"]):
-            return push_gate(cfg)
+def gate_for(repos, repo_path) -> dict:
+    """The gate names of the first listed repo at `repo_path`, or the defaults when none
+    is. No caller fills defaults itself."""
+    for repo in repos:
+        if repo.path == repo_path:
+            return repo.gate
     return push_gate({})
 
 

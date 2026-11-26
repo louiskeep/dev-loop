@@ -68,15 +68,13 @@ def install_clone_hooks():
     repos, unreadable = project.configured_repos()
     lines = [f"{n}: project.json cannot be loaded; no push policy" for n in unreadable]
     failed, seen = bool(unreadable), set()
-    for name, repo_name, key in repos:
-        if key in seen:
+    for repo in repos:
+        if repo.path in seen:
             continue
-        seen.add(key)
-        status = githooks.install_clone_hook(
-            key, project.push_gate_names(key)["override_env"]
-        )
+        seen.add(repo.path)
+        status = githooks.install_clone_hook(repo.path, repo.gate["override_env"])
         failed = failed or status.startswith("refused")
-        lines.append(f"{name}/{repo_name}: {status}")
+        lines.append(f"{repo.project}/{repo.name}: {status}")
     return lines, failed
 
 

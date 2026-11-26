@@ -39,7 +39,10 @@ def test_configured_repos_lists_repos_and_names_unreadable_projects(
     (tmp_path / "Bad Name").mkdir()
     (tmp_path / "Bad Name" / "project.json").write_text("{nope")
     repos, unreadable = project.configured_repos()
-    assert repos == [("good", "r", (tmp_path / "repo").resolve())]
+    assert [(r.project, r.name, r.path) for r in repos] == [
+        ("good", "r", (tmp_path / "repo").resolve())
+    ]
+    assert repos[0].gate == project.push_gate({})
     assert unreadable == ["bad"]
 
 

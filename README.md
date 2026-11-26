@@ -353,8 +353,12 @@ registered by hand in `~/.claude/settings.json`) denies `gh pr create` unless
 repo. A refused push is a stop, not something to work around.
 The override variable and the receipt file name come from an optional `push_gate` block
 in `project.json`: `override_env` (default `DEVLOOP_PUSH_OVERRIDE`) and `receipt`
-(default `devloop-quality-gate`, a file in the git dir). The installer writes the
-variable name into the shim, so run `devloop-install` again after changing it.
+(default `devloop-quality-gate`, a file in the git dir). A receipt name must end in
+`-quality-gate` (`acme-quality-gate` is valid), so it cannot name a git file such as
+`index`. The installer writes the variable name into the shim, so run `devloop-install`
+again after changing it. It refuses a repo whose effective `core.hooksPath` (local,
+global or system) is set, since git would skip the shim. `gh pr create` must be its own
+command: the gate denies it when `&&`, `;`, `|` or a newline joins it to another.
 
 A sixth pattern is planning or coding from memory instead of the rules.
 The `rules_gate` hook (PreToolUse and PostToolUse on Edit, Write and

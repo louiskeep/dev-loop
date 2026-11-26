@@ -37,9 +37,10 @@ def main() -> int:
         )
         return 1
     common = git("rev-parse", "--path-format=absolute", "--git-common-dir")
-    receipt = project.push_gate_names(
-        Path(common).parent.resolve() if common else None
-    )["receipt"]
+    repos, _ = project.configured_repos()
+    receipt = project.gate_for(repos, Path(common).parent.resolve() if common else None)[
+        "receipt"
+    ]
     final = os.path.join(git_dir, receipt)
     tmp = f"{final}.{os.getpid()}.tmp"
     try:

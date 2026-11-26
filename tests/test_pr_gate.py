@@ -410,12 +410,12 @@ def _with_gate_block(env, repo, **block):
 
 def test_a_project_with_a_push_gate_block_uses_its_receipt_name(world):
     repo, env, _ = world
-    _with_gate_block(env, repo, receipt="acme-gate")
+    _with_gate_block(env, repo, receipt="acme-quality-gate")
     stamp(repo)  # the default name is no receipt here
     assert denied(run_hook("gh pr create --fill", repo, env))
     r = _gate_pass(repo, env)
     assert r.returncode == 0, r.stderr
-    assert (repo / ".git" / "acme-gate").read_text() == _git(
+    assert (repo / ".git" / "acme-quality-gate").read_text() == _git(
         repo, "rev-parse", "HEAD"
     ) + "\n"
     assert allowed(run_hook("gh pr create --fill", repo, env))
@@ -438,3 +438,43 @@ def test_the_writer_in_an_unlisted_repo_uses_the_default_name(world):
     _git(other, "commit", "-qm", "c")
     assert _gate_pass(other, env).returncode == 0
     assert (other / ".git" / "devloop-quality-gate").is_file()
+
+
+# ---- a create is a command of its own, so HEAD cannot change after the check ----
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git checkout other && gh pr create --fill",
+        "git switch other; gh pr create --fill",
+        "git checkout other || gh pr create --fill",
+        "git checkout other | gh pr create --fill",
+        "git checkout other & gh pr create --fill",
+        "git checkout other\ngh pr create --fill",
+        "gh pr create --fill && git checkout other",
+        "echo $(git checkout other) gh pr create --fill",
+        "echo `git checkout other` gh pr create --fill",
+    ],
+)
+def test_a_create_run_with_other_commands_is_denied_with_a_clear_reason(world, command):
+    repo, env, _ = world
+    _git(repo, "branch", "other")
+    stamp(repo)
+    r = run_hook(command, repo, env)
+    assert denied(r)
+    assert "by itself" in r.stderr and "&&" in r.stderr
+
+
+def test_a_branch_switch_before_the_create_cannot_use_the_old_receipt(world):
+    repo, env, _ = world
+    _git(repo, "branch", "other")
+    stamp(repo)
+    assert allowed(run_hook("gh pr create --fill", repo, env))
+    assert denied(run_hook("git checkout other && gh pr create --fill", repo, env))
+
+
+def test_a_redirect_to_a_stream_is_not_another_command(world):
+    repo, env, _ = world
+    stamp(repo)
+    assert allowed(run_hook("gh pr create --fill 2>&1", repo, env))

@@ -535,7 +535,7 @@ mutate "P6 always finds the remote tip in the reflog" $GH \
 mutate "P3 ignores DEVLOOP_RUN" $GH \
   '    if name in bases and worker:' '    if False:' $R
 mutate "P0 anchors with match instead of fullmatch" $GH \
-  '(_OID.fullmatch(f[1]) and _OID.fullmatch(f[3]))' '(_OID.match(f[1]) and _OID.match(f[3]))' $R
+  'isinstance(text, str) and _OID.fullmatch(text) is not None' 'isinstance(text, str) and _OID.match(text) is not None' $R
 mutate "the override is honored for a worker" $GH \
   ' == "1" and not env.get("DEVLOOP_RUN"):' ' == "1":' $R
 mutate "the PR gate drops the retarget refusal" hooks/pr_gate.py \
@@ -596,9 +596,32 @@ mutate "the PR gate allows a skip word when a config is unreadable" hooks/pr_gat
 mutate "the PR gate reads the receipt under a fixed name" hooks/pr_gate.py \
   '(Path(git_dir) / receipt)' '(Path(git_dir) / "devloop-quality-gate")' $P
 mutate "the receipt writer ignores the project's receipt name" bin/devloop-gate-pass \
-  '    )["receipt"]' '    )["receipt"] and project.PUSH_GATE_RECEIPT' $P
+  '        "receipt"
+    ]' '        "receipt"
+    ] and project.PUSH_GATE_RECEIPT' $P
 mutate "an unlisted repo gets no push gate defaults" devloop/project.py \
-  '    return push_gate({})' '    return {}' tests/devloop/test_push_gate_config.py
+  '    return push_gate({})
+
+' '    return {}
+
+' tests/devloop/test_push_gate_config.py
+mutate "the receipt name may be any plain file name" devloop/project.py \
+  'RECEIPT_NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*-quality-gate")' \
+  'RECEIPT_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")' tests/devloop/test_push_gate_config.py
+mutate "the repo listing drops the project's gate names" devloop/project.py \
+  'Path(repo["path"]).resolve(), push_gate(cfg))' 'Path(repo["path"]).resolve(), push_gate({}))' \
+  tests/devloop/test_push_gate_config.py
+mutate "the PR gate allows a create joined to another command" hooks/pr_gate.py \
+  '        if create and _COMPOUND.search(_REDIRECT.sub("", command)):' '        if create and False:' $P
+mutate "the PR gate treats a newline as no separator" hooks/pr_gate.py \
+  '_COMPOUND = re.compile(r"[;&|\r\n`]|\$\(")' '_COMPOUND = re.compile(r"[;&|`]|\$\(")' $P
+mutate "the installer checks only the local hooks path" $GH \
+  '["config", "--get", "core.hooksPath"]' '["config", "--local", "--get", "core.hooksPath"]' \
+  tests/devloop/test_push_gate_config.py
+mutate "the object id check accepts a short id" $GH \
+  '    return isinstance(text, str) and _OID.fullmatch(text) is not None' \
+  '    return isinstance(text, str) and re.fullmatch(r"[0-9a-f]{7,64}", text) is not None' \
+  tests/devloop/test_push_gate_config.py $R
 mutate "the shim ignores the project's override name" $GH \
   '{OVERRIDE_VAR}={override_env} exec' '{OVERRIDE_VAR}={DEFAULT_OVERRIDE_ENV} exec' tests/devloop/test_push_gate_config.py
 mutate "the override accepts a variable the shim did not name" $GH \

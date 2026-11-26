@@ -4,7 +4,8 @@ Substring checks on the raw command text; the text is never split or parsed, so 
 a comment or a wrapper (`bash -lc`, `timeout`) cannot hide the words. Pushes are not
 inspected here: git's pre-push (devloop/githooks.py) sees the real refs.
 
-Covered: `gh pr create` or `gh pr new`, moved to another target with `cd`, `-C`, `--repo`
+Covered: `gh pr create` or `gh pr new`, run with another command in the same call (a branch
+switch before it would change HEAD after the receipt check), moved to another target with `cd`, `-C`, `--repo`
 and the like, and `--no-verify` or `core.hooksPath` from a configured repo. False positive
 accepted: `git grep 'gh pr create'` without a receipt is denied. Not covered (V2-LOG):
 `gh api` POST, `eval`, words built at run time, a skip-hooks flag run from another cwd.
@@ -28,11 +29,18 @@ _RETARGET = re.compile(
     r"|\s-[CRH]|--git-dir|--work-tree|GIT_DIR|GIT_WORK_TREE|GH_REPO|--repo|--head"
 )
 _SKIP_HOOKS = re.compile(r"--no-verify|core\.hookspath", re.IGNORECASE)
-_OID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+# Another command in the same call: a separator, a newline, a substitution. A redirect to
+# a stream (`2>&1`) is cut out first. A quoted `;` in a title is a false positive.
+_REDIRECT = re.compile(r"\d*>&\d*")
+_COMPOUND = re.compile(r"[;&|\r\n`]|\$\(")
 
 RETARGET_REASON = (
     "run gh pr create by itself from the worktree of the branch; "
     "put a long body in --body-file"
+)
+STANDALONE_REASON = (
+    "run gh pr create by itself, not with && ; | or a newline: an earlier command "
+    "could switch the branch after this check"
 )
 UNREADABLE_REASON = (
     "a project config cannot be read, so the guarded repos are unknown; "
@@ -95,9 +103,9 @@ def _configured(cwd):
     if not common:
         return None, unreadable
     mine = Path(common).parent.resolve()
-    if not any(p == mine for _, _, p in repos):
+    if not any(r.path == mine for r in repos):
         return None, unreadable
-    return project.push_gate_names(mine, loaded), unreadable
+    return project.gate_for(repos, mine), unreadable
 
 
 def _receipt_ok(cwd, receipt):
@@ -111,7 +119,9 @@ def _receipt_ok(cwd, receipt):
         except FileNotFoundError:
             pass  # no receipt yet; any other read error propagates and fails closed
     receipt = text[:-1] if text.endswith("\n") else text
-    if head and _OID.fullmatch(head) and receipt == head:
+    from devloop import githooks  # the one object-id validator; see _configured
+
+    if githooks.is_object_id(head) and receipt == head:
         return True, ""
     return False, _receipt_reason(head)
 
@@ -132,6 +142,8 @@ def main() -> int:
     try:
         if create and _RETARGET.search(command):
             return _deny(RETARGET_REASON)
+        if create and _COMPOUND.search(_REDIRECT.sub("", command)):
+            return _deny(STANDALONE_REASON)
         gate, unreadable = _configured(cwd)
         # An unreadable config hides which repos are guarded: a create or a skip word is
         # denied everywhere (plan B2 rule 5).

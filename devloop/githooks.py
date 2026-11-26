@@ -115,6 +115,15 @@ fi
 
 
 _OID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
+
+def is_object_id(text) -> bool:
+    """True when `text` is a full-length git object id (SHA-1 or SHA-256), lower case.
+
+    The one validator: the pre-push policy and the PR gate both use it."""
+    return isinstance(text, str) and _OID.fullmatch(text) is not None
+
+
 _ZERO = re.compile(r"0+")
 _SAFE_REF = re.compile(r"[\x21-\x7e]+")
 _GITHUB = re.compile(
@@ -172,7 +181,7 @@ def _in_reflog(remote_oid, local_ref, cwd) -> bool:
 def _judge(line, worker, bases, cwd):
     """(reason or None, remote ref) for one `lref loid rref roid` line."""
     f = line.split(" ")
-    if len(f) != 4 or not (_OID.fullmatch(f[1]) and _OID.fullmatch(f[3])):
+    if len(f) != 4 or not (is_object_id(f[1]) and is_object_id(f[3])):
         return "unreadable push line", f[2] if len(f) == 4 else None
     lref, loid, rref, roid = f
     if _ZERO.fullmatch(loid):
@@ -240,7 +249,7 @@ def install_clone_hook(repo, override_env=DEFAULT_OVERRIDE_ENV) -> str:
 
     Returns installed, updated, unchanged, `skipped: <why>` (no repository there) or
     `refused: <why>`. A pre-push that does not
-    carry this marker, or a local core.hooksPath, is the owner's and is never touched.
+    carry this marker, or a core.hooksPath set in any git config, is the owner's and is never touched.
     """
     try:
         text = shim(override_env)
@@ -251,8 +260,10 @@ def install_clone_hook(repo, override_env=DEFAULT_OVERRIDE_ENV) -> str:
     )
     if code != 0 or not common.strip():
         return "skipped: not a git repository"
-    if _git(["config", "--local", "--get", "core.hooksPath"], str(repo))[0] == 0:
-        return "refused: core.hooksPath is set in this repository"
+    # The effective value: git reads system, global and local config, and any of them
+    # sends hooks elsewhere, so the shim would never run.
+    if _git(["config", "--get", "core.hooksPath"], str(repo))[0] == 0:
+        return "refused: core.hooksPath is set for this repository"
     hooks = Path(common.strip()) / "hooks"
     hook = hooks / "pre-push"
     status = "installed"

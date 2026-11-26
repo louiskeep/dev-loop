@@ -45,14 +45,24 @@ def test_push_gate_defaults_when_the_block_is_absent():
 
 
 def test_push_gate_reads_the_block_and_fills_missing_keys():
-    got = project.push_gate({"push_gate": {"receipt": "acme-gate"}})
-    assert got == {"override_env": "DEVLOOP_PUSH_OVERRIDE", "receipt": "acme-gate"}
+    got = project.push_gate({"push_gate": {"receipt": "acme-quality-gate"}})
+    assert got == {
+        "override_env": "DEVLOOP_PUSH_OVERRIDE",
+        "receipt": "acme-quality-gate",
+    }
 
 
 @pytest.mark.parametrize(
     "block",
     [
         {"receipt": "../x"},
+        {"receipt": "index"},
+        {"receipt": "HEAD"},
+        {"receipt": "config"},
+        {"receipt": "packed-refs"},
+        {"receipt": "acme-gate"},
+        {"receipt": "-quality-gate"},
+        {"receipt": "Acme-quality-gate"},
         {"receipt": "a/b"},
         {"receipt": ".hidden"},
         {"receipt": "ok\n"},
@@ -72,18 +82,74 @@ def test_a_bad_push_gate_block_is_a_config_error(tmp_path, monkeypatch, block):
         project.load_project("p")
 
 
-def test_push_gate_names_for_a_listed_repo_is_that_projects_block(
-    tmp_path, monkeypatch
-):
+@pytest.mark.parametrize("name", ["devloop-quality-gate", "decoy-quality-gate"])
+def test_a_plugin_owned_receipt_name_is_accepted(tmp_path, monkeypatch, name):
+    _write(tmp_path, monkeypatch, tmp_path / "r", receipt=name)
+    assert project.load_project("p")["push_gate"]["receipt"] == name
+
+
+def test_the_receipt_writer_never_touches_git_metadata(tmp_path, monkeypatch):
     repo = tmp_path / "r"
     repo.mkdir()
-    _write(tmp_path, monkeypatch, repo, receipt="acme-gate", override_env="ACME_PUSH")
-    assert project.push_gate_names(repo.resolve()) == {
-        "override_env": "ACME_PUSH",
-        "receipt": "acme-gate",
-    }
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "a").write_text("1")
+    _git(repo, "add", "a")
+    _git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "c")
+    _write(tmp_path, monkeypatch, repo, receipt="index")
+    with pytest.raises(project.ConfigError):
+        project.load_project("p")
+    # an invalid config is unreadable, so the writer falls back to the default name
+    before = {n: (repo / ".git" / n).read_bytes() for n in ("index", "HEAD", "config")}
+    env = {**os.environ, "DEVLOOP_HOME": str(tmp_path / "state")}
+    for k in [k for k in env if k.startswith(("GIT_CONFIG", "DEVLOOP_RUN"))]:
+        del env[k]
+    subprocess.run(
+        [str(ROOT / "bin" / "devloop-gate-pass")], cwd=repo, env=env, check=True
+    )
+    after = {n: (repo / ".git" / n).read_bytes() for n in before}
+    assert after == before
+    assert (repo / ".git" / "devloop-quality-gate").is_file()
+
+
+def test_the_repo_listing_carries_each_repos_gate_names(tmp_path, monkeypatch):
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _write(
+        tmp_path,
+        monkeypatch,
+        repo,
+        receipt="acme-quality-gate",
+        override_env="ACME_PUSH",
+    )
+    repos, _ = project.configured_repos()
+    assert [(r.project, r.name, r.path, r.gate) for r in repos] == [
+        (
+            "p",
+            "r",
+            repo.resolve(),
+            {"override_env": "ACME_PUSH", "receipt": "acme-quality-gate"},
+        )
+    ]
+    assert project.gate_for(repos, repo.resolve()) == repos[0].gate
     # An unlisted repo gets the defaults, so no caller fills them itself.
-    assert project.push_gate_names(tmp_path / "other") == project.push_gate({})
+    assert project.gate_for(repos, tmp_path / "other") == project.push_gate({})
+
+
+def test_the_first_project_that_lists_a_repo_wins(tmp_path, monkeypatch):
+    repo = tmp_path / "r"
+    repo.mkdir()
+    monkeypatch.setenv("DEVLOOP_HOME", str(tmp_path / "state"))
+    for name, receipt in (("a", "first-quality-gate"), ("b", "second-quality-gate")):
+        cfg = _cfg(name, repo)
+        cfg["push_gate"] = {"receipt": receipt}
+        (tmp_path / "state" / name).mkdir(parents=True)
+        (tmp_path / "state" / name / "project.json").write_text(json.dumps(cfg))
+    repos, _ = project.configured_repos()
+    assert project.gate_for(repos, repo.resolve())["receipt"] == "first-quality-gate"
+
+
+def test_the_gate_names_have_one_reader():
+    assert not hasattr(project, "push_gate_names")
 
 
 def test_the_override_name_rule_is_the_shims(tmp_path, monkeypatch):
@@ -162,3 +228,32 @@ def test_pre_push_honors_only_the_override_name_the_shim_passes(monkeypatch):
         == 1
     )
     assert os.environ.get("ACME_PUSH") is None
+
+
+def test_a_global_hooks_path_is_refused_not_reported_installed(
+    wt, tmp_path, monkeypatch
+):
+    gdir = tmp_path / "global-hooks"
+    gdir.mkdir()
+    gcfg = tmp_path / "gitconfig"
+    gcfg.write_text(f"[core]\n\thooksPath = {gdir}\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gcfg))
+    result = githooks.install_clone_hook(wt, "ACME_PUSH")
+    assert result.startswith("refused") and "core.hooksPath" in result
+    assert not (wt / ".git" / "hooks" / "pre-push").exists()
+    assert list(gdir.iterdir()) == []
+
+
+def test_a_system_hooks_path_is_refused_too(wt, tmp_path, monkeypatch):
+    scfg = tmp_path / "system-gitconfig"
+    scfg.write_text(f"[core]\n\thooksPath = {tmp_path}\n")
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(scfg))
+    assert githooks.install_clone_hook(wt, "ACME_PUSH").startswith("refused")
+
+
+def test_one_object_id_validator_serves_both_hooks():
+    assert githooks.is_object_id("a" * 40) and githooks.is_object_id("b" * 64)
+    for bad in ("a" * 39, "a" * 41, "A" * 40, "a" * 63, "", "a" * 40 + "\n", "g" * 40):
+        assert not githooks.is_object_id(bad)
+    src = (ROOT / "hooks" / "pr_gate.py").read_text()
+    assert "0-9a-f]{40}" not in src
