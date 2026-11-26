@@ -322,3 +322,32 @@ def test_payload_env_marks_headless(proj, tmp_path):
     )
     wrap.run(proj, "r1")
     assert out.read_text().split() == ["1", "r1", str(store.out_dir(rd))]
+
+
+@pytest.mark.parametrize("limit", ["idle", "deadline"])
+def test_a_test_that_hangs_or_times_out_is_infra(proj, tmp_path, monkeypatch, limit):
+    # A stuck node returns no test result, so it must not count toward
+    # failed-twice and park the slice.
+    extra = {"deadline_s": 1} if limit == "deadline" else {}
+    if limit == "idle":
+        monkeypatch.setenv("DEVLOOP_IDLE_SECS", "1")
+    rd = mk(
+        proj,
+        tmp_path,
+        ["sleep", "60"],
+        kind="test",
+        reader="testexit",
+        infra_codes=[124, 255, 75],
+        level="t1",
+        **extra,
+    )
+    wrap.run(proj, "r1")
+    assert store.read_json(rd / "exit")["reason"] == "infra"
+    assert result(rd)["status"] == "FAILED"
+
+
+def test_a_builder_that_hangs_still_counts_as_hung(proj, tmp_path, monkeypatch):
+    monkeypatch.setenv("DEVLOOP_IDLE_SECS", "1")
+    rd = mk(proj, tmp_path, ["sleep", "60"])
+    wrap.run(proj, "r1")
+    assert store.read_json(rd / "exit")["reason"] == "hung"

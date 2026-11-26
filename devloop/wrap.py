@@ -320,10 +320,12 @@ def finish(project, rd, req, code, reason):
     try:
         if reason == "exit" and code != 0 and _set_cap_until(project, code, rd, req):
             reason = "capped"
-        elif (
-            reason == "exit"
-            and req["kind"] == "test"
-            and code in req.get("infra_codes", [])
+        elif req["kind"] == "test" and (
+            (reason == "exit" and code in req.get("infra_codes", []))
+            # A test that went silent or ran out of time gave no test result:
+            # that is a node problem, not a red suite, so it never counts
+            # toward failed-twice.
+            or reason in ("hung", "deadline")
         ):
             reason = "infra"
         if (

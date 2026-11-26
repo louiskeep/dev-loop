@@ -133,7 +133,7 @@ An owner question is open. Do not work around it.
 |---|---|---|
 | A worker FAILED once | Dispatch the same run again with the first run as `--retry-of`. | `devloop-dispatch P KIND KEY --brief F --retry-of RUN` |
 | A worker FAILED twice on one head | The slice is parked. Read the log, record the cause as a problem, ask the owner. | `devloop-state P problem KEY ...` |
-| A worker hung or hit its deadline | It counts as FAILED. Check the log for a permission prompt or a loop. | `devloop-state P applied RUN` |
+| A worker hung or hit its deadline | It counts as FAILED. Check the log for a permission prompt or a loop. A test run that hangs or times out is infra instead (no failure counts; see the next rows). | `devloop-state P applied RUN` |
 | The run ended with reason capped | No failure counts. Wait for `cap-until`, then dispatch again. | none until the cap clears |
 | A test run ended with an infra code | No failure counts. The slot stays held until the node is checked. | `devloop-state P release RUN` |
 | Dennis or Codex said NO-GO | Move the slice to REMEDIATE. The round counter goes up. | `devloop-state P slice move KEY REMEDIATE --reason ...` |
