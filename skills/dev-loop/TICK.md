@@ -71,7 +71,8 @@ needs.
 
 ## Failures
 
-A failed run gets one retry on the same head. A second failure parks the slice. Review
+A failed run gets one retry on the same head. A second failure parks the slice. A busy
+tester pool never parks one. Review
 rounds never park a slice: rounds 4 to 6 go to the Codex fixer and a failed round 6 sends
 the slice back to PLAN to redesign. Parked slices wait for the owner. Say so in the
 tick log.

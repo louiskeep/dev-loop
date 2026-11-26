@@ -36,6 +36,10 @@ An R3 slice goes to HELD with a question. Only the owner releases it.
 - tests were written before the code they cover [judgment]
 - lint and format are clean, and commits follow the project's message rule [judgment]
 - the changelog has an entry when the repo keeps one [judgment]
+- before a builder is dispatched, the snapshot's Overlap section was checked. Do not
+  start a builder on files that another open slice in a different row is changing,
+  unless the order is deliberate. The orchestrator decides the order and says it in
+  `next_action`. Overlap never blocks by itself [judgment]
 
 ### SELF_CHECK
 
@@ -48,6 +52,10 @@ Record the read with `devloop-state selfcheck KEY GO --head SHA`. The head must 
 slice head.
 
 ### VERIFY
+
+A slice that waits for a tester slot stays in VERIFY (or the phase it is in). Set
+`waiting_on` to "tester slot" with `devloop-state P slice set KEY --waiting-on "tester slot"`
+and dispatch when a slot frees. Never park it for that.
 
 - t1 GO on head [code]
 - mutations ran on core logic, and uncovered parts are stated [judgment]
@@ -120,8 +128,14 @@ Nothing is left to do. The row closes when its last roadmap slice is DONE.
 
 ### PARKED
 
-A parked slice names its reason. `failed-twice` waits for the owner. Other parks resume to
-the recorded phase. Review rounds never park a slice.
+A parked slice names its reason. Park only for a named dependency, an owner reason, or
+`failed-twice`. A missing tester slot is never a reason. `failed-twice` waits for the owner.
+Other parks resume to the recorded phase. Review rounds never park a slice.
+
+A slice parked earlier for a tester slot (its `waiting_on` names "tester slot") is listed in
+the snapshot under "Parked for a tester slot, resume now". The next tick moves it back to
+its recorded phase with the command shown, and keeps `waiting_on` as "tester slot" until a
+slot is free.
 
 ### HELD
 
@@ -142,6 +156,9 @@ An owner question is open. Do not work around it.
 | Round 3 on one artifact | The slice is parked. Ask the owner for a plan fix or a decision. | `devloop-state P ask KEY ... --wait` |
 | Main is red | Stop merging. Fix main first. Park other merge work. | `devloop-state P problem main-red ...` |
 | The PR is behind its base or conflicts | Rebase in the worktree, push, set the new head, return to SELF_CHECK. No round counts. | `devloop-state P slice move KEY SELF_CHECK --reason rebase` |
+| The new head only merges the base branch into the old head, and the base side touches no file the slice changed | Set the head. The t1, selfcheck and code review GOs carry to it with the note `carried-from OLD` and an `evidence-carried` event. The slice need not return to SELF_CHECK. GitHub CI still runs on the new head, and the merge command checks it. Any other head change resets the evidence. | `devloop-state P slice set KEY --head SHA` |
+| A slice waits for a tester slot | Leave it in its phase. Set `waiting_on` to "tester slot". Do not park it. Dispatch when a slot frees. | `devloop-state P slice set KEY --waiting-on "tester slot"` |
+| The snapshot's Overlap section lists two slices of different rows | Do not start the second builder on those files unless the order is deliberate. Say the order in `next_action`. | `devloop-state P slice set KEY --next-action ...` |
 | Merge refused | Read the reason. Fix the named check. Do not retry blindly. | `devloop-merge P KEY` |
 | Merge state unknown | Do not merge again. Run the merge command once more only to read the state. | `devloop-merge P KEY` |
 | A slice has no live run and is older than 2 hours | Act on it now: dispatch the next step or park it with a named blocker. | see the snapshot |
