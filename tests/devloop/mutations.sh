@@ -412,7 +412,7 @@ mutate "workers run without the guard hooks" devloop/wrap.py \
   '        env = githooks.protect_env(env, rd / "githooks")' '        pass' \
   $G/test_worker_push.py::test_worker_push_to_main_is_refused_and_a_feature_push_works
 mutate "the guard pre-push lets a base ref through" devloop/githooks.py \
-  '    if [ "$rref" = "refs/heads/$base" ]; then' '    if false; then' \
+  '    if name in bases and worker:' '    if False:' \
   $G/test_worker_push.py::test_worker_push_to_main_is_refused_and_a_feature_push_works
 mutate "the guard hooks drop the repo's own hooks" devloop/githooks.py \
   '  exec "$orig" "$@"' '  exit 0' \
