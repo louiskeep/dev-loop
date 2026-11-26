@@ -625,9 +625,7 @@ def apply_effects(
             if failure:
                 s["failures"][failure] = s["failures"].get(failure, 0) + 1
             if writer:
-                s["head_writer"] = (
-                    writer  # the one record: kind, commit and plan lineage
-                )
+                s["head_writer"] = writer  # one record: kind, commit, lineage
         s["processed_run_ids"] = (s["processed_run_ids"] + [run_id])[-500:]
         if s["run"] == run_id:
             s["run"] = None

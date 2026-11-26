@@ -82,19 +82,19 @@ mutate "an unknown merge state is retried" devloop/merge.py \
   'if attempt or s["merge_unknown"]:' 'if False:' \
   $T/test_merge.py::test_merge_unknown_state_no_retry
 mutate "merge guard forgets gh pr merge" hooks/headless_merge_guard.py \
-  '            _ANYWHERE.search(text) or _GH_PR_MERGE.search(text)' '            _ANYWHERE.search(text)' \
-  $T/test_merge.py::test_merge_guard_denies_in_headless_mode
+  '            if _gh_blocked(args, text):' '            if False:' \
+  $T/guard/test_merge_guard.py::test_merge_guard_denies_in_headless_mode
 mutate "merge guard ignores a subagent id" hooks/headless_merge_guard.py \
   'worker = in_run or bool(event.get("agent_id"))' 'worker = in_run' \
-  $T/test_merge.py::test_subagent_is_not_the_orchestrator
+  $T/guard/test_merge_guard.py::test_subagent_is_not_the_orchestrator
 mutate "merge guard blocks every git push" hooks/headless_merge_guard.py \
   '            if _push_targets_base(" ".join(rest), root):' '            if True:' \
-  $T/test_merge.py::test_merge_guard_allows_reads_feature_pushes_and_devloop_merge
+  $T/guard/test_merge_guard.py::test_merge_guard_allows_reads_feature_pushes_and_devloop_merge
 mutate "merge guard blocks any text with merge" hooks/headless_merge_guard.py \
   '        elif exe == "git" and check_base_pushes:' '        elif "merge" in text:
             return True
         elif exe == "git" and check_base_pushes:' \
-  $T/test_merge.py::test_merge_guard_allows_reads_feature_pushes_and_devloop_merge
+  $T/guard/test_merge_guard.py::test_merge_guard_allows_reads_feature_pushes_and_devloop_merge
 mutate "request ledger always matches" devloop/store.py \
   'return want is not None and want == request_digest(run_dir(project, run_id))' 'return True' \
   $T/test_runs_integrity.py::test_payload_that_rewrites_request_gets_no_evidence
@@ -280,7 +280,7 @@ mutate "hold released by any choice" devloop/notes.py \
   $T/test_notes.py::test_agent_question_never_lifts_a_hold
 
 mutate "codex-written head skips the dennis review" devloop/evidence.py \
-  '    if s["head_writer"] != "codex-builder":
+  '    if _claude_written(project, s):
         return roster' '    if True:
         return roster' \
   $T/test_runs_review_roster.py::test_r1_slice_fixed_by_codex_builder_needs_dennis_then_codex
@@ -357,9 +357,9 @@ mutate "wrapper keeps the worker's head instead of the pushed one" devloop/wrap.
   $T/test_push.py::test_amended_head_is_pushed_and_reported
 mutate "writer provenance is never recorded" devloop/slices.py \
   '                s["head_writer"] = writer' '                pass' \
-  $T/test_runs_review_roster.py::test_apply_records_the_writer_of_the_head
+  $T/guard/test_writer_provenance.py::test_apply_run_binds_kind_commit_and_lineage
 mutate "a missing Senior reviewer no longer fails the gate" devloop/evidence.py \
-  '    if senior_missing(cfg, s):' '    if False:' \
+  '    if senior_missing(project, cfg, s):' '    if False:' \
   $T/test_runs_review_roster.py::test_codex_written_head_without_a_senior_reviewer_fails_closed
 mutate "merge reads the configured roster, not the effective one" devloop/merge.py \
   '    roster = evidence.code_roster(project, cfg, s)' \
@@ -370,13 +370,99 @@ mutate "merge runs inside a worker" devloop/merge.py \
   $T/test_merge.py::test_merge_refuses_inside_a_worker
 mutate "guard denies any mention of a command" hooks/headless_merge_guard.py \
   '        elif exe == "devloop-merge" and worker:' '        elif "devloop-merge" in text and worker:' \
-  $T/test_merge_guard_segments.py
+  $T/guard/test_guard_segments.py
 mutate "memory reservations stay per project" devloop/runs.py \
   '    for name in _project_names():' '    for name in [n for n in _project_names() if n != "p"]:' \
   $T/test_runs_limits.py::test_two_projects_share_the_memory_headroom
 mutate "the reservation amount is not frozen at dispatch" devloop/dispatch.py \
   '        req["memory_mb"] = projmod.memory_mb(cfg, kind)' '        pass' \
   $T/test_runs_limits.py::test_dispatch_freezes_the_reservation_amount
+
+G=$T/guard
+mutate "the push SHA header keeps duplicate or spaced head lines" devloop/store.py \
+  '    header = {**read_header(path), **fields}' '    header = read_header(path)' \
+  $G/test_push_header.py
+mutate "a result that cannot be published still exits clean" devloop/wrap.py \
+  '        if code == 0:  # a result that could not be published is not a success' '        if False:' \
+  $G/test_push_header.py::test_result_publication_failure_sets_a_failed_exit
+mutate "apply forgets the writer record" devloop/apply.py \
+  '        outcome = slices.apply_effects(project, key, run_id, writer=writer)' \
+  '        outcome = slices.apply_effects(project, key, run_id)' \
+  $G/test_writer_provenance.py::test_apply_run_binds_kind_commit_and_lineage
+mutate "a moved head keeps the old writer" devloop/evidence.py \
+  '        and rec["sha"] == s["head"]' '        and True' \
+  $G/test_writer_provenance.py::test_head_moved_without_a_writer_run_fails_closed
+mutate "a legacy slice does not recover its writer from runs" devloop/evidence.py \
+  '    found = _applied_writer_runs(project, s)
+    if found:' '    found = []
+    if found:' \
+  $G/test_writer_provenance.py::test_legacy_slice_recovers_the_writer_from_its_applied_run
+mutate "an unknown writer shows no unmet gate item" devloop/evidence.py \
+  '    if head_writer(project, s) is None:
+        items.append(' '    if False:
+        items.append(' \
+  $G/test_writer_provenance.py::test_legacy_string_without_a_run_is_an_unmet_item
+mutate "the Senior seat accepts any reviewer kind at evidence time" devloop/evidence.py \
+  '        return ("dennis",)' '        return _reviewer_kinds(cfg, name)' \
+  $G/test_writer_provenance.py::test_dual_kind_codex_go_does_not_satisfy_the_senior_seat
+mutate "dispatch lets the Senior seat run a non-dennis kind" devloop/dispatch.py \
+  '        if kind != "dennis":' '        if False:' \
+  $G/test_writer_provenance.py::test_dual_kind_senior_cannot_run_codex_review_on_a_codex_head
+mutate "workers run without the guard hooks" devloop/wrap.py \
+  '        env = githooks.protect_env(env, rd / "githooks", req["cwd"])' '        pass' \
+  $G/test_worker_push.py::test_worker_push_to_main_is_refused_and_a_feature_push_works
+mutate "the guard pre-push lets a base ref through" devloop/githooks.py \
+  '    if [ "$rref" = "refs/heads/$base" ]; then' '    if false; then' \
+  $G/test_worker_push.py::test_worker_push_to_main_is_refused_and_a_feature_push_works
+mutate "the guard hooks drop the repo's own hooks" devloop/githooks.py \
+  '  exec "$orig" "$@"' '  exit 0' \
+  $G/test_worker_push.py::test_repo_own_hooks_still_run_for_a_worker
+mutate "the guard pre-push drops the repo's own pre-push" devloop/githooks.py \
+  '  "$orig" "$@" < "$tmp"
+  exit $?' '  exit 0' \
+  $G/test_worker_push.py::test_repo_pre_push_failure_still_blocks_a_worker_push
+mutate "a legacy reservation uses the wrong project's estimate" devloop/runs.py \
+  '            total += projmod.memory_mb(owner_cfg, req.get("kind"))' '            total += 1' \
+  $G/test_host_memory.py::test_legacy_request_uses_its_owning_projects_estimate
+mutate "a damaged proc record hides a reservation" devloop/runs.py \
+  '            req = store.read_json(rd / "request.json")
+        except store.StoreError:
+            continue
+        if req:
+            yield rd, req' '            req = _merged(rd)
+        except store.StoreError:
+            continue
+        if req:
+            yield rd, req' \
+  $G/test_host_memory.py::test_damaged_process_record_in_another_project_keeps_its_reservation
+mutate "a naive timestamp is compared as is" devloop/runs.py \
+  '    if moment.tzinfo is None:' '    if False:' \
+  $G/test_host_memory.py::test_naive_start_time_is_read_as_utc
+mutate "a shell comment is read as syntax" hooks/headless_merge_guard.py \
+  '        elif _is_comment_start(command, i):' '        elif False:' \
+  $T/guard/test_guard_segments.py::test_a_worker_may_name_a_command_without_running_it
+mutate "heredoc terminators ignore spaces" hooks/headless_merge_guard.py \
+  '            if (line.lstrip("\t") if tabs else line) == end:' '            if line.strip() == end:' \
+  $T/guard/test_guard_segments.py::test_a_worker_may_name_a_command_without_running_it
+mutate "gh is matched by text, not position" hooks/headless_merge_guard.py \
+  '        elif exe == "gh":
+            if _gh_blocked(args, text):
+                return True
+        elif' '        elif exe == "gh" and _GH_PR_MERGE.search(text):
+            return True
+        elif' \
+  $T/guard/test_guard_segments.py::test_a_worker_may_name_a_command_without_running_it
+mutate "a wrong-typed closed mark still counts" devloop/status.py \
+  '    if not _entries_ok(closures, lambda e: type(e.get("closed", False)) is bool):' '    if not _entries_ok(closures, lambda e: True):' \
+  $T/dashboard/test_ledgers.py
+mutate "a wrong ledger container still reaches the shipped cards" devloop/status.py \
+  '    if not _entries_ok(merges, lambda e: True):' '    if False:' \
+  $T/dashboard/test_ledgers.py
+mutate "capacity pools ignore the registry order" devloop/dash/view.py \
+  '        for pool in projmod.SLOTS
+    ]' '        for pool in ("builder", "tester", "reviewer", "planner")
+    ]' \
+  $T/test_dash_view.py::test_displayed_pools_follow_the_registry_order
 
 echo
 echo "killed: $killed  survived: $survived  stale: $stale"
