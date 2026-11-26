@@ -181,7 +181,7 @@ def _push_writer(rd, req):
     is not on the remote must never become the slice head, so a failure turns the result
     into FAILED with the reason."""
     path = store.out_dir(rd) / "result.md"
-    hdr, body = store.read_result(path)
+    hdr, body = store.read_result(path, errors="strict")
     if hdr.get("status") != "DONE":
         return
     try:

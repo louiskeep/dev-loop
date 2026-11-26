@@ -184,10 +184,10 @@ def split_result(text: str):
     return header, ""
 
 
-def read_result(path):
+def read_result(path, *, errors="replace"):
     """`(header, body)` of a result file; `({}, "")` when it is missing."""
     try:
-        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        text = Path(path).read_text(encoding="utf-8", errors=errors)
     except FileNotFoundError:
         return {}, ""
     return split_result(text)
@@ -203,7 +203,7 @@ def rewrite_header(path, **fields) -> None:
 
     One canonical line per key is the only form every reader agrees on.
     """
-    header, body = read_result(path)
+    header, body = read_result(path, errors="strict")
     lines = "".join(f"{k}: {v}\n" for k, v in {**header, **fields}.items())
     write_text(path, f"{lines}---\n{body}")
 

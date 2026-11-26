@@ -84,3 +84,19 @@ def test_result_publication_failure_sets_a_failed_exit(
     ex = store.read_json(rd / "exit")
     assert ex["code"] != 0
     assert runs.parse_result(rd, "builder").status == "FAILED"
+
+
+def test_invalid_utf8_fails_publication_and_preserves_result_bytes(
+    proj, tmp_path, repo
+):
+    wt, _ = repo
+    sha = commit(wt)
+    rd = mk(proj, tmp_path, ["true"], worktree=str(wt), branch="feat/s", bases="main")
+    path = store.out_dir(rd) / "result.md"
+    path.parent.mkdir(exist_ok=True)
+    original = f"status: DONE\nhead: {sha}\n---\n".encode() + b"caf\xe9"
+    path.write_bytes(original)
+    wrap.run(proj, "r1")
+    assert store.read_json(rd / "exit")["code"] != 0
+    assert runs.parse_result(rd, "builder").status == "FAILED"
+    assert path.read_bytes() == original
