@@ -1198,7 +1198,7 @@ def _memory(ctx):
         pgid = r["pgid"] if type(r["pgid"]) is int else None
         workers.append((r["role"], r["key"], pgid))
     floor_mb = int(ctx.cfg.get("min_free_gb", 2.5) * 1024)
-    reserved = runs.reserved_mb(ctx.cfg, ctx.now)
+    reserved = runs.reserved_mb(ctx.now)
     return memory.read_memory(ctx.proc, workers, reserved, floor_mb)
 
 
@@ -1211,8 +1211,21 @@ def build_view(project, proc="/proc", now=None, cache=None) -> dict:
     cache = cache or transcript.Cache()
     cfg = projmod.load_project(project)
     ctx = _Ctx(project, cfg, now, proc)
-    merges = _try(lambda: slices.merge_records(project), ctx.bad, "merges", None)
-    closures = _try(lambda: slices.closure_records(project), ctx.bad, "closures", None)
+    unread = object()  # a failed read, as opposed to a file holding JSON null
+    raw_merges = _try(lambda: slices.merge_records(project), ctx.bad, "merges", unread)
+    raw_closures = _try(
+        lambda: slices.closure_records(project), ctx.bad, "closures", unread
+    )
+    merges, closures = status.checked_ledgers(
+        None if raw_merges is unread else raw_merges,
+        None if raw_closures is unread else raw_closures,
+    )
+    for name, raw, ok in (
+        ("merges", raw_merges, merges),
+        ("closures", raw_closures, closures),
+    ):
+        if raw is not unread and ok is None:  # read fine, but its content is damaged
+            ctx.bad.append(name)
     needs = _needs_you(ctx)
     problems = _problems(ctx)
     counts = status.counts_from(merges, closures, now)

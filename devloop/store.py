@@ -156,11 +156,13 @@ def write_json(path, obj: dict) -> None:
 def read_json(path, default=None) -> dict:
     """Read a JSON object. A missing file gives `default` ({} when None)."""
     path = Path(path)
+    bad = False
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return {} if default is None else default
-    bad = False
+    except UnicodeDecodeError:
+        text, bad = "", True
     try:
         data = json.loads(text)
     except ValueError:
@@ -171,28 +173,58 @@ def read_json(path, default=None) -> dict:
     return data
 
 
+def split_result(text: str):
+    """Split a result file into `(header, body)` at its first `---` line.
+
+    This is the one parser of the boundary: readers and the header rewrite all use it, so
+    they cannot disagree about where the body starts. A repeated header key keeps its
+    last value; spaces around the key are ignored.
+    """
+    header = {}
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.strip() == "---":
+            return header, "".join(lines[i + 1 :])
+        key, sep, value = line.partition(":")
+        if sep and key.strip():
+            header[key.strip()] = value.strip()
+    return header, ""
+
+
+def read_result(path, *, errors="replace"):
+    """`(header, body)` of a result file; `({}, "")` when it is missing."""
+    try:
+        with Path(path).open(encoding="utf-8", errors=errors, newline="") as result:
+            text = result.read()
+    except FileNotFoundError:
+        return {}, ""
+    return split_result(text)
+
+
 def read_header(path, limit=None) -> dict:
-    """Parse `key: value` lines up to a `---` line; {} when the file is missing.
+    """The `key: value` header of a result file; {} when the file is missing.
 
     `limit` reads only that many leading bytes (undecodable bytes become replacement
     characters), for readers that must not trust the size or content of the file.
     """
+    if limit is None:
+        return read_result(path)[0]
     try:
-        if limit is None:
-            text = Path(path).read_text(encoding="utf-8")
-        else:
-            with open(path, "rb") as fh:
-                text = fh.read(limit).decode("utf-8", "replace")
+        with open(path, "rb") as fh:
+            text = fh.read(limit).decode("utf-8", "replace")
     except FileNotFoundError:
         return {}
-    out = {}
-    for line in text.splitlines():
-        if line.strip() == "---":
-            break
-        key, sep, value = line.partition(":")
-        if sep and key.strip():
-            out[key.strip()] = value.strip()
-    return out
+    return split_result(text)[0]
+
+
+def rewrite_header(path, **fields) -> None:
+    """Rewrite a result file's header from its parsed fields plus `fields`, keeping the body.
+
+    One canonical line per key is the only form every reader agrees on.
+    """
+    header, body = read_result(path, errors="strict")
+    lines = "".join(f"{k}: {v}\n" for k, v in {**header, **fields}.items())
+    write_text(path, f"{lines}---\n{body}")
 
 
 def _has_event(path, kind, field, value) -> bool:

@@ -11,7 +11,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import notes, runs, slices, store
+from . import notes, overlap, runs, slices, store
 from . import project as projmod
 from .scrub import scrub
 
@@ -111,6 +111,24 @@ def next_command(project, s, checklist) -> str:
         "DOCUMENT": f"devloop-dispatch {project} docs {key} --brief ...",
     }
     return hints.get(p, "none")
+
+
+def slot_resumes(project, all_slices):
+    """Slices an older tick parked only for want of a tester slot. They are not parked
+    for a dependency, an owner reason or two failures, so they go back to their phase."""
+    return [
+        s
+        for s in all_slices
+        if s["phase"] == "PARKED"
+        and s["parked_from"]
+        and s["park_reason"] not in slices.OWNER_PARKS
+        and _SLOT_ONLY.fullmatch((s["waiting_on"] or "").strip().lower())
+    ]
+
+
+# A wait that names only a free tester slot. Anything more ("row X and tester slot")
+# is a real dependency and stays parked.
+_SLOT_ONLY = re.compile(r"(a )?(free )?tester slot( free)?")
 
 
 def _slice_block(project, s, running):
@@ -269,6 +287,24 @@ def build(project) -> Snapshot:
     for s in active:
         inflight += _slice_block(project, s, running)
     sections.append(inflight if len(inflight) > 1 else inflight + ["- none"])
+    try:
+        pairs, _unknown = overlap.overlaps(project, all_slices)
+        sections.append(overlap.render(pairs, _unknown))
+    except (OSError, KeyError, ValueError, slices.SliceError):
+        pairs = []
+        sections.append(["## Overlap", "- unknown (could not read the branches)"])
+    resume = slot_resumes(project, all_slices)
+    sections.append(
+        ["## Parked for a tester slot, resume now"]
+        + (
+            [
+                f"- {s['key']}: devloop-state {project} slice move {s['key']} "
+                f'{s["parked_from"]} --reason "tester slot free"'
+                for s in resume
+            ]
+            or ["- none"]
+        )
+    )
     held = held_tests(project)
     sections.append(
         ["## Test runs holding a slot until release"]
@@ -358,6 +394,8 @@ def build(project) -> Snapshot:
             for rd, _ in runs.iter_runs(project)
         ),
         "closable": closable,
+        "overlap": [[a, b, f] for a, b, f in pairs],
+        "resume": [s["key"] for s in resume],
         "held_tests": sorted((h["id"], h["reason"], h["code"]) for h in held),
         "questions": sorted((q["key"], notes.question_version(q)) for q in qs),
         "decisions": sorted((key, r["id"]) for key, _q, r in decisions),

@@ -75,17 +75,10 @@ def parse_result(run_dir: Path, kind: str) -> runs.Result:
     """Read result.md against the exit file. A contradiction is FAILED, never DONE."""
     if kind not in runs.KINDS:
         raise runs.RunError("unknown kind")
-    hdr = store.read_header(store.out_dir(run_dir) / "result.md")
+    hdr, body = store.read_result(store.out_dir(run_dir) / "result.md")
     ex = runs.read_exit(run_dir)
     status = hdr.get("status")
-    body = ""
-    try:
-        text = (store.out_dir(run_dir) / "result.md").read_text(
-            encoding="utf-8", errors="replace"
-        )
-        body = text.partition("\n---")[2].strip()
-    except OSError:
-        pass
+    body = body.strip()
     verdict = hdr.get("verdict") or None
     if verdict not in slices.VERDICTS:
         verdict = None
@@ -367,8 +360,8 @@ def _apply(project, run_id) -> str:
         outcome = slices.apply_effects(project, key, run_id, failure=fkey, **guard)
     elif res.status == "BLOCKED" or ev_kind is None:
         writer = (
-            kind
-            if kind in ("builder", "codex-builder") and res.status == "DONE"
+            slices.writer_record(kind, res.head, req.get("plan_lineage", 0))
+            if kind in slices.WRITER_KINDS and res.status == "DONE" and res.head
             else None
         )
         outcome = slices.apply_effects(project, key, run_id, writer=writer)

@@ -141,7 +141,7 @@ def _test_item(project, s, level, label):
         s,
         e,
         kinds=("test",),
-        expect={"level": level, "head": s["head"]},
+        expect={"level": level, "head": e.get("carried_from") or s["head"]},
         covers_ok=(level == "full"),
     )
     if problem is None and level in ("t2", "full") and req.get("select"):
@@ -238,23 +238,96 @@ def _plan_items(project, s, cfg):
 
 
 def senior_reviewers(cfg) -> list:
-    return [n for n, spec in cfg["reviewers"].items() if spec.get("kind") == "dennis"]
+    """Reviewers declared `dennis` that may also run the dennis kind they must run here."""
+    return [
+        n
+        for n, spec in cfg["reviewers"].items()
+        if spec.get("kind") == "dennis" and "dennis" in _reviewer_kinds(cfg, n)
+    ]
 
 
-def senior_missing(cfg, s) -> bool:
-    """A Codex-written head needs a Senior (dennis kind) reviewer; none is configured."""
-    return s["head_writer"] == "codex-builder" and not senior_reviewers(cfg)
+def _applied_writer_runs(project, s):
+    """Applied, ledger-true DONE builder runs that produced the slice's current head."""
+    runs_dir = store.state_dir(project) / "runs"
+    found = []
+    for rd in sorted(runs_dir.glob("*")) if runs_dir.is_dir() else []:
+        try:
+            req = store.read_json(rd / "request.json")
+        except store.StoreError:
+            continue
+        if req.get("kind") not in slices.WRITER_KINDS:
+            continue
+        if (req.get("row"), req.get("slice")) != (s["row"], s["slice"]):
+            continue
+        if req.get("plan_lineage", 0) != s["plan_lineage"]:
+            continue  # a builder run for an earlier plan does not count after a redesign
+        # The exit file overrides a DONE header, so a failed run is not credited.
+        res = runs.parse_result(rd, req["kind"])
+        if (
+            (rd / "applied").is_file()
+            and store.request_matches_ledger(project, rd.name)
+            and res.status == "DONE"
+            and res.head == s["head"]
+        ):
+            found.append(req["kind"])
+    return found
+
+
+def head_writer(project, s):
+    """Who wrote the slice's current head: `builder`, `codex-builder`, `imported`, or None.
+
+    None means unproven, and every reader treats it as the strictest case. The stored
+    record counts only for the commit and plan lineage it names; otherwise the answer is
+    recovered from applied runs, which also covers slices stored before the record held
+    a commit. A head moved by hand to another commit matches no run, so it stays None.
+    """
+    if not s["head"]:
+        return None
+    rec = s["head_writer"]
+    if (
+        isinstance(rec, dict)
+        and rec["sha"] == s["head"]
+        and rec["plan_lineage"] == s["plan_lineage"]
+    ):
+        return rec["kind"]
+    found = _applied_writer_runs(project, s)
+    if found:
+        return "codex-builder" if "codex-builder" in found else found[-1]
+    return None
+
+
+def _claude_written(project, s) -> bool:
+    return head_writer(project, s) in ("builder", "imported")
+
+
+def senior_missing(project, cfg, s) -> bool:
+    """A head not written by a Claude builder needs a Senior (dennis kind) reviewer."""
+    return not _claude_written(project, s) and not senior_reviewers(cfg)
+
+
+def senior_slot(project, cfg, s):
+    """The reviewer that must hold the Senior seat on this head, or None."""
+    if _claude_written(project, s) or not senior_reviewers(cfg):
+        return None
+    return code_roster(project, cfg, s)[0][0]
+
+
+def code_reviewer_kinds(project, cfg, s, name) -> tuple:
+    """The run kinds that count for a code reviewer; the Senior seat takes only dennis."""
+    if name == senior_slot(project, cfg, s):
+        return ("dennis",)
+    return _reviewer_kinds(cfg, name)
 
 
 def code_roster(project, cfg, s) -> list:
     """The code reviewers for this head, in order: `[(name, cap)]`.
 
-    Owner rule: Codex is not the only reviewer of code Codex wrote, so a head produced
-    by a codex-builder run gets a dennis-kind reviewer first, even in tiers that list
-    none. Dispatch order checks and the gate both read this one list.
+    Owner rule: Codex is not the only reviewer of code Codex wrote, so a head not proven
+    to come from a Claude builder gets a dennis-kind reviewer first, even in tiers that
+    list none. Dispatch order checks and the gate both read this one list.
     """
     roster = [projmod.reviewer_entry(e) for e in cfg["reviews"][s["risk"]]["code"]]
-    if s["head_writer"] != "codex-builder":
+    if _claude_written(project, s):
         return roster
     dennis = senior_reviewers(cfg)
     if not dennis:
@@ -263,34 +336,6 @@ def code_roster(project, cfg, s) -> list:
     first = listed[0] if listed else dennis[0]
     own = [e for e in roster if e[0] == first] or [(first, None)]
     return own + [e for e in roster if e[0] != first]
-
-
-def _builder_run_ok(project, s):
-    if s["imported"] and s["approved_plan_sha"]:
-        return True
-    runs = store.state_dir(project) / "runs"
-    for rd in sorted(runs.glob("*")) if runs.is_dir() else []:
-        unreadable = False
-        req = {}
-        try:
-            req = store.read_json(rd / "request.json")
-        except store.StoreError:
-            unreadable = True
-        if unreadable or req.get("kind") not in ("builder", "codex-builder"):
-            continue
-        if (req.get("row"), req.get("slice")) != (s["row"], s["slice"]):
-            continue
-        if req.get("plan_lineage", 0) != s["plan_lineage"]:
-            continue  # a builder run for an earlier plan does not count after a redesign
-        hdr = store.read_header(store.out_dir(rd) / "result.md")
-        if (
-            (rd / "applied").is_file()
-            and store.request_matches_ledger(project, rd.name)
-            and hdr.get("status") == "DONE"
-            and hdr.get("head") == s["head"]
-        ):
-            return True
-    return False
 
 
 def _row_in_document(project, s):
@@ -367,11 +412,15 @@ def _gate_items(project, s, cfg):
         items.append(_test_item(project, s, "full", "full suite GO on head"))
     if s["risk"] not in slices.TIERS:
         return items + [Item("risk", "risk is R0, R1 or R2", False)]
-    if senior_missing(cfg, s):
+    if head_writer(project, s) is None:
+        items.append(
+            Item("builder-run", "an applied builder run wrote this head", False)
+        )
+    if senior_missing(project, cfg, s):
         items.append(
             Item(
                 "code-review",
-                "Senior review (dennis kind) of the Codex-written head: no such reviewer configured",
+                "Senior review (dennis kind) of a head not written by Claude: no such reviewer configured",
                 False,
             )
         )
@@ -387,8 +436,12 @@ def _gate_items(project, s, cfg):
             project,
             s,
             e,
-            kinds=_reviewer_kinds(cfg, name),
-            expect={"purpose": "code", "reviewer": name, "head": s["head"]},
+            kinds=code_reviewer_kinds(project, cfg, s, name),
+            expect={
+                "purpose": "code",
+                "reviewer": name,
+                "head": e.get("carried_from") or s["head"],
+            },
         )
         if problem is None and i > 0:
             if req.get("predecessor_run") != prev_run:
@@ -428,7 +481,7 @@ def checks(project, s, cfg, to):
             Item(
                 "builder-run",
                 "applied builder run DONE on head",
-                bool(s["head"]) and _builder_run_ok(project, s),
+                head_writer(project, s) is not None,
             ),
         ]
     if (frm, to) == ("SELF_CHECK", "VERIFY"):

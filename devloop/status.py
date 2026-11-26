@@ -52,22 +52,35 @@ def _when(ev):
     return t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)  # naive is UTC
 
 
+def _entries_ok(ledger, entry_ok) -> bool:
+    return isinstance(ledger, dict) and all(
+        isinstance(k, str) and isinstance(e, dict) and entry_ok(e)
+        for k, e in ledger.items()
+    )
+
+
+def checked_ledgers(merges, closures):
+    """`(merges, closures)`, each as given when well formed and None when not.
+
+    The one place a ledger is judged. A wrong container, a non-object entry or a `closed`
+    mark that is not a bool makes that whole ledger unreadable; the other one still
+    stands. Counts and the shipped cards both read the result, so they cannot disagree.
+    """
+    if not _entries_ok(merges, lambda e: True):
+        merges = None
+    if not _entries_ok(closures, lambda e: type(e.get("closed", False)) is bool):
+        closures = None
+    return merges, closures
+
+
 def counts_from(merges, closures, now=None) -> dict:
     """Merge and closure counts from the two ledgers; None for a ledger that is None
-    (unreadable), so a damaged file reads as unknown rather than zero."""
+    or malformed (unreadable), so a damaged file reads as unknown rather than zero."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     today = now.astimezone(CHICAGO).date()
     week = now - datetime.timedelta(days=7)
     out = dict.fromkeys(("merged_today", "merged_week", "merged_total", "rows_closed"))
-    # One malformed entry makes that whole ledger unreadable; the other one still counts.
-    if not isinstance(merges, dict) or not all(
-        isinstance(e, dict) for e in merges.values()
-    ):
-        merges = None
-    if not isinstance(closures, dict) or not all(
-        isinstance(e, dict) for e in closures.values()
-    ):
-        closures = None
+    merges, closures = checked_ledgers(merges, closures)
     if merges is not None:
         stamps = [_when(e) for e in merges.values()]
         out["merged_today"] = sum(

@@ -6,6 +6,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from . import evidence
 from . import project as projmod
 from . import slices
 from .dash.lifecycle import dash_status
@@ -51,7 +52,7 @@ def _run(argv, timeout):
 
 def _agent_checks(cfg):
     """Each dennis-kind reviewer runs `claude --agent NAME`; the agent must exist."""
-    names = [n for n, s in cfg["reviewers"].items() if s.get("kind") == "dennis"]
+    names = evidence.senior_reviewers(cfg)
     if not names:
         return []
     try:
@@ -146,7 +147,7 @@ def run_checks(project) -> list:
                 else "notify.env_file: missing or readable by others",
             )
         )
-    if not [n for n, s in cfg["reviewers"].items() if s.get("kind") == "dennis"]:
+    if not evidence.senior_reviewers(cfg):
         out.append(
             (
                 True,

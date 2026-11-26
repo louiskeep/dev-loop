@@ -203,7 +203,7 @@ def test_move_back_to_frame_starts_a_new_lineage(proj, ready):
 
 
 def test_develop_exit_needs_an_applied_builder_run(proj, mk_slice, mk_run):
-    k = mk_slice(proj, phase="DEVELOP", branch="feat/x", head="a1")
+    k = mk_slice(proj, phase="DEVELOP", branch="feat/x", head="a1", head_writer=None)
     with pytest.raises(slices.TransitionError, match="builder"):
         slices.move(proj, k, "SELF_CHECK", "x")
     mk_run(proj, "b0", kind="builder", key=k, result_head="zz", applied=True)

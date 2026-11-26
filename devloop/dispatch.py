@@ -109,11 +109,11 @@ def _fill(argv, mapping):
     ]
 
 
-def _claude_argv(cfg, kind, model, *extra):
+def _claude_argv(model, *extra):
+    """The default command; MCP flags are added once, by `_with_mcp_policy`."""
     return [
         "claude",
         "-p",
-        *projmod.mcp_args(cfg, kind),
         *extra,
         "--model",
         model,
@@ -200,9 +200,13 @@ def _prepare_review(project, cfg, s, req, kind, reviewer, wt):
     req["reviewer"] = reviewer
     purpose = "plan" if (kind == "codex-fix" or s["phase"] == "PLAN") else "code"
     req["purpose"] = purpose
+    if purpose == "code" and kind not in evidence.code_reviewer_kinds(
+        project, cfg, s, reviewer
+    ):
+        raise runs.Refused(f"{reviewer} holds the Senior seat and must run dennis")
     argv = (spec_r.get("argv") or {}).get(kind)
     if argv is None and kind == "dennis":
-        argv = _claude_argv(cfg, kind, cfg["models"]["reviewer"], "--agent", reviewer)
+        argv = _claude_argv(cfg["models"]["reviewer"], "--agent", reviewer)
     if argv is None:
         raise runs.Refused("no command configured for this reviewer and kind")
     req["argv_t"] = list(argv)
@@ -323,7 +327,7 @@ def _prepare(project, cfg, kind, key, worktree, reviewer, level, select, covers)
         model = cfg["models"][role]
         if role == "planner" and "opus" not in model.lower():
             raise runs.Refused("planner and docs need an Opus model")
-        req.update(model=model, argv_t=_claude_argv(cfg, kind, model), head=s["head"])
+        req.update(model=model, argv_t=_claude_argv(model), head=s["head"])
         req["purpose"] = "author" if kind == "planner" else "code"
         if kind == "planner":
             if not s["plan_path"]:
@@ -338,7 +342,7 @@ def _check_memory(project, cfg, kind):
     kind's own estimate, would drop below the floor."""
     free_mb = mem_available_kb() / 1024
     floor_mb = cfg.get("min_free_gb", 2.5) * 1024
-    held = runs.reserved_mb(cfg) + projmod.memory_mb(cfg, kind)
+    held = runs.reserved_mb() + projmod.memory_mb(cfg, kind)
     if free_mb - held < floor_mb:
         raise runs.Refused("memory is below the floor")
 

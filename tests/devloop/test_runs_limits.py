@@ -174,7 +174,7 @@ def test_dispatch_freezes_the_reservation_amount(
     first = go(proj, brief, "builder", ready()[0])
     assert runs.read_request(proj, first)["memory_mb"] == 600
     cfg_edit(lambda c: c.update(memory_mb={"builder": 1}))  # cannot shrink a live hold
-    assert runs.reserved_mb(projmod.load_project(proj)) == 600
+    assert runs.reserved_mb() == 600
 
 
 def test_a_configured_claude_reviewer_command_gets_the_mcp_policy(

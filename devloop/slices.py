@@ -211,13 +211,31 @@ _FIELDS = {
     "approved_plan_sha": _match(_SHA, optional=True),
     "plan_frozen": _bool,
     "imported": _bool,
-    "head_writer": lambda v: v is None or v in ("builder", "codex-builder"),
+    "head_writer": lambda v: v is None or v in WRITER_KINDS or _writer_record(v),
     "owner_answered": _bool,
     "hold_question": _ostr,
     "hold_release_option": _ostr,
     "was_r3": _bool,
     "processed_run_ids": _strlist,
 }
+
+
+WRITER_KINDS = ("builder", "codex-builder")
+
+
+def _writer_record(v) -> bool:
+    """One record binds who wrote a head to the commit and the plan it was written for."""
+    return (
+        isinstance(v, dict)
+        and v.get("kind") in (*WRITER_KINDS, "imported")
+        and isinstance(v.get("sha"), str)
+        and bool(v["sha"])
+        and _nat(v.get("plan_lineage"))
+    )
+
+
+def writer_record(kind, sha, plan_lineage=0) -> dict:
+    return {"kind": kind, "sha": sha, "plan_lineage": plan_lineage}
 
 
 def _validate(s) -> dict:
@@ -431,6 +449,8 @@ def import_slice(
     if plan_approved:
         probe = {"plan_path": plan_path, "worktree": worktree}
         overrides["approved_plan_sha"] = plan_sha(probe)
+        if head:  # the owner vouches for this commit only, under the plan just approved
+            overrides["head_writer"] = writer_record("imported", head)
     return _create(project, row, slice_id, repo, risk, **overrides)
 
 
@@ -517,6 +537,7 @@ def set_fields(project: str, key: str, **fields) -> dict:
             worktree=fields.get("worktree") or current["worktree"],
             repo=current["repo"],
         )
+    carry = _carry_plan(project, pending, fields)
     with _edit(project, key) as s:
         if s["phase"] == "DONE":
             raise SliceError("slice is DONE")
@@ -540,7 +561,91 @@ def set_fields(project: str, key: str, **fields) -> dict:
             if fields["full_suite_required"] is not True:
                 raise SliceError("full_suite_required can only go from False to True")
         s.update(fields)
+        carried = _carry_evidence(s, carry)
+    if carried:
+        store.append_event(
+            project,
+            "evidence-carried",
+            key=key,
+            row=s["row"],
+            slice=s["slice"],
+            kinds=carried,
+            **{"from": carry["old"], "to": s["head"]},
+        )
     return s
+
+
+# Evidence that survives a main-only merge into the head: tests, the tick's own read and
+# the code reviews. Plan reviews are keyed by plan hash and never move with a head.
+CARRY_KINDS = ("t1", "selfcheck")
+
+
+def _carry_plan(project, pending, fields):
+    """Ask git once, outside the slice lock, whether a head change keeps its evidence."""
+    new = fields.get("head")
+    old = pending["head"]
+    if not new or not old or new == old or pending["phase"] == "DONE":
+        return None
+    cfg = projmod.load_project(project)
+    from . import carry, merge
+
+    repo_cfg, _rules, base = merge.repo_settings(cfg, pending["repo"])
+    path = fields.get("worktree") or pending["worktree"] or repo_cfg["path"]
+    if _unsettled_runs(project, pending, old):
+        return None
+    if carry.carry_reason(path, base, old, new) is not None:
+        return None
+    return {
+        "old": old,
+        "new": new,
+        "tests": carry.tests_carry(path, old, new),
+        "writer": evidence.head_writer(project, pending),
+    }
+
+
+def _unsettled_runs(project, s, head):
+    """True while a run on `head` has not been applied: its verdict could still veto."""
+    from . import runs
+
+    for rd, req in runs.iter_runs(project):
+        if (req.get("row"), req.get("slice")) != (s["row"], s["slice"]):
+            continue
+        if req.get("head") != head:
+            continue
+        if not runs.is_done(rd):
+            return True
+    return False
+
+
+def _carry_evidence(s, carry):
+    """Copy GO evidence from the old head to the new one inside the slice lock."""
+    if not carry or s["head"] != carry["new"]:
+        return []
+    old, new = carry["old"], carry["new"]
+    src = s["evidence"].get(old) or {}
+    dst = s["evidence"].setdefault(new, {})
+    moved = []
+    for kind, e in src.items():
+        if kind not in CARRY_KINDS and not kind.startswith("code:"):
+            continue
+        if e.get("verdict") != "GO" or kind in dst:
+            continue
+        if kind == "t1" and not carry.get("tests"):
+            continue
+        entry = {
+            **e,
+            "carried_from": e.get("carried_from") or old,
+            "note": f"carried-from {old}",
+        }
+        if "head" in entry:
+            entry["head"] = new
+        dst[kind] = entry
+        moved.append(kind)
+    if not dst:
+        del s["evidence"][new]
+    if moved and carry["writer"] in (*WRITER_KINDS, "imported"):
+        s["head_writer"] = writer_record(carry["writer"], new, s["plan_lineage"])
+    return sorted(moved)
 
 
 plan_file = _plan_file
@@ -607,7 +712,7 @@ def apply_effects(
             if failure:
                 s["failures"][failure] = s["failures"].get(failure, 0) + 1
             if writer:
-                s["head_writer"] = writer  # the one record of who wrote the head
+                s["head_writer"] = writer  # one record: kind, commit, lineage
         s["processed_run_ids"] = (s["processed_run_ids"] + [run_id])[-500:]
         if s["run"] == run_id:
             s["run"] = None

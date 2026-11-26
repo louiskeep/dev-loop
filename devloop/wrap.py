@@ -13,8 +13,9 @@ import subprocess
 import time
 from pathlib import Path
 
+from . import githooks
 from . import project as projmod
-from . import push, runs, store, tick
+from . import push, runs, slices, store, tick
 from .caps import TAIL_CHARS, detect_cap, detect_cap_text
 
 VERDICT = re.compile(r"VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
@@ -180,7 +181,7 @@ def _push_writer(rd, req):
     is not on the remote must never become the slice head, so a failure turns the result
     into FAILED with the reason."""
     path = store.out_dir(rd) / "result.md"
-    hdr = store.read_header(path)
+    hdr, body = store.read_result(path, errors="strict")
     if hdr.get("status") != "DONE":
         return
     try:
@@ -188,13 +189,9 @@ def _push_writer(rd, req):
     except Exception as exc:  # any failure to confirm must not leave a DONE result
         pushed, why = None, f"push confirmation failed: {type(exc).__name__}"
     if why is None:
-        if hdr.get("head") != pushed:  # report the commit the remote confirmed
-            old = path.read_text(encoding="utf-8", errors="replace")
-            store.write_text(
-                path, re.sub(r"(?m)^head:.*$", f"head: {pushed}", old, count=1)
-            )
+        # Always rewrite: it also drops a stale or duplicate head the worker wrote.
+        store.rewrite_header(path, head=pushed)
         return
-    body = path.read_text(encoding="utf-8", errors="replace").partition("\n---")[2]
     text = f"status: FAILED\nhead: \nverdict: \ntests: {hdr.get('tests', '')}\n"
     text += f"push: {why}\n---\npush failed: {why}\n{body.strip()}\n"
     store.write_text(path, text)
@@ -259,6 +256,8 @@ def run(project, run_id) -> int:
     )
     if req["kind"] in CODEX_KINDS:
         env["CODEX_LAST_MSG"] = req["last_msg"]
+    if req.get("cwd"):  # every worker, Claude or not, pushes through the guard hooks
+        env = githooks.protect_env(env, rd / "githooks")
     store.out_dir(rd).mkdir(exist_ok=True)
     me = os.getpid()
     runs.update_request(
@@ -304,10 +303,12 @@ def finish(project, rd, req, code, reason):
     try:
         if reason == "exit" and code != 0 and _set_cap_until(project, code, rd, req):
             reason = "capped"
-        elif (
-            reason == "exit"
-            and req["kind"] == "test"
-            and code in req.get("infra_codes", [])
+        elif req["kind"] == "test" and (
+            (reason == "exit" and code in req.get("infra_codes", []))
+            # A test that went silent or ran out of time gave no test result:
+            # that is a node problem, not a red suite, so it never counts
+            # toward failed-twice.
+            or reason in ("hung", "deadline")
         ):
             reason = "infra"
         if (
@@ -320,13 +321,15 @@ def finish(project, rd, req, code, reason):
                 "no-verdict"  # a clean exit that named no verdict: retry, not a failure
             )
         _write_result(rd, req, code, reason)
-        if reason == "exit" and code == 0 and req["kind"] in push.WRITER_KINDS:
+        if reason == "exit" and code == 0 and req["kind"] in slices.WRITER_KINDS:
             _push_writer(rd, req)
         if req["kind"] == "codex-fix":
             write_repair(rd, req)
     except Exception as exc:  # noqa: BLE001 - the exit file must still be written
         with open(store.out_dir(rd) / "log", "a") as log:
             log.write(f"wrapper error: {type(exc).__name__}\n")
+        if code == 0:  # a result that could not be published is not a success
+            code, reason = 1, "wrapper-error"
     finally:
         runs.create_exit(rd, code=code, reason=reason)
         runs.remove_tree(project, rd.name, req)

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from hooks import headless_merge_guard as guard  # noqa: E402
 
 WORKER_ALLOWED = [
@@ -22,6 +22,15 @@ WORKER_ALLOWED = [
     "cat > notes.md <<EOF\ngh pr merge\nEOF",
     "git commit -F - <<EOF\ngh pr merge\nEOF",
     "cat > f.txt <<'EOF'\nit's not run: devloop-merge x; git push origin main\nEOF",
+    "pytest -q # don't run integration tests",
+    "ls # gh pr merge 5",
+    "echo $#",
+    "cat > example.md <<'EOF'\nline\n  EOF\nit's here\nEOF",
+    "cat <<-EOF\n\tgh pr merge 5\n\tEOF",
+    "cat <<EOF\ngh pr merge 5\nEOF \nEOF",
+    'gh pr comment 5 --body "do not run gh pr merge 5 yet"',
+    'gh issue create --title "x" --body "see gh pr merge and mergePullRequest"',
+    "grep <<<EOF x",
 ]
 WORKER_DENIED = [
     "devloop-merge proj ROW--S1",
@@ -55,6 +64,12 @@ WORKER_DENIED = [
     "ls; sudo",
     "env -S 'gh pr merge 1'",
     "env --split-string='gh pr merge 1'",
+    "ls # x\ngh pr merge 5",
+    "cat <<EOF >/dev/null\n  EOF\nEOF\ngh pr merge 5",
+    "cat <<-EOF\n\tEOF\ngh pr merge 5",
+    "gh pr comment 5 --body hi; gh pr merge 5",
+    "gh api repos/o/r/pulls/5/merge -X PUT",
+    "gh pr merge --repo o/r 5",
 ]
 
 
