@@ -35,10 +35,14 @@ def _files(path, *rng):
 
 
 def base_ref(path, base):
-    """Fetch the base and name its remote-tracking ref, or None when the fetch failed."""
+    """Fetch the base and return the commit the fetch got, or None when it failed.
+
+    The SHA comes from FETCH_HEAD, never `origin/BASE`: with a narrow fetch refspec the
+    remote-tracking ref can still name an abandoned tip after a reset.
+    """
     if _git(path, "fetch", "-q", "origin", base) is None:
         return None
-    return f"origin/{base}"
+    return (_git(path, "rev-parse", "FETCH_HEAD^{commit}") or "").strip() or None
 
 
 # Files that no test runs. Anything else the base brings in makes the test GO stale.

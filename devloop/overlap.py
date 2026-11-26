@@ -4,6 +4,7 @@ The tick reads this before it starts a builder. It is advice, never a block: the
 orchestrator decides the order and says so in next_action.
 """
 
+import fnmatch
 import re
 from itertools import combinations
 from pathlib import Path
@@ -27,93 +28,132 @@ def _branch_files(path, base, branch):
 
 
 def _worktree_files(path):
-    """Staged, unstaged and untracked paths in the slice's own worktree."""
-    out = carry._git(path, "status", "--porcelain", "--untracked-files=all")
+    """Staged, unstaged and untracked paths in the slice's own worktree, None on failure.
+
+    Renames are off so a moved file reports both its old and its new path.
+    """
+    out = carry._git(
+        path, "status", "--porcelain", "-z", "--no-renames", "--untracked-files=all"
+    )
     if out is None:
-        return set()
-    return {
-        ln[3:].split(" -> ")[-1].strip('"') for ln in out.splitlines() if len(ln) > 3
-    }
+        return None
+    return {e[3:] for e in out.split("\0") if len(e) > 3}
 
 
 def _cells(ln):
     return [c.strip() for c in ln.strip().strip("|").split("|")]
 
 
-def _placement_files(s):
-    """Every path the plan's Placement table names, or None when there is none to read.
+_TARGET = re.compile(r"[\w.@+/*-]+")
 
-    A File column is read even for names with no extension (Dockerfile), joined to a
-    Directory column when the row has one. Paths in other cells count too: naming a
-    neighbour as well only adds a false overlap, never hides a real one.
+
+def _resolve(tok, folder, repo):
+    """A File cell entry as a repo path, joined to the row's directory when it is relative."""
+    if not folder or tok.startswith(folder + "/"):
+        return tok
+    if "/" in tok and repo and (Path(repo) / tok).parent.is_dir():
+        return tok
+    return f"{folder}/{tok}"
+
+
+def _placement_files(s, repo=None):
+    """(paths, complete) from the plan's Placement table; None when there is no table.
+
+    Only File columns name targets ("Sits beside" names neighbours, not edits). An entry
+    is joined to the row's Directory column unless it already is a repo path. A row whose
+    File cell holds something that is not a path makes the result incomplete.
     """
     f = slices.plan_file(s)
     if f is None or not Path(f).is_file():
         return None
-    files, inside, header = set(), False, None
+    files, complete, seen, inside, header = set(), True, False, False, None
     for ln in Path(f).read_text(errors="replace").splitlines():
         if ln.lstrip().startswith("#"):
             inside, header = "placement" in ln.lower(), None
             continue
-        if not inside or not ln.lstrip().startswith("|"):
-            continue
-        if set(ln) <= set("|-: "):
+        if not inside or not ln.lstrip().startswith("|") or set(ln) <= set("|-: "):
             continue
         cells = _cells(ln)
         if header is None:
             header = [c.lower() for c in cells]
             continue
+        seen = True
         row = dict(zip(header, cells))
         folder = next((v for k, v in row.items() if "dir" in k), "").strip("`/ ")
-        for k, v in row.items():
-            for tok in re.split(r"[\s,;]+", v.replace("`", " ")):
-                tok = tok.strip("()[]")
-                if not tok:
-                    continue
-                if "file" in k and re.fullmatch(r"[\w.@+/-]+", tok):
-                    files.add(f"{folder}/{tok}" if folder and "/" not in tok else tok)
-                elif _PATH.fullmatch(tok):
-                    files.add(tok)
-    return files or None
+        targets = [v for k, v in row.items() if "file" in k]
+        toks = [
+            t.strip("()[]")
+            for v in targets
+            for t in re.split(r"[\s,;]+", v.replace("`", " "))
+            if t.strip("()[]")
+        ]
+        if not toks:
+            complete = False
+        for tok in toks:
+            if _TARGET.fullmatch(tok):
+                files.add(_resolve(tok, folder, repo))
+            else:
+                complete = False
+    return (files, complete) if seen else None
 
 
 def changed_files(cfg, s):
-    """The files a slice changes: its branch diff, else its plan's table, else None."""
+    """(paths, complete): branch diff, worktree changes and planned files together.
+
+    `complete` is False when a source that should answer could not: a branch that could
+    not be compared, an unreadable worktree, a plan entry that is not a path, or no
+    branch and no plan at all. Known paths still count for the pairs.
+    """
     repo_cfg, _rules, base = merge.repo_settings(cfg, s["repo"])
     path = s["worktree"] or repo_cfg["path"]
-    found = []
+    files, complete = set(), True
     if s["branch"]:
-        found.append(_branch_files(path, base, s["branch"]))
+        got = _branch_files(path, base, s["branch"])
+        complete = complete and got is not None
+        files |= got or set()
     if s["worktree"] and Path(s["worktree"]).is_dir():
-        found.append(_worktree_files(s["worktree"]))
-    found.append(_placement_files(s))
-    known = [f for f in found if f is not None]
-    # Planned files count with committed ones: a fresh branch has no diff yet.
-    return set().union(*known) if any(known) else None
+        got = _worktree_files(s["worktree"])
+        complete = complete and got is not None
+        files |= got or set()
+    planned = _placement_files(s, repo_cfg.get("path"))
+    if planned is not None:
+        files |= planned[0]
+        complete = complete and planned[1]
+    elif not s["branch"]:
+        complete = False
+    return files, complete
+
+
+def _shared(a, b):
+    """Paths both sets name; a planned glob (`test_remote_*.py`) matches a real path."""
+    out = a & b
+    for x, globs in ((a, b), (b, a)):
+        for g in (g for g in globs if "*" in g):
+            out |= {p for p in x if fnmatch.fnmatchcase(p, g)}
+    return out
 
 
 def overlaps(project, open_slices=None):
-    """([(key_a, key_b, shared_paths)], [keys with unknown files])."""
+    """([(key_a, key_b, shared_paths)], [keys whose files are not fully known])."""
     cfg = projmod.load_project(project)
     open_slices = [
         s for s in (open_slices or slices.list_slices(project)) if s["phase"] != "DONE"
     ]
-    files = {}
+    files, unknown = {}, []
     for s in open_slices:
         try:
-            files[s["key"]] = changed_files(cfg, s)
+            files[s["key"]], complete = changed_files(cfg, s)
         except (OSError, StopIteration, KeyError, ValueError, slices.SliceError):
-            files[s["key"]] = None  # this slice is unknown; the other pairs still show
+            files[s["key"]], complete = set(), False
+        if not complete:
+            unknown.append(s["key"])  # still compared on what is known
     pairs = []
     for a, b in combinations(open_slices, 2):
         if a["row"] == b["row"] or a["repo"] != b["repo"]:
             continue
-        if files[a["key"]] is None or files[b["key"]] is None:
-            continue
-        shared = sorted(files[a["key"]] & files[b["key"]])
+        shared = sorted(_shared(files[a["key"]], files[b["key"]]))
         if shared:
             pairs.append((a["key"], b["key"], shared))
-    unknown = [k for k, v in files.items() if v is None]
     return pairs, unknown
 
 

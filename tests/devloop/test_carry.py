@@ -225,3 +225,17 @@ def test_an_unapplied_run_on_the_old_head_blocks_carry(proj, slice_on, fx, mk_ru
     fx.advance_main("notes.md")
     new = fx.merge_main()
     assert new not in slices.set_fields(proj, k, head=new)["evidence"]
+
+
+def test_a_stale_tracking_ref_is_not_the_base(fx):
+    """With a narrow refspec origin/main can name an abandoned tip; the fetch decides."""
+    old = _feature(fx)
+    fx.branch("ghost")
+    fx.write("notes.md", "gone")
+    ghost = fx.commit("abandoned main tip")
+    git(fx.path, "update-ref", "refs/remotes/origin/main", ghost)
+    git(fx.path, "config", "remote.origin.fetch", "+refs/heads/x:refs/remotes/origin/x")
+    fx.checkout("feat")
+    git(fx.path, "merge", "-q", "--no-edit", "ghost")
+    new = fx.sha()
+    assert "not on the base" in carry.carry_reason(fx.path, "main", old, new)

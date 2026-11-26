@@ -129,6 +129,30 @@ def _plan(tmp_path, name, table):
     return str(f)
 
 
+def test_placement_reads_targets_not_neighbours(proj, mk_slice, tmp_path):
+    a = _plan(
+        tmp_path,
+        "a.md",
+        "| New file | Directory | Why | Sits beside |\n|---|---|---|---|\n"
+        "| `tests/devloop/test_remote_*.py`, `fakebin/ssh` | `tests/devloop/` | x "
+        "| `devloop/runs.py` |",
+    )
+    b = _plan(
+        tmp_path,
+        "b.md",
+        "| File | Why |\n|---|---|\n| `tests/devloop/fakebin/ssh` | x |\n"
+        "| `tests/devloop/test_remote_link.py` | x |\n| `devloop/runs.py` | x |",
+    )
+    ka = mk_slice(proj, phase="PLAN", plan_path=a)
+    kb = mk_slice(proj, phase="PLAN", plan_path=b)
+    out = _section(proj)
+    assert (
+        f"{ka} and {kb}: tests/devloop/fakebin/ssh, tests/devloop/test_remote_link.py"
+        in out
+    )
+    assert "devloop/runs.py" not in out
+
+
 def test_placement_reads_the_file_column_with_its_directory(proj, mk_slice, tmp_path):
     a = _plan(
         tmp_path,
@@ -193,6 +217,47 @@ def test_a_mixed_wait_is_not_resumed(proj, mk_slice):
         parked_from="VERIFY",
         park_reason="depends on row X",
         waiting_on="row X and tester slot",
+    )
+    md = snapshot.build_snapshot(proj)[0]
+    block = md.split("## Parked for a tester slot, resume now\n", 1)[1].split(
+        "\n## ", 1
+    )[0]
+    assert k not in block
+
+
+@pytest.mark.real_git
+def test_a_staged_rename_keeps_the_old_path(proj, mk_slice, fx, tmp_path):
+    fx.write("own.txt", "o")
+    fx.commit("own")
+    git(fx.path, "push", "-q", "origin", "main")
+    _branch(fx, "c", **{"own.txt": "edit"})
+    wa = tmp_path / "wa"
+    git(fx.path, "worktree", "add", "-q", "-b", "a", str(wa), "main")
+    git(wa, "mv", "own.txt", "moved.txt")
+    ka = mk_slice(proj, phase="DEVELOP", branch="a", worktree=str(wa))
+    kb = mk_slice(proj, phase="DEVELOP", branch="c")
+    assert f"{ka} and {kb}: own.txt" in _section(proj)
+
+
+@pytest.mark.real_git
+def test_a_failed_branch_scan_is_unknown_but_the_plan_still_counts(
+    proj, mk_slice, fx, tmp_path
+):
+    a = _plan(tmp_path, "a.md", "| File | Why |\n|---|---|\n| `x/a.py` | y |")
+    ka = mk_slice(proj, phase="DEVELOP", branch="no-such-branch", plan_path=a)
+    kb = mk_slice(proj, phase="PLAN", plan_path=a)
+    out = _section(proj)
+    assert f"{ka} and {kb}: x/a.py" in out
+    assert "files unknown:" in out and ka in out.split("files unknown:")[1]
+
+
+def test_a_dependency_park_with_a_slot_wait_is_not_resumed(proj, mk_slice):
+    k = mk_slice(
+        proj,
+        phase="PARKED",
+        parked_from="VERIFY",
+        park_reason="depends on row X",
+        waiting_on="tester slot",
     )
     md = snapshot.build_snapshot(proj)[0]
     block = md.split("## Parked for a tester slot, resume now\n", 1)[1].split(
