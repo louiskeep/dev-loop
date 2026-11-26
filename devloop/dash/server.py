@@ -1,18 +1,22 @@
-"""Routes for the dashboard: five exact paths, GET and HEAD only, no state writes.
+"""Routes for the dashboard: one table of exact (method, path) entries.
+
+GET and HEAD never write state. The four POST routes go through `actions.check_post`.
 
 `make_server` builds the HTTP server without touching signals or files, so tests can run
 it in a thread. The lifecycle (lock, port, pid file, CLI) is in `lifecycle.py`.
 """
 
+import collections
 import hashlib
 import http.server
 import json
+import secrets
 import sys
 import threading
 import time
 from pathlib import Path
 
-from . import render, transcript, view
+from . import actions, render, transcript, view
 
 WEB = Path(__file__).parent / "web"
 CACHE_SECS = 2.0
@@ -20,6 +24,7 @@ CACHE_SECS = 2.0
 FIXED = {
     400: "bad request",
     404: "not found",
+    405: "method not allowed",
     500: "state unreadable",
     501: "not supported",
 }
@@ -30,12 +35,15 @@ HEADERS = (
     (
         "Content-Security-Policy",
         "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
-        "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        "img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
     ),
 )
 HTML = "text/html; charset=utf-8"
 JSON = "application/json; charset=utf-8"
 TEXT = "text/plain; charset=utf-8"
+
+
+Route = collections.namedtuple("Route", "handler fields")
 
 
 class ViewCache:
@@ -73,16 +81,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "devloop-dash"
     sys_version = ""
     protocol_version = "HTTP/1.1"
+    timeout = 20  # a stalled client cannot hold a thread forever
 
     # --- the one place a response is written ---------------------------------
 
-    def _send(self, code, body, ctype=TEXT, etag=None):
+    def _send(self, code, body, ctype=TEXT, etag=None, extra=(), no_store=False):
         data = body.encode() if isinstance(body, str) else body
         self.send_response(code)
         if code != 304:
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
         for name, value in HEADERS:
+            if not (no_store and name == "Cache-Control"):
+                self.send_header(name, value)
+        if no_store:
+            self.send_header("Cache-Control", "no-store")
+        for name, value in extra:
             self.send_header(name, value)
         if etag:
             self.send_header("ETag", etag)
@@ -109,11 +123,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self.path.split("?", 1)[0].split("#", 1)[0]
 
     def _dispatch(self):
-        handler = ROUTES.get(self._path())
-        if handler is None:
-            return self.send_error(404)
+        route = ROUTES.get(("GET", self._path()))
+        if route is None:
+            return self.send_error(405 if ("POST", self._path()) in ROUTES else 404)
         try:
-            handler(self)
+            route.handler(self)
         except Exception as exc:  # noqa: BLE001  the boundary: never leak, never die
             self.server.log(f"error {type(exc).__name__}")
             self._send(500, FIXED[500])
@@ -123,7 +137,41 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     do_HEAD = do_GET
 
+    def do_POST(self):
+        path = self._path()
+        route = ROUTES.get(("POST", path))
+        if route is None:
+            self.close_connection = True
+            return self.send_error(405 if ("GET", path) in ROUTES else 404)
+        action = path.rsplit("/", 1)[-1]
+        try:
+            fields = actions.check_post(self, route)
+            message = route.handler(self, fields)
+            self.server.log(f"post {action} ok")
+            self._reply(200, True, message)
+        except actions.Refused as exc:
+            self.close_connection = True
+            self.server.log(f"post {action} refused")
+            self._reply(exc.code, False, exc.message)
+        except Exception as exc:  # noqa: BLE001  the boundary: never leak, never die
+            self.close_connection = True
+            self.server.log(f"post {action} error {type(exc).__name__}")
+            self._reply(500, False, SOMETHING_WRONG)
+
+    def _reply(self, code, ok, message):
+        if "application/json" in (self.headers.get("Accept") or ""):
+            body = json.dumps({"ok": ok, "message": message})
+            return self._send(code, body, JSON)
+        if ok:
+            return self._send(303, b"", extra=(("Location", "/"),))
+        self._send(code, message)
+
     # --- handlers --------------------------------------------------------------
+
+    def _html(self, render_fn):
+        # The page carries the write token, so it is never cached or revalidated.
+        v = self.server.cache.get()
+        self._send(200, render_fn(v), HTML, no_store=True)
 
     def _conditional(self, make_body, ctype):
         v = self.server.cache.get()
@@ -133,10 +181,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._send(200, make_body(v), ctype, etag)
 
     def page(self):
-        self._conditional(render.render_page, HTML)
+        self._html(render.render_page)
 
     def fragment(self):
-        self._conditional(render.render_fragment, HTML)
+        self._html(render.render_fragment)
 
     def api_state(self):
         self._conditional(lambda v: json.dumps(v, sort_keys=True), JSON)
@@ -145,12 +193,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._send(200, self.server.assets[name], ctype)
 
 
+SOMETHING_WRONG = "Something went wrong. Reload to see what was saved."
 ROUTES = {
-    "/": Handler.page,
-    "/fragment": Handler.fragment,
-    "/api/state": Handler.api_state,
-    "/static/dash.css": lambda h: h.static("dash.css", "text/css; charset=utf-8"),
-    "/static/dash.js": lambda h: h.static("dash.js", "text/javascript; charset=utf-8"),
+    ("GET", "/"): Route(Handler.page, None),
+    ("GET", "/fragment"): Route(Handler.fragment, None),
+    ("GET", "/api/state"): Route(Handler.api_state, None),
+    ("GET", "/static/dash.css"): Route(
+        lambda h: h.static("dash.css", "text/css; charset=utf-8"), None
+    ),
+    ("GET", "/static/dash.js"): Route(
+        lambda h: h.static("dash.js", "text/javascript; charset=utf-8"), None
+    ),
+    ("POST", "/act/answer"): Route(
+        actions.answer, (("key", "version"), ("choice", "other"))
+    ),
+    ("POST", "/act/pause"): Route(actions.pause, ((), ())),
+    ("POST", "/act/resume"): Route(actions.resume, ((), ())),
+    ("POST", "/act/tick"): Route(actions.run_tick, ((), ())),
 }
 
 
@@ -160,7 +219,12 @@ class DashServer(http.server.ThreadingHTTPServer):
 
     def __init__(self, addr, project, proc="/proc", log=None):
         super().__init__(addr, Handler)
+        self.project = project
         self.cache = ViewCache(project, proc)
+        # One token per server process: a page from an older server is refused.
+        self.token = secrets.token_urlsafe(32)
+        self.tick_lock = threading.Lock()
+        self.last_tick = None
         # Read once: a request never builds a path from its URL.
         self.assets = {n: (WEB / n).read_bytes() for n in ("dash.css", "dash.js")}
         self._log = log or sys.stderr

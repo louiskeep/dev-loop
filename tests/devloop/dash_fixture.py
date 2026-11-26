@@ -6,11 +6,15 @@ merges, one closed row, one waiting question, one problem and one node record.
 """
 
 import datetime
+import http.client
+import io
 import os
+import threading
 
 import pytest
 
 from devloop import notes, runs, slices, store
+from devloop.dash import server
 
 NOW = datetime.datetime.now(datetime.timezone.utc)
 AGENT_NAMES = ("zed-agent", "qux-agent")
@@ -210,3 +214,25 @@ def build(proj, cfg_edit, home):
 def dash(proj, cfg_edit, home, monkeypatch):
     monkeypatch.setenv("DEVLOOP_FAKE_MEMAVAIL_KB", str(64 * 1024 * 1024))
     return build(proj, cfg_edit, home)
+
+
+@pytest.fixture
+def srv(proj, dash):
+    log = io.StringIO()
+    s = server.make_server(proj, "127.0.0.1", 0, proc="/nonexistent-proc", log=log)
+    s.log_text = log
+    t = threading.Thread(target=s.serve_forever, daemon=True)
+    t.start()
+    yield s
+    s.shutdown()
+    s.server_close()
+
+
+def call(srv, path, method="GET", headers=None):
+    conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+    try:
+        conn.request(method, path, headers=headers or {})
+        r = conn.getresponse()
+        return r.status, dict(r.getheaders()), r.read()
+    finally:
+        conn.close()

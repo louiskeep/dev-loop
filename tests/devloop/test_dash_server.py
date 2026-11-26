@@ -1,17 +1,13 @@
 """Routes: what is served, what is refused, and what must never appear in a response."""
 
-import http.client
-import io
 import json
 import pathlib
 import sys
-import threading
 
-import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent / "dash"))
 import transcript_fixture as tf  # noqa: E402
-from dash_fixture import AGENT_NAMES, dash, put_slice  # noqa: F401
+from dash_fixture import AGENT_NAMES, call, dash, put_slice, srv  # noqa: F401
 
 from devloop import notes, slices
 from devloop.dash import server, view
@@ -23,28 +19,6 @@ HEADER_NAMES = (
     "Referrer-Policy",
     "Cache-Control",
 )
-
-
-@pytest.fixture
-def srv(proj, dash):
-    log = io.StringIO()
-    s = server.make_server(proj, "127.0.0.1", 0, proc="/nonexistent-proc", log=log)
-    s.log_text = log
-    t = threading.Thread(target=s.serve_forever, daemon=True)
-    t.start()
-    yield s
-    s.shutdown()
-    s.server_close()
-
-
-def call(srv, path, method="GET", headers=None):
-    conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
-    try:
-        conn.request(method, path, headers=headers or {})
-        r = conn.getresponse()
-        return r.status, dict(r.getheaders()), r.read()
-    finally:
-        conn.close()
 
 
 def test_the_five_routes_answer(srv):
@@ -62,26 +36,29 @@ def test_the_five_routes_answer(srv):
 
 
 def test_head_has_headers_and_no_body(srv):
-    status, headers, body = call(srv, "/fragment", "HEAD")
+    status, headers, body = call(srv, "/api/state", "HEAD")
     assert status == 200 and body == b"" and headers["ETag"]
+    status, headers, body = call(srv, "/fragment", "HEAD")
+    assert status == 200 and body == b"" and "ETag" not in headers
 
 
 def test_etag_304_on_unchanged_poll(srv):
-    _, h, _ = call(srv, "/fragment")
-    status, h2, body = call(srv, "/fragment", headers={"If-None-Match": h["ETag"]})
+    _, h, _ = call(srv, "/api/state")
+    status, _, body = call(srv, "/api/state", headers={"If-None-Match": h["ETag"]})
     assert status == 304 and body == b""
-    status, h3, _ = call(srv, "/api/state")
-    assert h3["ETag"] == h["ETag"]  # one version for the page, the fragment and the API
-    assert call(srv, "/api/state", headers={"If-None-Match": h["ETag"]})[0] == 304
+    # The pages carry the write token, so they are never revalidated.
+    for path in ("/", "/fragment"):
+        status, h2, _ = call(srv, path, headers={"If-None-Match": h["ETag"]})
+        assert status == 200 and "ETag" not in h2 and h2["Cache-Control"] == "no-store"
 
 
 def test_etag_changes_after_slice_move(proj, dash, srv):
-    _, h, _ = call(srv, "/fragment")
+    _, h, _ = call(srv, "/api/state")
     s = slices.load(proj, dash["frame"])
     s["phase"] = "PLAN"
     slices._save(proj, s)
     srv.cache._value = None  # the two second cache would hide the change
-    status, h2, _ = call(srv, "/fragment", headers={"If-None-Match": h["ETag"]})
+    status, h2, _ = call(srv, "/api/state", headers={"If-None-Match": h["ETag"]})
     assert status == 200 and h2["ETag"] != h["ETag"]
 
 
@@ -100,9 +77,10 @@ def test_the_view_is_cached_between_polls(srv, monkeypatch):
 def test_only_known_routes_and_methods(srv):
     for path in ("/nope", "/fragment/", "/api", "/static/", "/static/other.js"):
         assert call(srv, path)[:1] == (404,), path
-    for method in ("POST", "PUT", "DELETE", "PATCH", "OPTIONS"):
+    for method in ("PUT", "DELETE", "PATCH", "OPTIONS"):
         status, _, body = call(srv, "/api/state", method)
         assert status == 501 and body == b"not supported", method
+    assert call(srv, "/api/state", "POST")[:1] == (405,)
     assert call(srv, "/fragment?x=1&y=<script>")[0] == 200  # the query is ignored
 
 
@@ -127,11 +105,11 @@ def test_every_response_sends_security_headers(srv):
         call(srv, "/", "POST"),
         call(
             srv,
-            "/fragment",
-            headers={"If-None-Match": call(srv, "/fragment")[1]["ETag"]},
+            "/api/state",
+            headers={"If-None-Match": call(srv, "/api/state")[1]["ETag"]},
         ),
     ]
-    assert {c[0] for c in cases} == {200, 404, 501, 304}
+    assert {c[0] for c in cases} == {200, 404, 405, 304}
     for status, headers, _ in cases:
         for name in HEADER_NAMES:
             assert name in headers, (status, name)

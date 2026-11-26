@@ -1,18 +1,23 @@
 """Loop control: question class and detail, answer rules, one write path, POST actions."""
 
 import fcntl
+import http.client
 import json
 import os
+import pathlib
 import stat
 import subprocess
 import sys
+import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 import pytest
 
 from devloop import notes, slices, state_cli, store, tick, wrap
-from devloop.dash import lifecycle
+from devloop.dash import lifecycle, server
+from dash_fixture import call
 
 STATE_BIN = str(Path(__file__).resolve().parents[3] / "bin" / "devloop-state")
 
@@ -611,3 +616,408 @@ def test_server_env_is_not_headless(proj, home, monkeypatch):
     with pytest.raises(Done):
         lifecycle._detach(proj, args)
     assert "DEVLOOP_HEADLESS" not in seen["env"]
+
+
+# --- Task 11: POST actions ---------------------------------------------------------------
+
+ANSWER_KEY = "q-owner"  # the dash fixture's open product question: options a, b
+
+
+def conn_for(srv):
+    return http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+
+
+def post(
+    srv,
+    path,
+    fields=None,
+    *,
+    raw=None,
+    token="",
+    origin="",
+    host=None,
+    headers=None,
+    length=None,
+    drop=(),
+):
+    """POST with a good token and origin unless told otherwise. `drop` removes headers."""
+    port = srv.server_address[1]
+    body = raw if raw is not None else urllib.parse.urlencode(fields or {}).encode()
+    if isinstance(body, str):
+        body = body.encode()
+    if fields is not None and token != "":
+        fields = {**fields, "t": token}
+    elif fields is not None and "t" not in fields:
+        fields = {**fields, "t": srv.token}
+    if raw is None and fields is not None:
+        body = urllib.parse.urlencode(fields).encode()
+    h = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": origin or f"http://127.0.0.1:{port}",
+        "Content-Length": str(len(body) if length is None else length),
+    }
+    h.update(headers or {})
+    for name in drop:
+        h.pop(name, None)
+    conn = conn_for(srv)
+    try:
+        conn.putrequest("POST", path, skip_host=host is not None)
+        if host is not None:
+            conn.putheader("Host", host)
+        for k, v in h.items():
+            conn.putheader(k, v)
+        conn.endheaders(body)
+        r = conn.getresponse()
+        return r.status, dict(r.getheaders()), r.read()
+    finally:
+        conn.close()
+
+
+def answer_fields(proj, key=ANSWER_KEY, choice="a"):
+    return {"key": key, "version": version(proj, key), "choice": choice}
+
+
+class Calls:
+    """Replace every state function a POST may reach and count the calls."""
+
+    def __init__(self, monkeypatch):
+        self.calls = []
+        for mod, name in (
+            (notes, "answer"),
+            (store, "set_paused"),
+            (tick, "spawn_detached"),
+        ):
+            monkeypatch.setattr(
+                mod, name, lambda *a, _n=name, **kw: self.calls.append(_n) or "ok"
+            )
+
+
+def valid_fields(proj, path):
+    return {
+        "/act/answer": lambda: answer_fields(proj),
+        "/act/pause": dict,
+        "/act/resume": dict,
+        "/act/tick": dict,
+    }[path]()
+
+
+def post_routes():
+    return [path for (method, path) in server.ROUTES if method == "POST"]
+
+
+def test_every_post_route_refuses_bad_token_or_origin(proj, dash, srv, monkeypatch):
+    paths = post_routes()
+    assert sorted(paths) == ["/act/answer", "/act/pause", "/act/resume", "/act/tick"]
+    calls = Calls(monkeypatch)
+    port = srv.server_address[1]
+    for path in paths:
+        f = valid_fields(proj, path)
+        s, _, b = post(srv, path, {**f, "t": "wrong"})
+        assert (s, b) == (403, b"This page is out of date. Reload."), path
+        s, _, b = post(srv, path, {**f, "t": ""})
+        assert s == 403, path
+        for origin in (
+            f"http://evil.example:{port}",
+            f"http://127.0.0.1:{port + 1}",
+            f"https://127.0.0.1:{port}",
+            "null",
+        ):
+            s, _, b = post(srv, path, f, origin=origin)
+            assert (s, b) == (403, b"Refused: not sent from this page."), (path, origin)
+        s, _, b = post(srv, path, f, drop=("Origin",))
+        assert s == 403 and b"not sent from this page" in b
+        # A Referer from this page stands in for a missing Origin; a foreign one does not.
+        ok = post(
+            srv,
+            path,
+            f,
+            drop=("Origin",),
+            headers={"Referer": f"http://127.0.0.1:{port}/x"},
+        )
+        assert ok[0] != 403, path
+        assert (
+            post(
+                srv,
+                path,
+                f,
+                drop=("Origin",),
+                headers={"Referer": "http://evil.example/"},
+            )[0]
+            == 403
+        )
+    assert calls.calls.count("answer") == 1  # only the Referer case reached a handler
+
+
+def test_post_body_contract(proj, dash, srv, monkeypatch, home):
+    calls = Calls(monkeypatch)
+    good = answer_fields(proj)
+    enc = urllib.parse.urlencode
+    t = srv.token
+    cases = {
+        "negative length": dict(fields=good, length=-5),
+        "non-numeric length": dict(fields=good, headers={"Content-Length": "abc"}),
+        "missing length": dict(fields=good, drop=("Content-Length",)),
+        "too long": dict(raw=b"x=" + b"a" * 9000),
+        "bare percent": dict(raw=enc({**good, "t": t}) + "&z=%"),
+        "truncated percent": dict(raw=enc({**good, "t": t}) + "&z=%4"),
+        "bad percent": dict(raw=enc({**good, "t": t}) + "&z=%zz"),
+        "invalid raw utf8": dict(raw=b"t=" + t.encode() + b"&key=\xff"),
+        "invalid escaped utf8": dict(
+            raw=enc({**good, "t": t, "choice": "x"}).replace("choice=x", "other=caf%E9")
+        ),
+        "duplicate choice": dict(raw=enc({**good, "t": t}) + "&choice=b"),
+        "both modes": dict(raw=enc({**good, "t": t}) + "&other="),
+        "neither mode": dict(fields={k: v for k, v in good.items() if k != "choice"}),
+        "unknown field": dict(fields={**good, "extra": "1"}),
+        "missing version": dict(
+            fields={k: v for k, v in good.items() if k != "version"}
+        ),
+        "no equals": dict(raw="garbage"),
+    }
+    for name, kw in cases.items():
+        s, _, b = post(srv, "/act/answer", **kw)
+        assert (s, b) == (400, b"Bad request."), name
+    assert calls.calls == []
+    # Pause takes only the token.
+    assert post(srv, "/act/pause", {"extra": "1"})[0] == 400
+    assert calls.calls == []
+
+
+def test_post_body_stores_utf8_text_once(proj, dash, srv):
+    f = {"key": ANSWER_KEY, "version": version(proj, ANSWER_KEY), "other": "café"}
+    body = urllib.parse.urlencode({**f, "t": srv.token}, encoding="utf-8").encode()
+    assert b"caf%C3%A9" in body
+    s, _, _ = post(srv, "/act/answer", raw=body)
+    assert s == 303
+    assert stored(proj, ANSWER_KEY)["answer"] == "other: café"
+    assert len(answered(pathlib.Path(os.environ["DEVLOOP_HOME"]))) == 1
+
+
+def test_double_post_records_one_answer(proj, dash, srv, home):
+    f = answer_fields(proj)
+    first = post(srv, "/act/answer", f, headers={"Accept": "application/json"})
+    assert first[0] == 200 and json.loads(first[2])["ok"] is True
+    second = post(srv, "/act/answer", f, headers={"Accept": "application/json"})
+    assert second[0] == 409 and json.loads(second[2]) == {
+        "ok": False,
+        "message": "Already answered.",
+    }
+    assert len(answered(home)) == 1
+    assert stored(proj, ANSWER_KEY)["applied"] == "a"
+
+
+def test_stale_post_with_removed_option_returns_changed(proj, dash, srv, home):
+    f = answer_fields(proj, choice="b")
+    ask(proj, ANSWER_KEY, options=["a", "c"], recommended="a", question="Pick a thing")
+    s, _, b = post(srv, "/act/answer", f)
+    assert (s, b) == (409, b"This question changed. Reload to see the new version.")
+    assert stored(proj, ANSWER_KEY)["answer"] is None and answered(home) == []
+
+
+def test_unknown_question_key_is_refused(proj, dash, srv):
+    s, _, b = post(
+        srv, "/act/answer", {"key": "nope", "version": "0" * 16, "choice": "a"}
+    )
+    assert (s, b) == (409, b"This question is gone. Reload.")
+    s, _, b = post(
+        srv, "/act/answer", {"key": "../x y", "version": "0" * 16, "choice": "a"}
+    )
+    assert s == 400
+    f = answer_fields(proj, choice="not an option")
+    assert post(srv, "/act/answer", f)[0] == 400
+
+
+def test_stale_token_after_restart_is_refused(proj, dash, srv):
+    old = srv.token
+    page = call(srv, "/")
+    assert page[1]["Cache-Control"] == "no-store" and "ETag" not in page[1]
+    assert "ETag" not in call(srv, "/fragment")[1]
+    assert call(srv, "/api/state")[1]["ETag"]
+    other = server.make_server(proj, "127.0.0.1", 0, proc="/nonexistent-proc")
+    t = threading.Thread(target=other.serve_forever, daemon=True)
+    t.start()
+    try:
+        assert other.token != old
+        s, _, b = post(other, "/act/pause", {"t": old})
+        assert (s, b) == (403, b"This page is out of date. Reload.")
+        assert post(other, "/act/pause", {})[0] == 303
+    finally:
+        other.shutdown()
+        other.server_close()
+        store.set_paused(proj, False, "cli")
+
+
+def test_pause_and_resume_post_and_events(proj, dash, srv, home):
+    assert post(srv, "/act/pause", {})[0] == 303
+    assert (home / "p" / "PAUSE").exists()
+    assert post(srv, "/act/resume", {})[0] == 303
+    assert not (home / "p" / "PAUSE").exists()
+    got = [(e["kind"], e["via"]) for e in events(home) if e["kind"].startswith("loop-")]
+    assert got == [("loop-paused", "dashboard"), ("loop-resumed", "dashboard")]
+
+
+def test_each_write_appends_its_event(proj, dash, srv, home, tmp_path, monkeypatch):
+    tick_launcher(tmp_path, monkeypatch, "pass\n")
+    post(srv, "/act/answer", answer_fields(proj))
+    post(srv, "/act/tick", {})
+    wait_for_events = [
+        e for e in events(home) if e["kind"] in ("question-answered", "tick-requested")
+    ]
+    assert [(e["kind"], e["via"]) for e in wait_for_events] == [
+        ("question-answered", "dashboard"),
+        ("tick-requested", "dashboard"),
+    ]
+
+
+def counting_launcher(tmp_path, monkeypatch):
+    mark = tmp_path / "spawned.txt"
+    tick_launcher(tmp_path, monkeypatch, f"open({str(mark)!r}, 'a').write('x')\n")
+    return mark
+
+
+def spawned(mark):
+    time.sleep(0.5)
+    return len(mark.read_text()) if mark.exists() else 0
+
+
+def test_tick_debounce(proj, dash, srv, tmp_path, monkeypatch):
+    mark = counting_launcher(tmp_path, monkeypatch)
+    first = post(srv, "/act/tick", {})
+    assert (first[0], first[2]) == (200, b"Tick started.") or first[0] == 303
+    second = post(srv, "/act/tick", {})
+    assert (second[0], second[2]) == (409, b"A tick was just started.")
+    assert spawned(mark) == 1
+    srv.last_tick -= 11  # the window has passed
+    assert post(srv, "/act/tick", {})[0] in (200, 303)
+    assert spawned(mark) == 2
+
+
+def test_tick_running_refuses(proj, dash, srv, tmp_path, monkeypatch):
+    mark = counting_launcher(tmp_path, monkeypatch)
+    monkeypatch.setattr(tick, "running", lambda *a, **kw: True)
+    s, _, b = post(srv, "/act/tick", {})
+    assert (s, b) == (409, b"A tick is running now.") and spawned(mark) == 0
+
+
+def test_spawn_failure_reports_and_allows_retry(proj, dash, srv, tmp_path, monkeypatch):
+    monkeypatch.setenv("DEVLOOP_BIN_DIR", str(tmp_path / "nowhere"))
+    s, _, b = post(srv, "/act/tick", {})
+    assert (s, b) == (500, b"Could not start a tick.") and srv.last_tick is None
+    mark = counting_launcher(tmp_path, monkeypatch)
+    assert post(srv, "/act/tick", {})[0] in (200, 303)
+    assert spawned(mark) == 1
+
+
+def test_tick_event_failure_keeps_debounce(proj, dash, srv, tmp_path, monkeypatch):
+    mark = counting_launcher(tmp_path, monkeypatch)
+    real = store.append_event
+
+    def flaky(project, kind, **kw):
+        if kind == "tick-requested":
+            raise OSError("disk")
+        return real(project, kind, **kw)
+
+    monkeypatch.setattr(store, "append_event", flaky)
+    s, _, b = post(srv, "/act/tick", {}, headers={"Accept": "application/json"})
+    assert s == 200 and "could not be recorded" in json.loads(b)["message"]
+    s, _, b = post(srv, "/act/tick", {})
+    assert (s, b) == (409, b"A tick was just started.")
+    assert spawned(mark) == 1
+
+
+def test_overlapping_tick_posts_spawn_once(proj, dash, srv, tmp_path, monkeypatch):
+    mark = counting_launcher(tmp_path, monkeypatch)
+    results = []
+    gate = threading.Barrier(2)
+
+    def go():
+        gate.wait()
+        results.append(post(srv, "/act/tick", {})[0])
+
+    threads = [threading.Thread(target=go) for _ in range(2)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert sorted(results) in ([303, 409], [200, 409])
+    assert spawned(mark) == 1
+
+
+def test_get_routes_write_nothing(proj, dash, srv, home, monkeypatch):
+    def listing():
+        return sorted(
+            (str(p.relative_to(home)), p.stat().st_mtime_ns) for p in home.rglob("*")
+        )
+
+    gets = [path for (method, path) in server.ROUTES if method == "GET"]
+    assert {"/", "/fragment", "/api/state"} <= set(gets)
+    for lock_present in (False, True):
+        lock = home / "p" / "tick.lock"
+        if lock_present:
+            lock.write_text("")
+        else:
+            lock.unlink(missing_ok=True)
+        before = listing()
+        srv.cache._value = None
+        for path in gets:
+            for method in ("GET", "HEAD"):
+                assert call(srv, path, method)[0] == 200, path
+        assert listing() == before
+
+
+def test_post_success_json_and_redirect(proj, dash, srv):
+    s, h, b = post(srv, "/act/pause", {})
+    assert s == 303 and h["Location"] == "/" and b == b""
+    s, h, b = post(srv, "/act/resume", {}, headers={"Accept": "application/json"})
+    assert s == 200 and h["Content-Type"].startswith("application/json")
+    assert json.loads(b) == {"ok": True, "message": "Loop resumed."}
+    for name in ("Content-Security-Policy", "X-Content-Type-Options", "Cache-Control"):
+        assert name in h
+
+
+def test_post_log_has_no_values(proj, dash, srv):
+    f = answer_fields(proj, choice="other: hunter2 secret")
+    post(srv, "/act/answer", f)
+    post(srv, "/act/pause", {})
+    post(srv, "/act/resume", {"t": "wrong-token-value"})
+    log = srv.log_text.getvalue()
+    assert "POST /act/answer" in log and "answer ok" in log and "pause ok" in log
+    for needle in ("hunter2", "wrong-token-value", ANSWER_KEY, f["version"], srv.token):
+        assert needle not in log
+
+
+def test_a_failing_handler_is_a_fixed_500(proj, dash, srv, monkeypatch):
+    def boom(*a, **kw):
+        raise RuntimeError("secret detail /etc/shadow")
+
+    monkeypatch.setattr(store, "set_paused", boom)
+    s, _, b = post(srv, "/act/pause", {})
+    assert (s, b) == (500, b"Something went wrong. Reload to see what was saved.")
+    log = srv.log_text.getvalue()
+    assert "RuntimeError" in log and "secret" not in log and "/etc" not in log
+
+
+def test_post_to_a_get_path_and_unknown_paths(srv):
+    assert post(srv, "/api/state", {})[0] == 405
+    assert post(srv, "/nope", {})[0] == 404
+    assert call(srv, "/act/pause")[0] == 405  # GET of a POST-only path
+
+
+def test_short_body_at_eof_is_refused(proj, dash, srv, monkeypatch):
+    import socket
+
+    calls = Calls(monkeypatch)
+    port = srv.server_address[1]
+    body = urllib.parse.urlencode({"t": srv.token}).encode()
+    request = (
+        f"POST /act/pause HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+        f"Origin: http://127.0.0.1:{port}\r\nContent-Length: 500\r\n\r\n"
+    ).encode() + body
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as s:
+        s.sendall(request)
+        s.shutdown(socket.SHUT_WR)
+        reply = b""
+        while chunk := s.recv(4096):
+            reply += chunk
+    assert reply.startswith(b"HTTP/1.1 400") and reply.endswith(b"Bad request.")
+    assert calls.calls == []
