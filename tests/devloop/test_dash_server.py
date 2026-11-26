@@ -140,12 +140,12 @@ def test_log_has_method_path_and_status_only(srv):
 def _plant(proj, dash):
     planted = "password hunter2 https://user:pw@host/x /etc/passwd ghp_PLANTEDSECRET1"
     # Purpose, next action and problem text are shown to the owner (scrubbed), so they
-    # carry only secret-shaped text. Words such as "hunter2" stay in fields no page reads.
+    # carry only secret-shaped text. Words such as "hunter2" stay in fields no page reads (waiting_on is read now).
     shaped = "https://user:pw@host/x /etc/passwd ghp_PLANTEDSECRET1"
     for key in dash.values():
         try:
             slices.set_fields(
-                proj, key, purpose=shaped, next_action=shaped, waiting_on=planted
+                proj, key, purpose=shaped, next_action=shaped, waiting_on=shaped
             )
         except slices.SliceError:
             pass

@@ -40,7 +40,7 @@ def test_empty_project_shows_empty_states(proj):
         "Nothing needs you right now.",
         "No slices in progress.",
         "Nothing has shipped yet.",
-        "Nothing is parked or held.",
+        "Nothing is waiting on other work.",
         "No known problems.",
         "Memory is not readable here.",
     ):

@@ -266,31 +266,39 @@ def shipped(v, now) -> str:
     return r._section("shipped", "Recently shipped", body)
 
 
-# --- parked and held -----------------------------------------------------------------
+# --- waiting on other work -----------------------------------------------------------
+
+
+def _waiting_for(c):
+    if c["released"]:
+        return "Released by you, resumes on the next tick"
+    text = e(c["waiting_text"] or "Not stated")
+    if c["waiting_key"]:
+        return (
+            f'<button type="button" class="link" data-open-kind="slice" '
+            f'data-open-key="{e(c["waiting_key"])}">{text}</button>'
+        )
+    return text
 
 
 def parked(v, now) -> str:
-    titles = {}
-    for row in v["rows"]:
-        titles[row["row"]] = row["title"]
+    """Slices waiting on something other than the owner. Owner holds live in Needs you."""
+    titles = {row["row"]: row["title"] for row in v["rows"]}
     rows = []
     for c in v["parked"]:
-        title = titles.get(c["row"])
-        who = "you" if c["wait"] == "owner" else "the loop"
+        if c["hold"]:
+            continue
         rows.append(
             "<tr>"
-            + r._cell("Slice", _work_name(c["row"], c["slice"], title, c["key"]))
-            + r._cell("State", r._chip("warn", "⏸", "Held"))
-            + r._cell("Was in", e(words.stage(c["phase"], c["round"])))
-            + r._cell("Waiting on", e(who))
+            + r._cell("Row", e(titles.get(c["row"]) or c["row"]))
+            + r._cell("Slice", f"<strong>{e(c['slice'])}</strong>")
+            + r._cell("Waiting for", _waiting_for(c))
             + r._cell("Since", r._span(c["since"], now))
             + "</tr>"
         )
     body = (
-        r._table(
-            "tbl parked", ("Slice", "State", "Was in", "Waiting on", "Since"), rows
-        )
+        r._table("tbl parked", ("Row", "Slice", "Waiting for", "Since"), rows)
         if rows
-        else '<p class="empty">Nothing is parked or held.</p>'
+        else '<p class="empty">Nothing is waiting on other work.</p>'
     )
-    return r._details("parked", "Parked and held", len(rows), body)
+    return r._details("parked", "Waiting on other work", len(rows), body)

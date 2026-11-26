@@ -56,6 +56,10 @@ _CARD = {
     "phase": "word",
     "phase_index": "int",
     "held": "bool",
+    "hold": "bool",
+    "released": "bool",
+    "waiting_text": "line?",
+    "waiting_key": "id?",
     "risk": "word?",
     "pr": "int?",
     "url": "url?",
@@ -582,6 +586,8 @@ def _wait(ctx, s, stuck):
     pool = on[: -len(" slot")] if on.endswith(" slot") else None
     if s["key"] in ctx.executing_by_key:
         return None, None
+    if is_qa_wait(s):
+        return "slot", projmod.pool_label(ctx.cfg, "tester")
     if _is_hold(s) or on.startswith("question "):
         return "owner", None
     if pool in projmod.SLOTS:
@@ -591,9 +597,30 @@ def _wait(ctx, s, stuck):
     return ("stuck" if stuck else "loop"), None
 
 
+def is_qa_wait(s) -> bool:
+    """A parked slice that only waits for a tester (QA) slot: still work in progress."""
+    return s["phase"] == "PARKED" and "tester slot" in (s["waiting_on"] or "")
+
+
+def _waiting_key(ctx, s, text):
+    """The open slice a waiting-on text names, as `ROW--SLICE` or `ROW SLICE`."""
+    best = None
+    for o in ctx.slices:
+        if o["key"] == s["key"] or not (o["phase"] in slices.ACTIVE or is_qa_wait(o)):
+            continue
+        spaced = o["key"].replace("--", " ")
+        if (o["key"] in text or spaced in text) and (
+            best is None or len(o["key"]) > len(best)
+        ):
+            best = o["key"]
+    return best
+
+
 def _card(ctx, s):
-    held = s["phase"] in ("HELD", "PARKED")
-    phase = (s["parked_from"] or "FRAME") if held else s["phase"]
+    held = s["phase"] in ("HELD", "PARKED") and not is_qa_wait(s)
+    parked = s["phase"] in ("HELD", "PARKED")
+    phase = (s["parked_from"] or "FRAME") if parked else s["phase"]
+    waiting = (s["waiting_on"] or "") if parked else ""
     executing = s["key"] in ctx.executing_by_key
     stuck = (
         not held
@@ -609,6 +636,14 @@ def _card(ctx, s):
         "phase": phase,
         "phase_index": CHIPS.index(phase),
         "held": held,
+        "hold": _is_hold(s),
+        "released": s["phase"] == "PARKED"
+        and s["park_reason"] in slices.OWNER_PARKS
+        and bool(s.get("owner_answered")),
+        "waiting_text": _plain_line(waiting or s["park_reason"], 160)
+        if parked
+        else None,
+        "waiting_key": _waiting_key(ctx, s, waiting) if waiting else None,
         "risk": s["risk"],
         "pr": s["pr"],
         "url": None
@@ -636,7 +671,7 @@ def _by_age(card):
 
 
 def _rows(ctx):
-    live = [s for s in ctx.slices if s["phase"] in slices.ACTIVE]
+    live = [s for s in ctx.slices if s["phase"] in slices.ACTIVE or is_qa_wait(s)]
     total, done = {}, {}
     for s in ctx.slices:
         total[s["row"]] = total.get(s["row"], 0) + 1
@@ -666,7 +701,11 @@ def _rows(ctx):
 
 
 def _parked(ctx):
-    cards = [_card(ctx, s) for s in ctx.slices if s["phase"] in ("HELD", "PARKED")]
+    cards = [
+        _card(ctx, s)
+        for s in ctx.slices
+        if s["phase"] in ("HELD", "PARKED") and not is_qa_wait(s)
+    ]
     return sorted(cards, key=_by_age)
 
 
