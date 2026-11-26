@@ -9,7 +9,6 @@ import os
 import subprocess
 
 TIMEOUT_S = 120
-WRITER_KINDS = ("builder", "codex-builder")
 
 
 def _git(worktree, *args):

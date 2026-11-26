@@ -15,7 +15,7 @@ from pathlib import Path
 
 from . import githooks
 from . import project as projmod
-from . import push, runs, store
+from . import push, runs, slices, store
 from .caps import TAIL_CHARS, detect_cap, detect_cap_text
 
 VERDICT = re.compile(r"VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
@@ -337,7 +337,7 @@ def finish(project, rd, req, code, reason):
                 "no-verdict"  # a clean exit that named no verdict: retry, not a failure
             )
         _write_result(rd, req, code, reason)
-        if reason == "exit" and code == 0 and req["kind"] in push.WRITER_KINDS:
+        if reason == "exit" and code == 0 and req["kind"] in slices.WRITER_KINDS:
             _push_writer(rd, req)
         if req["kind"] == "codex-fix":
             write_repair(rd, req)

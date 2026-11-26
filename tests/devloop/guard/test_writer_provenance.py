@@ -227,3 +227,24 @@ def test_senior_seat_skips_a_dennis_kind_reviewer_that_cannot_run_dennis(
     cfg = projmod.load_project(proj)
     assert evidence.senior_slot(proj, cfg, s) == "dennis"
     assert go(proj, brief, "dennis", key, reviewer="dennis")
+
+
+# --- one registry of writer kinds ------------------------------------------------
+
+
+def test_push_confirmation_and_provenance_read_one_writer_registry(
+    proj, tmp_path, monkeypatch
+):
+    from devloop import push, wrap
+    from test_wrap import mk
+
+    assert not hasattr(push, "WRITER_KINDS")
+    assert all(runs.KINDS[k].writes_worktree for k in slices.WRITER_KINDS)
+    pushed = []
+    monkeypatch.setattr(
+        wrap, "_push_writer", lambda rd, req: pushed.append(req["kind"])
+    )
+    monkeypatch.setattr(slices, "WRITER_KINDS", ("duty",))
+    mk(proj, tmp_path, ["true"], kind="duty", reader="exit")
+    wrap.run(proj, "r1")
+    assert pushed == ["duty"]
