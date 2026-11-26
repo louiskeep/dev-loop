@@ -49,8 +49,9 @@ you wait on instead of a shorter wake-up.
    central mechanism, a missing changelog entry or sentry, size against the plan.
 4. REVIEW: R1 takes the runner's Codex GO on the exact head. R2 also takes Dennis on the
    exact head, run by the orchestrator. A docs-only slice skips the test step and goes to
-   review. The project's test command decides what counts as docs-only (in Decoy,
-   `decoy-test` skips only a diff of `.md` and `.rst` files). Do not use a wider rule.
+   review. The project's test command decides what counts as docs-only (the README's project
+   values table names it; it should skip only a diff of `.md` and `.rst` files). Do not
+   use a wider rule.
 5. REMEDIATE: send the findings back to a slice runner with the same brief header. The
    runner fixes, runs T0, merges the base branch, does a Codex delta review, runs the near
    tests and pushes, in one session. Codex GO and green near tests must both be on the

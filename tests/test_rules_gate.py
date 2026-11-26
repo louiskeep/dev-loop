@@ -5,7 +5,9 @@ import pytest
 
 from hooks import rules_gate as rg
 
+# The transcripts read this path; it need not exist, so name it as a rules dir.
 RULES = "/home/cam/dev-rules"
+CFG = {"rules_dirs": [RULES]}
 
 
 @pytest.fixture
@@ -56,7 +58,7 @@ def test_classify_plan_code_and_ungated(repo):
 
 def test_code_write_denied_until_rules_read(repo, tmp_path):
     t = _transcript(tmp_path, [f"{RULES}/README.md"])
-    out = rg.pre_tool_use(_event(repo / "src/a.py", t), {})
+    out = rg.pre_tool_use(_event(repo / "src/a.py", t), CFG)
     decision = out["hookSpecificOutput"]
     assert decision["permissionDecision"] == "deny"
     assert "00-universal.md" in decision["permissionDecisionReason"]
@@ -71,16 +73,16 @@ def test_code_write_denied_until_rules_read(repo, tmp_path):
 
 def test_allowed_once_all_rules_read_and_marker_skips_rescan(repo, tmp_path):
     t = _transcript(tmp_path, _all_rules())
-    assert rg.pre_tool_use(_event(repo / "src/a.py", t), {}) is None
+    assert rg.pre_tool_use(_event(repo / "src/a.py", t), CFG) is None
     # Second call in the same session passes on the marker, even with an empty transcript.
     empty = _transcript(tmp_path, [], name="empty.jsonl")
-    assert rg.pre_tool_use(_event(repo / "src/b.py", empty), {}) is None
+    assert rg.pre_tool_use(_event(repo / "src/b.py", empty), CFG) is None
 
 
 def test_plugin_rules_snapshot_counts_as_read(repo, tmp_path):
     plugin_rules = str(rg.ls._plugin_root() / "rules")
     t = _transcript(tmp_path, [f"{plugin_rules}/{n}" for n in rg.REQUIRED_RULES])
-    assert rg.pre_tool_use(_event(repo / "docs/plans/p.md", t), {}) is None
+    assert rg.pre_tool_use(_event(repo / "docs/plans/p.md", t), CFG) is None
 
 
 def test_rules_read_via_shell_command_counts(repo, tmp_path):
@@ -88,12 +90,12 @@ def test_rules_read_via_shell_command_counts(repo, tmp_path):
     item = {"type": "tool_use", "name": "Bash", "input": {"command": cmd}}
     t = tmp_path / "bash.jsonl"
     t.write_text(json.dumps({"message": {"content": [item]}}) + "\n")
-    assert rg.pre_tool_use(_event(repo / "src/a.py", t), {}) is None
+    assert rg.pre_tool_use(_event(repo / "src/a.py", t), CFG) is None
 
 
 def test_a_file_with_the_same_name_elsewhere_does_not_count(repo, tmp_path):
     t = _transcript(tmp_path, [f"/somewhere/else/{n}" for n in rg.REQUIRED_RULES])
-    out = rg.pre_tool_use(_event(repo / "src/a.py", t), {})
+    out = rg.pre_tool_use(_event(repo / "src/a.py", t), CFG)
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
@@ -101,7 +103,7 @@ def test_mentioning_rules_in_prose_does_not_count(repo, tmp_path):
     t = tmp_path / "prose.jsonl"
     text = {"type": "text", "text": " ".join(_all_rules())}
     t.write_text(json.dumps({"message": {"content": [text]}}) + "\n")
-    out = rg.pre_tool_use(_event(repo / "src/a.py", t), {})
+    out = rg.pre_tool_use(_event(repo / "src/a.py", t), CFG)
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
@@ -111,7 +113,7 @@ def test_subagent_must_read_rules_in_its_own_transcript(repo, tmp_path):
     ev = _event(
         repo / "src/a.py", main_t, agent_id="a1", agent_transcript_path=str(agent_t)
     )
-    out = rg.pre_tool_use(ev, {})
+    out = rg.pre_tool_use(ev, CFG)
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
@@ -129,27 +131,29 @@ def test_subagent_transcript_found_from_agent_id_when_path_missing(repo, tmp_pat
     # subagent's own reads must still count.
     main_t = _subagent_layout(tmp_path, [], _all_rules())
     ev = _event(repo / "src/a.py", main_t, agent_id="a1")
-    assert rg.pre_tool_use(ev, {}) is None
+    assert rg.pre_tool_use(ev, CFG) is None
 
 
 def test_subagent_reads_from_parent_do_not_count_via_agent_id(repo, tmp_path):
     main_t = _subagent_layout(tmp_path, _all_rules(), [])
     ev = _event(repo / "src/a.py", main_t, agent_id="a1")
-    out = rg.pre_tool_use(ev, {})
+    out = rg.pre_tool_use(ev, CFG)
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 def test_warn_mode_adds_context_instead_of_denying(repo, tmp_path):
     t = _transcript(tmp_path, [])
-    out = rg.pre_tool_use(_event(repo / "src/a.py", t), {"rules_gate_mode": "warn"})
+    out = rg.pre_tool_use(
+        _event(repo / "src/a.py", t), {**CFG, "rules_gate_mode": "warn"}
+    )
     assert "permissionDecision" not in out["hookSpecificOutput"]
     assert "rules_gate" in out["hookSpecificOutput"]["additionalContext"]
 
 
 def test_ungated_files_pass_without_reading(repo, tmp_path):
     t = _transcript(tmp_path, [])
-    assert rg.pre_tool_use(_event(repo / "notes.md", t), {}) is None
-    assert rg.pre_tool_use(_event(tmp_path / "outside.py", t), {}) is None
+    assert rg.pre_tool_use(_event(repo / "notes.md", t), CFG) is None
+    assert rg.pre_tool_use(_event(tmp_path / "outside.py", t), CFG) is None
 
 
 def test_plan_without_rules_line_is_blocked_after_write(repo):
@@ -227,7 +231,7 @@ def test_classify_handoff(repo):
 
 def test_handoff_write_needs_no_rules_read(repo, tmp_path):
     t = _transcript(tmp_path, [])
-    assert rg.pre_tool_use(_event(repo / "docs/handoffs/h.md", t), {}) is None
+    assert rg.pre_tool_use(_event(repo / "docs/handoffs/h.md", t), CFG) is None
 
 
 def test_plan_lint_warn_returns_advice_with_problem_lines(repo, tmp_path):
