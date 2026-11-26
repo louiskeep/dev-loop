@@ -152,3 +152,13 @@ def test_a_slice_with_a_free_slot_and_no_move_is_stuck(proj, monkeypatch):
     monkeypatch.setattr(view.runs, "slot_usage", lambda project: {"tester": 1})
     cards = {c["key"]: c for r in build(proj)["rows"] for c in r["cards"]}
     assert cards[k]["stuck"] is True and cards[k]["wait"] == "stuck"
+
+
+def test_a_slice_whose_test_just_ran_is_not_stuck(proj, monkeypatch):
+    from dash_fixture import ago, put_run
+
+    k = _old_verify(proj)
+    put_run(proj, "test.recent", kind="test", key=k, started=ago(minutes=40), exit_=1)
+    monkeypatch.setattr(view.runs, "slot_usage", lambda project: {"tester": 1})
+    cards = {c["key"]: c for r in build(proj)["rows"] for c in r["cards"]}
+    assert cards[k]["stuck"] is False

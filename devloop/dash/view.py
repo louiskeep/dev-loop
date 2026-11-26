@@ -549,6 +549,16 @@ class _Ctx:
         return out
 
 
+def _last_activity(ctx, s):
+    """The later of the slice's last move and its newest run's start: a slice whose
+    test ran for an hour and just finished has not been idle for that hour."""
+    times = [s["last_moved_at"]] + [
+        r["started_at"] for r in ctx.history.get(s["key"], [])
+    ]
+    parsed = [(_when(t), t) for t in times if t and _when(t)]
+    return max(parsed)[1] if parsed else s["last_moved_at"]
+
+
 def _owner_of(ctx, s, held):
     role = ctx.executing_by_key.get(s["key"])
     if role:
@@ -672,7 +682,7 @@ def _card(ctx, s):
         not held
         and not executing
         and s["phase"] in slices.ACTIVE
-        and _age(s["last_moved_at"], ctx.now) > snapshot.STALE_SECS
+        and _age(_last_activity(ctx, s), ctx.now) > snapshot.STALE_SECS
     )
     wait, wait_for = _wait(ctx, s, stuck)
     if wait == "slot":

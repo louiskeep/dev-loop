@@ -8,7 +8,7 @@ import os
 import pytest
 from dash_fixture import AGENT_NAMES, ago, dash, put_run, put_slice  # noqa: F401
 
-from devloop import notes, slices, store
+from devloop import notes, runs, slices, store
 from devloop.dash import render, view
 
 PLANTED = ("password hunter2", "user:pw@host", "/etc/shadow", "ghp_PLANTEDSECRET1")
@@ -189,6 +189,9 @@ def test_stuck_shows_while_a_finished_run_awaits_apply(proj, dash):
     s = slices.load(proj, dash["develop"])
     s["last_moved_at"] = ago(hours=4)
     slices._save(proj, s)
+    for rd, req in runs.iter_runs(proj):  # its run also started long ago
+        if req.get("key") == dash["develop"]:
+            store.write_json(rd / "request.json", {**req, "started_at": ago(hours=4)})
     assert card(build(proj), dash["develop"])["stuck"] is True
 
 
