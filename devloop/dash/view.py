@@ -64,6 +64,7 @@ _CARD = {
     "owner": "label",
     "stuck": "bool",
     "purpose": "line?",
+    "slice_desc": "line?",
     "next_action": "line?",
     "wait": "wait?",
     "wait_for": "label?",
@@ -179,6 +180,7 @@ VIEW_SCHEMA = {
         {
             "row": "id",
             "title": "owner_text?",
+            "desc": "line?",
             "done": "int",
             "total": "int",
             "oldest_at": "at?",
@@ -464,10 +466,27 @@ class _Ctx:
             r["key"] for r in self.runs if r["state"] == "awaiting-apply"
         }
         self.titles = _try(lambda: roadmap.titles(cfg), self.bad, "roadmap-titles", {})
+        self.descs = _try(
+            lambda: roadmap.descriptions(cfg), self.bad, "roadmap-titles", {}
+        )
 
     def title_of(self, row):
         """The plain name of a roadmap row, or None; one shared owner-text rule."""
         return _owner_text(self.titles.get(row), roadmap.TITLE_LIMIT + 4)
+
+    def desc_of(self, row):
+        """What a roadmap row is and why, scrubbed like every loop-written line."""
+        return live.view_line(self.descs.get(row), roadmap.DESC_LIMIT + 3)
+
+    def slice_desc(self, s):
+        """The slice plan's goal and why; else the slice's own purpose line."""
+        try:
+            text = roadmap.plan_summary(slices._plan_file(s))
+        except OSError:  # a plan that cannot be read just falls back to the purpose
+            text = None
+        return live.view_line(text, roadmap.SLICE_DESC_LIMIT + 3) or _plain_line(
+            s["purpose"], roadmap.SLICE_DESC_LIMIT
+        )
 
     iso = staticmethod(_iso)
     when = staticmethod(_when)
@@ -604,6 +623,7 @@ def _card(ctx, s):
         "owner": _owner_of(ctx, s, held),
         "stuck": stuck,
         "purpose": _plain_line(s["purpose"], 160),
+        "slice_desc": ctx.slice_desc(s),
         "next_action": _plain_line(s["next_action"], 220),
         "wait": wait,
         "wait_for": wait_for,
@@ -631,6 +651,7 @@ def _rows(ctx):
             {
                 "row": row,
                 "title": ctx.title_of(row),
+                "desc": ctx.desc_of(row),
                 "done": done[row],
                 "total": total[row],
                 "oldest_at": min(

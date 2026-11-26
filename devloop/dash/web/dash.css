@@ -221,8 +221,12 @@ svg.bar .floor { stroke: var(--floor); stroke-width: 1.5; vector-effect: non-sca
 .drawer-bar h2 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 #drawer-body { overflow-y: auto; padding: 0.7rem 0.9rem; flex: 1; }
 body.drawer-open main { margin-right: 420px; }
-.d-row { margin: 0; }
-.d-slice { margin: 0.1rem 0 0.4rem; font-size: 1.05rem; }
+.d-row { margin: 0 0 0.3rem; font-size: 1.05rem; }
+.d-slice { margin: 0.9rem 0 0.3rem; font-size: 1.05rem; }
+.d-desc { margin: 0 0 0.4rem; line-height: 1.45; overflow-wrap: anywhere; }
+.history { gap: 0; }
+.history li { padding: 0.5rem 0; line-height: 1.4; overflow-wrap: anywhere; }
+.history li + li { border-top: 1px solid var(--border); }
 .d-meta { display: flex; flex-wrap: wrap; gap: 0.3rem 0.7rem; align-items: center; margin: 0 0 0.5rem; }
 .d-next { margin: 0 0 0.4rem; }
 .qforms { display: grid; gap: 0.5rem; margin: 0.6rem 0; }

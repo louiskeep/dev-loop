@@ -203,7 +203,7 @@ def history_line(x) -> str:
 def _history(d) -> str:
     items = "".join(f"<li>{e(history_line(x))}</li>" for x in d["runs"])
     return (
-        f'<ul class="list">{items}</ul>'
+        f'<ul class="list history">{items}</ul>'
         if items
         else '<p class="empty">No agent has worked on this slice yet.</p>'
     )
@@ -214,13 +214,14 @@ def slice_heading(c) -> str:
     return f"Slice {c['slice']}"
 
 
+def _blurb(text) -> str:
+    return f'<p class="d-desc">{e(text)}</p>' if text else ""
+
+
 def _drawer(d, cards, now) -> str:
     c = cards.get(d["key"])
     if c is None:
         return ""
-    purpose = (
-        f'<span class="muted">: {e(c["purpose"])}</span>' if r.has_purpose(c) else ""
-    )
     pr = ""
     if c["url"]:
         pr = (
@@ -246,8 +247,10 @@ def _drawer(d, cards, now) -> str:
     )
     return (
         f'<div id="ds-{e(d["key"])}" data-title="{e(slice_heading(c))}">'
-        f'<p class="d-row muted">{e(c["title"] or c["row"])}</p>'
-        f'<h3 class="d-slice">{e(c["slice"])}{purpose}</h3>'
+        f'<h3 class="d-row">Row: {e(c["title"] or c["row"])}</h3>'
+        f"{_blurb(c['desc'])}"
+        f'<h3 class="d-slice">Slice: {e(c["slice"])}</h3>'
+        f"{_blurb(c['slice_desc'])}"
         f'<p class="d-meta">{meta}</p>{nxt}'
         "<h3>Before it can move on</h3>"
         '<p class="muted">What this step needs before the slice moves to the next stage.</p>'
@@ -259,6 +262,6 @@ def drawer_sources(v, now) -> str:
     cards = {}
     for row in v["rows"]:
         for c in row["cards"]:
-            cards[c["key"]] = {**c, "title": row["title"]}
+            cards[c["key"]] = {**c, "title": row["title"], "desc": row["desc"]}
     body = "".join(_drawer(d, cards, now) for d in v["drawers"])
     return f'<section id="sources" data-section="sources" hidden>{body}</section>'

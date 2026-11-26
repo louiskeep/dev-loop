@@ -11,6 +11,9 @@ from pathlib import Path
 
 MAX_BYTES = 1_000_000
 TITLE_LIMIT = 80
+DESC_LIMIT = 400
+DESC_SENTENCES = 3
+SLICE_DESC_LIMIT = 300
 SHIPPED_SHOWN = 10
 BULLET_LIMIT = 300
 BULLETS_PER_ENTRY = 40
@@ -75,6 +78,39 @@ def _rows(text):
         yield cells
 
 
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+_CODE_PREFIX = re.compile(r"^[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+:?\s+")
+
+
+def describe(text, limit) -> str:
+    """The first sentences of `text` that fit `limit`, cut at a word if one is too long."""
+    text = " ".join(text.split())
+    out = ""
+    for s in _SENTENCE_END.split(text)[:DESC_SENTENCES]:
+        joined = f"{out} {s}" if out else s
+        if len(joined) > limit:
+            break
+        out = joined
+    if out:
+        return out
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:") + "..."
+
+
+def _entries(text):
+    """(keys, item cell) for each roadmap table row that has a usable key."""
+    for cells in _rows(text):
+        key, item = _clean(cells[0]), cells[1]
+        if key in ("#", "Item", "Group") or _KEY.fullmatch(key) is None:
+            continue
+        keys = [key]
+        first = _clean(item).split(" ", 1)[0].rstrip(":,")
+        if _CODENAME.fullmatch(first):
+            keys.append(first)
+        yield keys, item
+
+
 def parse_titles(text) -> dict:
     """Row key to plain name, from the roadmap's group tables.
 
@@ -83,31 +119,111 @@ def parse_titles(text) -> dict:
     item text.
     """
     out = {}
-    for cells in _rows(text):
-        key, item = _clean(cells[0]), cells[1]
-        if key in ("#", "Item", "Group") or _KEY.fullmatch(key) is None:
-            continue
+    for keys, item in _entries(text):
         title = _title(item)
-        if not title:
-            continue
-        out.setdefault(key, title)
-        first = _clean(item).split(" ", 1)[0].rstrip(":,")
-        if _CODENAME.fullmatch(first):
-            out.setdefault(first, title)
+        if title:
+            for k in keys:
+                out.setdefault(k, title)
     return out
 
 
-def titles(cfg) -> dict:
-    """Row names for a project: the roadmap file plus its `roadmap/groups/*.md` tables."""
+def parse_descriptions(text) -> dict:
+    """Row key to what the row is and why, from the same tables as `parse_titles`."""
+    out = {}
+    for keys, item in _entries(text):
+        desc = describe(_CODE_PREFIX.sub("", _clean(item)), DESC_LIMIT)
+        if desc:
+            for k in keys:
+                out.setdefault(k, desc)
+    return out
+
+
+def _merged(cfg, parse) -> dict:
     path = Path(cfg["roadmap"]["path"])
     files = [path, *sorted((path.parent / "roadmap" / "groups").glob("*.md"))]
     out = {}
     for f in files:
         text = _read(f)
         if text:
-            for k, v in parse_titles(text).items():
+            for k, v in parse(text).items():
                 out.setdefault(k, v)
     return out
+
+
+def titles(cfg) -> dict:
+    """Row names for a project: the roadmap file plus its `roadmap/groups/*.md` tables."""
+    return _merged(cfg, parse_titles)
+
+
+def descriptions(cfg) -> dict:
+    """What each row is and why, from the same files as `titles`."""
+    return _merged(cfg, parse_descriptions)
+
+
+# --- slice plans ---------------------------------------------------------------------
+
+_GOAL = re.compile(r"^\W*(?:goal|summary)\W*:\s*(.+)$", re.I)
+_WHY = re.compile(r"^\W*(?:why|intent|motivation)\W*:\s*(.+)$", re.I)
+_HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*$")
+_FIELD = re.compile(r"^\W*[A-Za-z][A-Za-z ]{0,24}\W*:\s")
+
+
+def _paragraphs(lines):
+    """Blank-line separated paragraphs; a heading ends the one before it and is dropped."""
+    para = []
+    for line in lines:
+        if line.strip() and not _HEADING.match(line):
+            para.append(line.strip())
+        elif para:
+            yield " ".join(para)
+            para = []
+    if para:
+        yield " ".join(para)
+
+
+def _goal_and_why(text):
+    lines = text.splitlines()
+    goal = why = None
+    for line in lines:
+        g, w = _GOAL.match(line), _WHY.match(line)
+        goal = goal or (g and _clean(g.group(1)))
+        why = why or (w and _clean(w.group(1)))
+    if goal:
+        return goal, why
+    # A Goal or Summary heading: the paragraph under it.
+    for i, line in enumerate(lines):
+        h = _HEADING.match(line)
+        if h and h.group(1).strip().lower() in ("goal", "summary"):
+            para = next(_paragraphs(lines[i + 1 :]), None)
+            if para:
+                return _clean(para), why
+    # Otherwise the first plain paragraph under the title, before the next heading.
+    body = lines[1:] if lines and _HEADING.match(lines[0]) else lines
+    for i, line in enumerate(body):
+        if _HEADING.match(line):
+            body = body[:i]
+            break
+    for para in _paragraphs(body):
+        if not _FIELD.match(para) and not para.startswith(("|", "```", "- ", "* ")):
+            return _clean(para), why
+    return None, why
+
+
+def plan_summary(path, limit=SLICE_DESC_LIMIT):
+    """The goal of a slice plan (and its why when stated), capped; None when absent."""
+    if not path:
+        return None
+    text = _read(path)
+    if not text:
+        return None
+    goal, why = _goal_and_why(text)
+    if not goal:
+        return None
+    first = describe(goal, limit)
+    if why and why not in goal:
+        both = f"{first.rstrip('.')}. {describe(why, limit)}"
+        first = both if len(both) <= limit else first
+    return first
 
 
 # --- recently shipped ----------------------------------------------------------------
