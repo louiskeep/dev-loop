@@ -129,8 +129,6 @@ def top_bar(v, now, token="") -> str:
         loop = r._chip("warn", "⏸", "Paused", "the loop is paused")
     else:
         loop = r._chip("ok", "▶", "Running")
-    n = k["needs_you"]
-    need = r._chip("warn", "●", str(n)) if n else "<b>0</b>"
     goal = ""
     if k.get("goal_title"):
         left = "<b>" + r._count(k["goal_left"]) + "</b>"
@@ -142,7 +140,6 @@ def top_bar(v, now, token="") -> str:
     bar = (
         f'<span class="project">{e(v["project"])}</span>{loop}'
         + _stat("Last tick", r._time(k["last_pass_at"], now))
-        + _stat("Needs you", need)
         + goal
         + '<button type="button" class="chips" data-toggle="topdetail" '
         'aria-expanded="false" aria-controls="topdetail" '

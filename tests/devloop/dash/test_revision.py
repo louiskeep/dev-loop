@@ -226,7 +226,8 @@ def test_sources_line_says_ok_or_names_what_failed(proj, dash):
 def test_top_bar_chips_and_expand_state(proj, dash):
     page = page_of(proj)
     assert re.search(r"Developers <b>\d+/8</b>", page)
-    assert "Memory <b>" in page and "Needs you" in page
+    assert "Memory <b>" in page
+    assert '<span class="k">Needs you</span>' not in page
     assert 'data-toggle="topdetail"' in page and 'id="topdetail"' in page
     assert re.search(r'aria-expanded="false"[^>]*aria-controls="topdetail"', page)
     assert '<div id="topdetail" class="panel" hidden>' in page
