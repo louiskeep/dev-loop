@@ -346,11 +346,15 @@ Pushes and PR opens have their own two checks, for a project with a `project.jso
 repo. It runs `devloop/githooks.py`, which reads the refs git resolved and refuses a
 delete, a tag that moves, a worker's tag or base-branch push, and a force push over
 commits the clone never had. It covers only the project's GitHub remotes, so a push to a
-node mirror is not checked. `DECOY_PUSH_OVERRIDE=1` lets a person, never a loop worker,
+node mirror is not checked. `<override_env>=1` lets a person, never a loop worker,
 skip it. The `pr_gate` hook (PreToolUse on Bash, copied into the installed lib and
 registered by hand in `~/.claude/settings.json`) denies `gh pr create` unless
 `devloop-gate-pass` recorded the exact HEAD, and denies `--no-verify` in a configured
 repo. A refused push is a stop, not something to work around.
+The override variable and the receipt file name come from an optional `push_gate` block
+in `project.json`: `override_env` (default `DEVLOOP_PUSH_OVERRIDE`) and `receipt`
+(default `devloop-quality-gate`, a file in the git dir). The installer writes the
+variable name into the shim, so run `devloop-install` again after changing it.
 
 A sixth pattern is planning or coding from memory instead of the rules.
 The `rules_gate` hook (PreToolUse and PostToolUse on Edit, Write and

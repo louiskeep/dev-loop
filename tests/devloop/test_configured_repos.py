@@ -1,6 +1,7 @@
 """One reader of the project configs, and a sentry that keeps it the only one."""
 
 import json
+import subprocess
 from pathlib import Path
 
 from devloop import project
@@ -66,14 +67,33 @@ def test_the_installer_reports_an_unreadable_config_and_still_does_the_rest(
     assert "good/r: skipped: not a git repository" in lines
 
 
-def test_only_project_and_store_walk_the_state_root():
-    """A second walk of the state root is a second rule for which projects exist."""
+def test_the_installer_writes_each_projects_override_name_into_its_shim(
+    tmp_path, monkeypatch
+):
+    from devloop import install
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    state = tmp_path / "state"
+    monkeypatch.setenv("DEVLOOP_HOME", str(state))
+    (state / "p").mkdir(parents=True)
+    cfg = _cfg("p", repo)
+    cfg["push_gate"] = {"override_env": "ACME_PUSH"}
+    (state / "p" / "project.json").write_text(json.dumps(cfg))
+    lines, failed = install.install_clone_hooks()
+    assert not failed and lines == ["p/r: installed"]
+    assert "ACME_PUSH" in (repo / ".git" / "hooks" / "pre-push").read_text()
+
+
+def test_only_project_and_store_use_the_state_root():
+    """Any other use of the state root is a second rule for which projects exist."""
     offenders = []
     for path in SOURCES:
         rel = str(path.relative_to(ROOT))
         if rel in OWNERS or not path.is_file():
             continue
         text = path.read_text(encoding="utf-8")
-        if "state_root()" in text and ".iterdir()" in text:
+        if "state_root(" in text:
             offenders.append(rel)
     assert offenders == []

@@ -9,6 +9,17 @@ next commit re-arms the gate. `hooks/pr_gate.py` is the only reader of this file
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+here = Path(__file__).resolve().parent.parent
+lib = os.environ.get("DEVLOOP_LIB") or (
+    str(here)
+    if (here / "devloop" / "__init__.py").is_file()
+    else str(Path.home() / ".local" / "share" / "devloop" / "lib")
+)
+sys.path.insert(0, lib)
+
+from devloop import project  # noqa: E402
 
 
 def git(*args):
@@ -25,7 +36,10 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    final = os.path.join(git_dir, "decoy-quality-gate")
+    common = git("rev-parse", "--path-format=absolute", "--git-common-dir")
+    gate = project.push_gate_for(Path(common).parent.resolve()) if common else None
+    receipt = (gate or {}).get("receipt", project.PUSH_GATE_RECEIPT)
+    final = os.path.join(git_dir, receipt)
     tmp = f"{final}.{os.getpid()}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:

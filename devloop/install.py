@@ -72,7 +72,10 @@ def install_clone_hooks():
         if key in seen:
             continue
         seen.add(key)
-        status = githooks.install_clone_hook(key)
+        gate = project.push_gate_for(key) or {}
+        status = githooks.install_clone_hook(
+            key, gate.get("override_env", githooks.DEFAULT_OVERRIDE_ENV)
+        )
         failed = failed or status.startswith("refused")
         lines.append(f"{name}/{repo_name}: {status}")
     return lines, failed

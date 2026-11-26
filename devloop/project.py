@@ -7,7 +7,7 @@ import json
 import re
 from pathlib import Path
 
-from . import store
+from . import githooks, store
 
 TIERS = ("R0", "R1", "R2")
 SLOTS = ("builder", "tester", "reviewer", "planner")
@@ -80,6 +80,14 @@ def role_label(cfg, kind) -> str:
 
 def pool_label(cfg, slot) -> str:
     return POOL_DEFAULTS.get(slot, "Other")
+
+
+# The names of the push gate's override variable and receipt file are the project's own
+# choice (the `push_gate` block); these are the neutral defaults. The override name is
+# the one fact githooks.py also needs, so its default lives there (stdlib-only module).
+PUSH_GATE_RECEIPT = "devloop-quality-gate"
+_ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+_FILE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 
 
 class ConfigError(Exception):
@@ -316,6 +324,13 @@ def _validate(cfg: dict, project: str) -> dict:
             _fail("dash.port", "must be an integer from 1024 to 65535")
         if "host" in dash and not isinstance(dash["host"], str):
             _fail("dash.host", "must be str")
+    gate = _opt(cfg, "push_gate", dict)
+    for key, value in (gate or {}).items():
+        pattern = {"override_env": _ENV_NAME, "receipt": _FILE_NAME}.get(key)
+        if pattern is None:
+            _fail(f"push_gate.{key}", "unknown key")
+        if not isinstance(value, str) or not pattern.fullmatch(value):
+            _fail(f"push_gate.{key}", "must be a plain name")
     free = cfg.get("min_free_gb")
     if free is not None and (
         isinstance(free, bool) or not isinstance(free, (int, float))
@@ -352,6 +367,19 @@ def project_names() -> list:
     )
 
 
+def _load_all():
+    """([(name, cfg)] for each project with a project.json, names of unreadable ones)."""
+    loaded, unreadable = [], []
+    for name in project_names():
+        if not project_path(name).is_file():
+            continue
+        try:
+            loaded.append((name, load_project(name)))
+        except ConfigError:
+            unreadable.append(name)
+    return loaded, unreadable
+
+
 def configured_repos():
     """The one reader of which repos the project configs list.
 
@@ -360,18 +388,31 @@ def configured_repos():
     be loaded. The caller picks the rule for an unreadable one: the installer reports it,
     the PR gate denies.
     """
-    repos, unreadable = [], []
-    for name in project_names():
-        if not project_path(name).is_file():
-            continue
-        try:
-            cfg = load_project(name)
-        except ConfigError:
-            unreadable.append(name)
-            continue
-        for repo in cfg["repos"]:
-            repos.append((name, repo["name"], Path(repo["path"]).resolve()))
+    loaded, unreadable = _load_all()
+    repos = [
+        (name, repo["name"], Path(repo["path"]).resolve())
+        for name, cfg in loaded
+        for repo in cfg["repos"]
+    ]
     return repos, unreadable
+
+
+def push_gate(cfg) -> dict:
+    """The push gate names of one project: `override_env` and `receipt`, defaults filled."""
+    block = cfg.get("push_gate") or {}
+    return {
+        "override_env": block.get("override_env", githooks.DEFAULT_OVERRIDE_ENV),
+        "receipt": block.get("receipt", PUSH_GATE_RECEIPT),
+    }
+
+
+def push_gate_for(repo_path):
+    """The push gate names of the first project that lists `repo_path`, or None."""
+    loaded, _ = _load_all()
+    for _, cfg in loaded:
+        if any(Path(r["path"]).resolve() == repo_path for r in cfg["repos"]):
+            return push_gate(cfg)
+    return None
 
 
 def base_branches(cfg) -> str:

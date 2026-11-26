@@ -43,7 +43,7 @@ SKIP_REASON = "git hooks must run here; do not skip them"
 
 def _receipt_reason(head: str) -> str:
     return (
-        f"Decoy quality gate not satisfied for HEAD {head[:8]}. Before opening a PR: "
+        f"Quality gate not satisfied for HEAD {head[:8]}. Before opening a PR: "
         "(1) dispatch the 'dennis' agent to review this change (he runs /code-review, "
         "/security-review and /qa and returns a verdict) and resolve every BLOCKER and "
         "HIGH; (2) dispatch the 'barry' agent to sync the docs to the change; "
@@ -82,8 +82,9 @@ def _git(cwd, *args):
 
 
 def _configured(cwd):
-    """(listed, unreadable): is cwd in a repo (or a linked worktree of one) that a project
-    config lists, and are there project configs that could not be read."""
+    """(gate, unreadable): the push gate names of the project that lists cwd's repo (or
+    a linked worktree of it), or None when none does; and whether any project config
+    could not be read."""
     # The package comes from the installed lib that holds this file, not from the cwd.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from devloop import project
@@ -91,19 +92,21 @@ def _configured(cwd):
     repos, unreadable = project.configured_repos()
     common = _git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
     if not common:
-        return False, unreadable
+        return None, unreadable
     mine = Path(common).parent.resolve()
-    return any(path == mine for _, _, path in repos), unreadable
+    return (
+        project.push_gate_for(mine) if any(p == mine for _, _, p in repos) else None
+    ), unreadable
 
 
-def _receipt_ok(cwd):
+def _receipt_ok(cwd, receipt):
     """(True, "") when the receipt holds exactly HEAD, else (False, the denial text)."""
     head = _git(cwd, "rev-parse", "HEAD") or ""
     git_dir = _git(cwd, "rev-parse", "--path-format=absolute", "--git-dir")
     text = ""
     if git_dir:
         try:
-            text = (Path(git_dir) / "decoy-quality-gate").read_text(encoding="utf-8")
+            text = (Path(git_dir) / receipt).read_text(encoding="utf-8")
         except FileNotFoundError:
             pass  # no receipt yet; any other read error propagates and fails closed
     receipt = text[:-1] if text.endswith("\n") else text
@@ -128,15 +131,15 @@ def main() -> int:
     try:
         if create and _RETARGET.search(command):
             return _deny(RETARGET_REASON)
-        listed, unreadable = _configured(cwd)
-        # An unreadable config hides which repos are guarded: a create is denied (plan B2
-        # rule 5); other commands pass unless this repo is listed.
-        if create and unreadable:
+        gate, unreadable = _configured(cwd)
+        # An unreadable config hides which repos are guarded: a create or a skip word is
+        # denied everywhere (plan B2 rule 5).
+        if unreadable:
             return _deny(UNREADABLE_REASON)
-        if not listed:
+        if gate is None:
             return 0
         if create:
-            ok, reason = _receipt_ok(cwd)
+            ok, reason = _receipt_ok(cwd, gate["receipt"])
             if not ok:
                 return _deny(reason)
         if skip:

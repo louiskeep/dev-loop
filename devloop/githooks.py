@@ -9,8 +9,8 @@ removals of `--mirror` off that list; a mirror push is still refused because it 
 variables, the repo's own config left alone), and the clone shim that `devloop-install`
 writes into every configured repo for interactive sessions and their subagents.
 
-The policy covers pushes to the project's GitHub remotes only. A node mirror (vm-run,
-decoy-vm-t3) takes any push, and the URL is compared, never printed (it can carry a token).
+The policy covers pushes to the project's GitHub remotes only. A node mirror takes
+any push, and the URL is compared, never printed (it can carry a token).
 
 Standard library only: the clone shim runs this file alone with `python3 -I`.
 """
@@ -90,15 +90,27 @@ exit 0
 MARKER = "# devloop-ref-policy v1"
 # `devloop-install` points this at the installed lib, so a reinstall updates the policy
 # without rewriting the shim. A missing target refuses the push (fail closed).
-SHIM = f"""#!/bin/sh
+# The project names its own override variable (project.json `push_gate`); the installer
+# writes the resolved name into the shim, which hands it to this file in the environment.
+DEFAULT_OVERRIDE_ENV = "DEVLOOP_PUSH_OVERRIDE"
+OVERRIDE_VAR = "DEVLOOP_PUSH_OVERRIDE_VAR"
+_ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+def shim(override_env=DEFAULT_OVERRIDE_ENV) -> str:
+    """The clone shim text for a project whose override variable is `override_env`."""
+    if not _ENV_NAME.fullmatch(override_env):
+        raise ValueError("override variable name")
+    return f"""#!/bin/sh
 {MARKER}
 f="$HOME/.local/share/devloop/lib/devloop/githooks.py"
 if [ ! -f "$f" ]; then
   echo "push refused: push policy not installed; run devloop-install" >&2
   exit 1
 fi
-exec /usr/bin/env python3 -I "$f" pre-push "$@"
+{OVERRIDE_VAR}={override_env} exec /usr/bin/env python3 -I "$f" pre-push "$@"
 """
+
 
 _OID = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 _ZERO = re.compile(r"0+")
@@ -207,7 +219,9 @@ def pre_push_main(argv, text, env=None, cwd=None) -> int:
     # case is a missing argv[1]: with no URL to compare, the policy applies.
     if len(argv) > 1 and not is_protected_url(argv[1], cwd):
         return 0
-    if env.get("DECOY_PUSH_OVERRIDE") == "1" and not env.get("DEVLOOP_RUN"):
+    # No name from the shim (the worker route) means no override.
+    name = env.get(OVERRIDE_VAR)
+    if name and env.get(name) == "1" and not env.get("DEVLOOP_RUN"):
         print("push policy override", file=sys.stderr)
         return 0
     lines = text.split("\n")
@@ -219,13 +233,17 @@ def pre_push_main(argv, text, env=None, cwd=None) -> int:
     return 1 if refused else 0
 
 
-def install_clone_hook(repo) -> str:
+def install_clone_hook(repo, override_env=DEFAULT_OVERRIDE_ENV) -> str:
     """Write the clone shim to the common git dir, so every linked worktree inherits it.
 
     Returns installed, updated, unchanged, `skipped: <why>` (no repository there) or
     `refused: <why>`. A pre-push that does not
     carry this marker, or a local core.hooksPath, is the owner's and is never touched.
     """
+    try:
+        text = shim(override_env)
+    except ValueError:
+        return "refused: the override variable name is not a plain name"
     code, common = _git(
         ["rev-parse", "--path-format=absolute", "--git-common-dir"], str(repo)
     )
@@ -243,13 +261,13 @@ def install_clone_hook(repo) -> str:
             return "refused: pre-push cannot be read"
         if MARKER not in current.split("\n"):
             return "refused: a pre-push hook that is not ours exists"
-        if current == SHIM and os.access(hook, os.X_OK):
+        if current == text and os.access(hook, os.X_OK):
             return "unchanged"
         status = "updated"
     tmp = hooks / ".pre-push.devloop-new"
     try:
         hooks.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(SHIM, encoding="utf-8")
+        tmp.write_text(text, encoding="utf-8")
         tmp.chmod(0o755)
         os.replace(tmp, hook)
     except OSError:

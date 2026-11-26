@@ -590,7 +590,19 @@ mutate "a bare env feeds no pipe check" hooks/headless_merge_guard.py \
             raise' '            raise' \
   $G/test_merge_guard.py
 mutate "the PR gate allows a create when a config is unreadable" hooks/pr_gate.py \
-  '        if create and unreadable:' '        if False:' $P
+  '        if unreadable:' '        if create and False:' $P
+mutate "the PR gate allows a skip word when a config is unreadable" hooks/pr_gate.py \
+  '        if unreadable:' '        if create and unreadable:' $P
+mutate "the PR gate reads the receipt under a fixed name" hooks/pr_gate.py \
+  '(Path(git_dir) / receipt)' '(Path(git_dir) / "devloop-quality-gate")' $P
+mutate "the receipt writer ignores the project's receipt name" bin/devloop-gate-pass \
+  '(gate or {}).get("receipt", project.PUSH_GATE_RECEIPT)' 'project.PUSH_GATE_RECEIPT' $P
+mutate "the shim ignores the project's override name" $GH \
+  '{OVERRIDE_VAR}={override_env} exec' '{OVERRIDE_VAR}={DEFAULT_OVERRIDE_ENV} exec' tests/devloop/test_push_gate_config.py
+mutate "the override accepts a variable the shim did not name" $GH \
+  '    name = env.get(OVERRIDE_VAR)' '    name = env.get(OVERRIDE_VAR) or DEFAULT_OVERRIDE_ENV' tests/devloop/test_push_gate_config.py
+mutate "the push gate block accepts any receipt name" devloop/project.py \
+  'if not isinstance(value, str) or not pattern.fullmatch(value):' 'if not isinstance(value, str):' tests/devloop/test_push_gate_config.py
 mutate "configured_repos drops an unreadable config silently" devloop/project.py \
   '            unreadable.append(name)' '            pass' \
   tests/devloop/test_configured_repos.py $P

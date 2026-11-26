@@ -89,7 +89,7 @@ def allowed(r):
 
 
 def stamp(repo):
-    (repo / ".git" / "decoy-quality-gate").write_text(
+    (repo / ".git" / "devloop-quality-gate").write_text(
         _git(repo, "rev-parse", "HEAD") + "\n"
     )
 
@@ -227,6 +227,22 @@ def test_an_unreadable_project_config_denies_pr_create_everywhere(world):
     assert allowed(run_hook("git push origin feat", repo, env))
 
 
+@pytest.mark.parametrize(
+    "command", ["git push --no-verify", "git -c core.hooksPath=x push"]
+)
+def test_an_unreadable_config_denies_a_skip_word_in_any_repo(world, command):
+    """Plan B2 rule 5: the unreadable-config denial covers skip words as well as creates."""
+    repo, env, tmp = world
+    (Path(env["DEVLOOP_HOME"]) / "broken").mkdir()
+    (Path(env["DEVLOOP_HOME"]) / "broken" / "project.json").write_text("{not json")
+    other = tmp / "other"
+    other.mkdir()
+    _git(other, "init", "-q", "-b", "main")
+    for cwd in (repo, other):
+        r = run_hook(command, cwd, env)
+        assert denied(r) and "cannot be read" in r.stderr
+
+
 # ---- AT25: other repos ----
 
 
@@ -249,7 +265,7 @@ def test_a_linked_worktree_of_a_configured_repo_is_gated(world):
     repo, env, tmp = world
     _git(repo, "worktree", "add", "-q", str(tmp / "wt"), "-b", "wtb")
     assert denied(run_hook("gh pr create --fill", tmp / "wt", env))
-    (repo / ".git" / "worktrees" / "wt" / "decoy-quality-gate").write_text(
+    (repo / ".git" / "worktrees" / "wt" / "devloop-quality-gate").write_text(
         _git(tmp / "wt", "rev-parse", "HEAD") + "\n"
     )
     assert allowed(run_hook("gh pr create --fill", tmp / "wt", env))
@@ -260,7 +276,7 @@ def test_a_linked_worktree_of_a_configured_repo_is_gated(world):
 
 def test_a_receipt_that_cannot_be_read_denies(world):
     repo, env, _ = world
-    (repo / ".git" / "decoy-quality-gate").mkdir()
+    (repo / ".git" / "devloop-quality-gate").mkdir()
     assert denied(run_hook("gh pr create --fill", repo, env))
 
 
@@ -346,7 +362,7 @@ def test_receipt_round_trip_with_the_writer(world):
     repo, env, _ = world
     r = _gate_pass(repo, env)
     assert r.returncode == 0, r.stderr
-    receipt = repo / ".git" / "decoy-quality-gate"
+    receipt = repo / ".git" / "devloop-quality-gate"
     assert receipt.read_text() == _git(repo, "rev-parse", "HEAD") + "\n"
     assert not [p for p in (repo / ".git").iterdir() if "tmp" in p.name]
     assert allowed(run_hook("gh pr create --fill", repo, env))
@@ -360,8 +376,8 @@ def test_the_writer_in_a_linked_worktree_writes_that_trees_git_dir(world):
     repo, env, tmp = world
     _git(repo, "worktree", "add", "-q", str(tmp / "wt"), "-b", "wtb")
     assert _gate_pass(tmp / "wt", env).returncode == 0
-    assert (repo / ".git" / "worktrees" / "wt" / "decoy-quality-gate").is_file()
-    assert not (repo / ".git" / "decoy-quality-gate").exists()
+    assert (repo / ".git" / "worktrees" / "wt" / "devloop-quality-gate").is_file()
+    assert not (repo / ".git" / "devloop-quality-gate").exists()
 
 
 def test_the_writer_outside_a_repo_fails_and_writes_nothing(world):
@@ -380,3 +396,45 @@ def test_unrelated_commands_and_bad_events_pass(world):
     assert allowed(run_hook("ls -la", repo, env))
     assert allowed(run_hook("", repo, env, raw="not json"))
     assert allowed(run_hook("", repo, env, raw=json.dumps({"tool_name": "Read"})))
+
+
+# ---- the receipt name comes from the project config ----
+
+
+def _with_gate_block(env, repo, **block):
+    state = Path(env["DEVLOOP_HOME"])
+    cfg = json.loads((state / "p" / "project.json").read_text())
+    cfg["push_gate"] = block
+    (state / "p" / "project.json").write_text(json.dumps(cfg))
+
+
+def test_a_project_with_a_push_gate_block_uses_its_receipt_name(world):
+    repo, env, _ = world
+    _with_gate_block(env, repo, receipt="acme-gate")
+    stamp(repo)  # the default name is no receipt here
+    assert denied(run_hook("gh pr create --fill", repo, env))
+    r = _gate_pass(repo, env)
+    assert r.returncode == 0, r.stderr
+    assert (repo / ".git" / "acme-gate").read_text() == _git(
+        repo, "rev-parse", "HEAD"
+    ) + "\n"
+    assert allowed(run_hook("gh pr create --fill", repo, env))
+
+
+def test_a_project_without_the_block_uses_the_default_receipt_name(world):
+    repo, env, _ = world
+    assert _gate_pass(repo, env).returncode == 0
+    assert (repo / ".git" / "devloop-quality-gate").is_file()
+    assert allowed(run_hook("gh pr create --fill", repo, env))
+
+
+def test_the_writer_in_an_unlisted_repo_uses_the_default_name(world):
+    _, env, tmp = world
+    other = tmp / "other"
+    other.mkdir()
+    _git(other, "init", "-q", "-b", "main")
+    (other / "a").write_text("1")
+    _git(other, "add", "-A")
+    _git(other, "commit", "-qm", "c")
+    assert _gate_pass(other, env).returncode == 0
+    assert (other / ".git" / "devloop-quality-gate").is_file()

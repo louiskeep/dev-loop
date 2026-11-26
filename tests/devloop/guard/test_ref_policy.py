@@ -293,12 +293,14 @@ def test_the_owner_override_works_for_a_person_and_never_for_a_worker(
 ):
     wt, remote = guarded
     sha = _pushed_x(wt, lib_home)
-    worker = _env(lib_home, worker=True, DECOY_PUSH_OVERRIDE="1")
+    worker = _env(lib_home, worker=True, DEVLOOP_PUSH_OVERRIDE="1")
     w = push(wt, "origin", "--delete", "x", env=worker)
     assert w.returncode != 0
     assert "push policy override" not in w.stderr
     assert remote_head(remote, "x") == sha
-    r = push(wt, "origin", "--delete", "x", env=_env(lib_home, DECOY_PUSH_OVERRIDE="1"))
+    r = push(
+        wt, "origin", "--delete", "x", env=_env(lib_home, DEVLOOP_PUSH_OVERRIDE="1")
+    )
     assert r.returncode == 0, r.stderr
     assert "push policy override" in r.stderr
     assert remote_head(remote, "x") is None
