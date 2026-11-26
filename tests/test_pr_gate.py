@@ -151,6 +151,8 @@ def test_the_denial_text_names_the_steps_and_echoes_nothing_of_the_command(world
         "GIT_DIR=../x/.git gh pr create",
         "gh pr create --repo a/b",
         "GH_REPO=a/b gh pr create",
+        "gh pr create -Ra/b",
+        "git -C../x status; gh pr create",
         "git --work-tree=../x status; gh pr create",
     ],
 )
