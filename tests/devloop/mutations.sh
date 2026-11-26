@@ -513,6 +513,9 @@ mutate "a wrong-typed kind reaches the estimate lookup" devloop/runs.py \
 mutate "a null ledger reads as a failed read" devloop/dash/view.py \
   '        if raw is not unread and ok is None:' '        if raw is not None and raw is not unread and ok is None:' \
   $T/dashboard/test_ledgers.py::test_a_null_ledger_is_marked_unreadable
+mutate "a base side that touches a slice file still carries evidence" devloop/carry.py \
+  '    clash = sorted(own & incoming)' '    clash = []' \
+  $T/test_carry.py::test_main_touching_a_slice_file_does_not_carry
 
 echo
 echo "killed: $killed  survived: $survived  stale: $stale"

@@ -537,6 +537,7 @@ def set_fields(project: str, key: str, **fields) -> dict:
             worktree=fields.get("worktree") or current["worktree"],
             repo=current["repo"],
         )
+    carry = _carry_plan(project, pending, fields)
     with _edit(project, key) as s:
         if s["phase"] == "DONE":
             raise SliceError("slice is DONE")
@@ -560,7 +561,68 @@ def set_fields(project: str, key: str, **fields) -> dict:
             if fields["full_suite_required"] is not True:
                 raise SliceError("full_suite_required can only go from False to True")
         s.update(fields)
+        carried = _carry_evidence(s, carry)
+    if carried:
+        store.append_event(
+            project,
+            "evidence-carried",
+            key=key,
+            row=s["row"],
+            slice=s["slice"],
+            kinds=carried,
+            **{"from": carry["old"], "to": s["head"]},
+        )
     return s
+
+
+# Evidence that survives a main-only merge into the head: tests, the tick's own read and
+# the code reviews. Plan reviews are keyed by plan hash and never move with a head.
+CARRY_KINDS = ("t1", "selfcheck")
+
+
+def _carry_plan(project, pending, fields):
+    """Ask git once, outside the slice lock, whether a head change keeps its evidence."""
+    new = fields.get("head")
+    old = pending["head"]
+    if not new or not old or new == old or pending["phase"] == "DONE":
+        return None
+    cfg = projmod.load_project(project)
+    from . import carry, merge
+
+    repo_cfg, _rules, base = merge.repo_settings(cfg, pending["repo"])
+    path = fields.get("worktree") or pending["worktree"] or repo_cfg["path"]
+    if carry.carry_reason(path, base, old, new) is not None:
+        return None
+    return {"old": old, "new": new, "writer": evidence.head_writer(project, pending)}
+
+
+def _carry_evidence(s, carry):
+    """Copy GO evidence from the old head to the new one inside the slice lock."""
+    if not carry or s["head"] != carry["new"]:
+        return []
+    old, new = carry["old"], carry["new"]
+    src = s["evidence"].get(old) or {}
+    dst = s["evidence"].setdefault(new, {})
+    moved = []
+    for kind, e in src.items():
+        if kind not in CARRY_KINDS and not kind.startswith("code:"):
+            continue
+        if e.get("verdict") != "GO" or kind in dst:
+            continue
+        entry = {
+            **e,
+            "carried_from": e.get("carried_from") or old,
+            "note": f"carried-from {old}",
+        }
+        if "head" in entry:
+            entry["head"] = new
+        dst[kind] = entry
+        moved.append(kind)
+    if not dst:
+        del s["evidence"][new]
+    if moved and carry["writer"] in (*WRITER_KINDS, "imported"):
+        s["head_writer"] = writer_record(carry["writer"], new, s["plan_lineage"])
+    return sorted(moved)
 
 
 plan_file = _plan_file

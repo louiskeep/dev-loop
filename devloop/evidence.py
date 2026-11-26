@@ -141,7 +141,7 @@ def _test_item(project, s, level, label):
         s,
         e,
         kinds=("test",),
-        expect={"level": level, "head": s["head"]},
+        expect={"level": level, "head": e.get("carried_from") or s["head"]},
         covers_ok=(level == "full"),
     )
     if problem is None and level in ("t2", "full") and req.get("select"):
@@ -437,7 +437,11 @@ def _gate_items(project, s, cfg):
             s,
             e,
             kinds=code_reviewer_kinds(project, cfg, s, name),
-            expect={"purpose": "code", "reviewer": name, "head": s["head"]},
+            expect={
+                "purpose": "code",
+                "reviewer": name,
+                "head": e.get("carried_from") or s["head"],
+            },
         )
         if problem is None and i > 0:
             if req.get("predecessor_run") != prev_run:
