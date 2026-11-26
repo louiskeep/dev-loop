@@ -470,6 +470,9 @@ class _Ctx:
         self.apply_keys = {
             r["key"] for r in self.runs if r["state"] == "awaiting-apply"
         }
+        self.slot_used = _try(
+            lambda: runs.slot_usage(project), self.bad, "run-records", {}
+        )
         self.titles = _try(lambda: roadmap.titles(cfg), self.bad, "roadmap-titles", {})
         self.descs = _try(
             lambda: roadmap.descriptions(cfg), self.bad, "roadmap-titles", {}
@@ -609,7 +612,35 @@ def _wait(ctx, s, stuck):
         return "slot", projmod.pool_label(ctx.cfg, pool)
     if s["key"] in ctx.apply_keys:
         return "apply", None
+    full = _full_pool_for(ctx, s)
+    if full:
+        return "slot", projmod.pool_label(ctx.cfg, full)
     return ("stuck" if stuck else "loop"), None
+
+
+# The pool a slice needs next in each phase. A slice whose pool is full is queued for
+# that slot, not stuck, even when the tick did not write `waiting_on`.
+PHASE_POOL = {
+    "FRAME": "planner",
+    "PLAN": "planner",
+    "DEVELOP": "builder",
+    "REMEDIATE": "builder",
+    "SELF_CHECK": "reviewer",
+    "VERIFY": "tester",
+    "REVIEW": "reviewer",
+    "DOCUMENT": "builder",
+}
+
+
+def _full_pool_for(ctx, s):
+    phase = (s["parked_from"] or "FRAME") if s["phase"] == "PARKED" else s["phase"]
+    pool = PHASE_POOL.get(phase)
+    if pool is None:
+        return None
+    cap = (ctx.cfg.get("capacity") or {}).get(pool)
+    if cap is None or ctx.slot_used.get(pool, 0) < cap:
+        return None
+    return pool
 
 
 def is_qa_wait(s) -> bool:
@@ -644,6 +675,8 @@ def _card(ctx, s):
         and _age(s["last_moved_at"], ctx.now) > snapshot.STALE_SECS
     )
     wait, wait_for = _wait(ctx, s, stuck)
+    if wait == "slot":
+        stuck = False  # queued for a full slot: waiting its turn, not stuck
     return {
         "key": s["key"],
         "row": s["row"],

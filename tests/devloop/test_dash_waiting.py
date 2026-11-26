@@ -131,3 +131,24 @@ def test_parked_row_without_active_slice_shows_the_roadmap_title(
     )
     sec = section(render.render_page(build(proj)), "parked")
     assert "Plain row name" in sec
+
+
+def _old_verify(proj):
+    from dash_fixture import ago
+
+    return put_slice(proj, "R9", "Q", "VERIFY", last_moved_at=ago(hours=3))
+
+
+def test_a_slice_queued_for_a_full_slot_is_waiting_not_stuck(proj, monkeypatch):
+    k = _old_verify(proj)
+    monkeypatch.setattr(view.runs, "slot_usage", lambda project: {"tester": 4})
+    cards = {c["key"]: c for r in build(proj)["rows"] for c in r["cards"]}
+    assert cards[k]["stuck"] is False
+    assert (cards[k]["wait"], cards[k]["wait_for"]) == ("slot", "QA")
+
+
+def test_a_slice_with_a_free_slot_and_no_move_is_stuck(proj, monkeypatch):
+    k = _old_verify(proj)
+    monkeypatch.setattr(view.runs, "slot_usage", lambda project: {"tester": 1})
+    cards = {c["key"]: c for r in build(proj)["rows"] for c in r["cards"]}
+    assert cards[k]["stuck"] is True and cards[k]["wait"] == "stuck"
