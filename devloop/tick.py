@@ -214,8 +214,10 @@ def tick(project) -> int:
             try:
                 outcome = _pass(project)
             finally:
-                # A crashed or timed-out pass still posts, as `failed`.
-                post_tick_line(project, outcome, started)
+                # A crashed or timed-out pass still posts, as `failed`. A live loop
+                # session posts its own updates, so its sync passes stay quiet.
+                if outcome != "live":
+                    post_tick_line(project, outcome, started)
             if not (d / "tick.requested").exists():
                 break
         return 0
