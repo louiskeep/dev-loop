@@ -211,7 +211,7 @@ def _goal_and_why(text):
 
 def plan_summary(path, limit=SLICE_DESC_LIMIT):
     """The goal of a slice plan (and its why when stated), capped; None when absent."""
-    if not path:
+    if not path or not Path(path).is_file():
         return None
     text = _read(path)
     if not text:

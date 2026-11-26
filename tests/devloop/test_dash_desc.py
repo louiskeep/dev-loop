@@ -102,6 +102,7 @@ def test_plan_goal_heading_and_cap(tmp_path):
 def test_plan_missing_or_empty_gives_none(tmp_path):
     assert roadmap.plan_summary(str(tmp_path / "gone.md"), 300) is None
     assert roadmap.plan_summary(None, 300) is None
+    assert roadmap.plan_summary(str(tmp_path), 300) is None  # a directory
     assert roadmap.plan_summary(_plan(tmp_path, "# T\n\nStatus: x\n"), 300) is None
 
 
