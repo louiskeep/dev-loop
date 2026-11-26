@@ -7,8 +7,8 @@ from pathlib import Path
 
 from dash_fixture import dash  # noqa: F401
 
-from devloop import evidence, status
-from devloop.dash import render, view
+from devloop import evidence, slices, status
+from devloop.dash import render, view, words
 
 WEB = Path(view.__file__).parent / "web"
 
@@ -28,12 +28,9 @@ def test_page_renders_from_fixture_offline(proj, dash, monkeypatch):
     page = render.render_page(v)
     for sid in render.SECTION_IDS:
         assert f'id="{sid}"' in page, sid
-    assert page.count('aria-current="step"') == sum(len(r["cards"]) for r in v["rows"])
-    assert "met</summary>" in page and re.search(r"\d+/\d+ met", page)
+    assert page.count('<tr class="slice"') == sum(len(r["cards"]) for r in v["rows"])
     assert 'href="https://github.com/own/main/pull/5"' in page
-    for label in ("Developer", "Senior reviewer", "Tech lead", "Product owner (you)"):
-        assert label in page
-    assert "Developers" in page and "QA" in page
+    assert "Developers" in page and "QA" in page and "Reviewers" in page
     assert "<script>" not in page  # no inline script; the one script is a file
 
 
@@ -42,10 +39,9 @@ def test_empty_project_shows_empty_states(proj):
     for text in (
         "Nothing needs you right now.",
         "No slices in progress.",
-        "No workers running.",
         "Nothing has shipped yet.",
-        "No activity yet.",
         "Nothing is parked or held.",
+        "No known problems.",
         "Memory is not readable here.",
     ):
         assert text in page
@@ -97,10 +93,8 @@ def test_every_code_and_word_has_wording():
     assert set(evidence.CODES) <= set(render.CODE_TEXT)
     assert set(evidence.REASON_WORDS) <= set(render.REASON_TEXT)
     assert set(view.NEEDS) == set(render.NEED_TEXT)
-    assert set(view.PROBLEMS) == set(render.PROBLEM_TEXT)
-    assert set(view.RUN_STATES) == set(render.WORKER_STATE)
     assert set(view.MEMORY_STATES) == set(render.MEMORY_STATE)
-    assert set(render.PHASE_TEXT) == set(view.CHIPS)
+    assert set(words.STAGE) == set(slices.PHASES)
     assert set(status.EVENT_KINDS)  # activity wording comes from status
 
 
@@ -204,7 +198,7 @@ def test_every_page_state_is_a_chip_not_a_row_colour():
 
 def test_counts_read_naturally(proj, dash):
     page = render.render_page(built(proj))
-    assert "seen 1 time)" in page and "1 times" not in page
+    assert "1 times" not in page
 
 
 # --- mission control sections ------------------------------------------------------
@@ -216,52 +210,25 @@ def test_page_sections_in_order(proj, dash):
     assert found == list(render.SECTION_IDS)
 
 
-def test_sparkline_is_inline_svg():
-    from devloop.dash import render_live
+def test_role_icons_are_a_fixed_set():
+    from devloop.dash import live, render_live
 
-    svg = render_live.sparkline([0, 1, 4, 2] + [0] * 11)
-    assert svg.startswith("<svg") and svg.count("<polyline") == 1
-    assert 'viewBox="0 0 60 16"' in svg and 'role="img"' in svg
-    assert "Tool calls per minute, last 15 minutes" in svg
-    assert "<img" not in svg and "href" not in svg
-    assert render_live.sparkline([0] * 15).count("<polyline") == 1
-
-
-def test_worker_card_has_role_icon_not_avatar(proj, dash):
-    page = render.render_page(built(proj))
-    assert 'class="wcard"' in page and 'data-icon="build"' in page
-    assert "<img" not in page and "avatar" not in page.lower()
-    from devloop.dash import render_live
-
-    assert set(render_live.ICON_PATHS) == set(live_icons())
-
-
-def live_icons():
-    from devloop.dash import live
-
-    return live.ICON_IDS
-
-
-def test_worker_card_wording_for_missing_and_outside(proj, dash):
-    from dash_fixture import put_run
-
-    put_run(proj, "codex-fix.a", kind="codex-fix", key=dash["plan"], alive=True)
-    page = render.render_page(built(proj))
-    assert "starting" in page and "activity not shown for this worker" in page
+    assert set(render_live.ICON_PATHS) == set(live.ICON_IDS)
 
 
 def _big_view(proj):
     v = copy.deepcopy(built(proj))
     card = v["live"][0]
     v["live"] = [dict(card, ref=f"w{i:06d}", key=f"ROW1--S{i}") for i in range(16)]
-    f = v["feed"][0]
-    v["feed"] = [dict(f, tag="SHELL", target="git", words=None) for _ in range(40)]
     cards = [c for row in v["rows"] for c in row["cards"]]
     run = {
         "ref": "w000001",
         "role": "Developer",
+        "icon": "build",
         "harness": "claude",
         "started_at": v["tick"]["last_pass_at"],
+        "ended_at": v["tick"]["last_pass_at"],
+        "summary": "built the fix",
         "status": "DONE",
         "verdict": "GO",
     }
@@ -295,26 +262,21 @@ def test_no_em_dash_in_assets_and_copy(proj, dash):
 def test_drawer_sources_capped_and_fallback_hooks(proj, dash):
     from dash_fixture import put_slice
 
-    for i in range(31):
+    for i in range(61):
         put_slice(proj, "ROWX", f"S{i:02d}", "DEVELOP")
     page = render.render_page(built(proj))
-    assert len(re.findall(r'<div id="ds-', page)) == 30
+    assert len(re.findall(r'<div id="ds-', page)) == 60
     keys = re.findall(r'data-card-key="([^"]+)"', page)
     sources = set(re.findall(r'<div id="ds-([^"]+)"', page))
-    assert (
-        len(set(keys) - sources) >= 1
-    )  # a card with no source falls back to its checklist
+    assert len(set(keys) - sources) >= 1  # a row with no source says it is not active
     assert 'id="drawer"' in page and 'id="drawer-body"' in page
 
 
 def test_phone_rules_present():
     css = (WEB / "dash.css").read_text()
-    phone = css[css.index("@media (max-width: 640px)") :]
-    assert "grid-template-columns: repeat(3, minmax(0, 1fr))" in phone  # KPI 3 by 2
-    assert ".wgrid { grid-template-columns: minmax(0, 1fr)" in phone  # one column
-    assert "text-overflow: ellipsis" in phone and "minmax(0, 1fr) auto" in phone
+    phone = css[css.index("@media (max-width: 900px)") :]
+    assert "attr(data-label)" in phone  # table rows stack as labelled lines
     assert ".drawer { position: fixed; inset: 0" in phone
-    assert "@media (min-width: 1100px)" in css and "minmax(300px, 1fr)" in css
     assert "width: 420px" in css
     assert "overflow-x: hidden" not in css  # no hidden horizontal scroll to mask a bug
 

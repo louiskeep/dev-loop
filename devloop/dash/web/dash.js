@@ -25,7 +25,8 @@
     if (name) { document.documentElement.setAttribute("data-theme", name); }
   }
   applyTheme(store("dash-theme"));
-  $("theme").addEventListener("click", function () {
+  document.addEventListener("click", function (ev) {
+    if (!ev.target.closest || !ev.target.closest("#theme")) { return; }
     var cur = document.documentElement.getAttribute("data-theme");
     var dark = cur ? cur === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
     var next = dark ? "light" : "dark";
@@ -47,50 +48,25 @@
     var els = document.querySelectorAll("time[datetime]");
     for (var i = 0; i < els.length; i++) {
       var text = relative(els[i].getAttribute("datetime"));
+      if (els[i].hasAttribute("data-span")) { text = text === "just now" ? "0m" : text.replace(" ago", ""); }
       if (text && els[i].textContent !== text) { els[i].textContent = text; }
     }
   }
 
-  // Filters live in the query string so a view can be shared.
-  function readFilters() {
-    var p = new URLSearchParams(location.search);
-    $("f-q").value = p.get("q") || "";
-    $("f-risk").value = p.get("risk") || "";
-    $("f-attn").checked = p.get("attn") === "1";
+  // The top bar detail panel: open or closed, remembered per browser.
+  function applyPanel() {
+    var btn = document.querySelector("[data-toggle='topdetail']");
+    var panel = $("topdetail");
+    if (!btn || !panel) { return; }
+    var open = store("dash-topdetail") === "1";
+    panel.hidden = !open;
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
   }
-  function applyFilters() {
-    var q = $("f-q").value.trim().toLowerCase();
-    var risk = $("f-risk").value;
-    var attn = $("f-attn").checked;
-    var cards = document.querySelectorAll("[data-card]");
-    for (var i = 0; i < cards.length; i++) {
-      var c = cards[i];
-      var show = (!q || c.getAttribute("data-text").indexOf(q) >= 0) &&
-        (!risk || c.getAttribute("data-risk") === risk) &&
-        (!attn || c.getAttribute("data-attn") === "1");
-      c.hidden = !show;
-    }
-  }
-  function saveFilters() {
-    var p = new URLSearchParams();
-    if ($("f-q").value) { p.set("q", $("f-q").value); }
-    if ($("f-risk").value) { p.set("risk", $("f-risk").value); }
-    if ($("f-attn").checked) { p.set("attn", "1"); }
-    var qs = p.toString();
-    try { history.replaceState(null, "", location.pathname + (qs ? "?" + qs : "")); }
-    catch (err) { /* ignore */ }
-    applyFilters();
-  }
-  ["f-q", "f-risk", "f-attn"].forEach(function (id) {
-    $(id).addEventListener("input", saveFilters);
-    $(id).addEventListener("change", saveFilters);
-  });
-  document.addEventListener("keydown", function (ev) {
-    var tag = (ev.target && ev.target.tagName) || "";
-    if (ev.key === "/" && tag !== "INPUT" && tag !== "SELECT" && tag !== "TEXTAREA") {
-      ev.preventDefault();
-      $("f-q").focus();
-    }
+  document.addEventListener("click", function (ev) {
+    var btn = ev.target.closest ? ev.target.closest("[data-toggle='topdetail']") : null;
+    if (!btn) { return; }
+    store("dash-topdetail", $("topdetail").hidden ? "1" : "0");
+    applyPanel();
   });
 
   // Swap the body for the new fragment, keeping open details and the scroll position.
@@ -112,7 +88,7 @@
     }
     current.replaceWith(incoming);
     window.scrollTo(0, y);
-    applyFilters();
+    applyPanel();
     tickTimes();
     showControlMessage();
     fillDrawer();
@@ -136,21 +112,6 @@
     p.className = "empty";
     p.textContent = text;
     return p;
-  }
-  function cardFallback(key) {
-    var cards = document.querySelectorAll("[data-card-key]");
-    for (var i = 0; i < cards.length; i++) {
-      if (cards[i].getAttribute("data-card-key") === key) {
-        var list = cards[i].querySelector(".cl > ul");
-        var box = document.createElement("div");
-        var h = document.createElement("h3");
-        h.textContent = "Checklist";
-        box.appendChild(h);
-        box.appendChild(list ? list.cloneNode(true) : note("No checklist for this slice."));
-        return box;
-      }
-    }
-    return null;
   }
   function cloneChildren(source) {
     var parts = [];
@@ -232,10 +193,11 @@
       var source = document.getElementById("ds-" + target.key);
       body.replaceChildren.apply(
         body,
-        source ? cloneChildren(source) : [cardFallback(target.key) || note(NO_SLICE)]
+        source ? cloneChildren(source) : [note(NO_SLICE)]
       );
     }
-    $("drawer-title").textContent = target.key;
+    var holder = document.getElementById((target.kind === "q" ? "qs-" : "ds-") + target.key);
+    $("drawer-title").textContent = (holder && holder.getAttribute("data-title")) || target.key;
     body.scrollTop = keep;
     drawer.hidden = false;
     document.body.classList.add("drawer-open");
@@ -264,11 +226,18 @@
   document.addEventListener("click", function (ev) {
     var from = ev.target.closest ? ev.target : null;
     if (!from) { return; }
-    var link = from.closest("a[href^='#slice=']");
-    if (link) { lastFocus = link; return; }
+    if (from.closest("a")) { return; }
     var btn = from.closest("[data-open-kind]");
     if (btn) {
       openDrawer(btn.getAttribute("data-open-kind"), btn.getAttribute("data-open-key"));
+    }
+  });
+
+  document.addEventListener("keydown", function (ev) {
+    var row = ev.target.closest ? ev.target.closest("tr[data-open-kind]") : null;
+    if (row && ev.target === row && (ev.key === "Enter" || ev.key === " ")) {
+      ev.preventDefault();
+      openDrawer(row.getAttribute("data-open-kind"), row.getAttribute("data-open-key"));
     }
   });
 
@@ -374,8 +343,7 @@
   }
 
   function start() {
-    readFilters();
-    applyFilters();
+    applyPanel();
     tickTimes();
     fillDrawer();
     setInterval(poll, POLL_MS);

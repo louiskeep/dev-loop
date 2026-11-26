@@ -1112,7 +1112,7 @@ def test_decisions_drawer_has_actions(proj, dash):
         "its options and the background are in /x/questions.md. Read it, explain the "
         "trade-off, and recommend an option."
     )
-    assert "Answer here" in page and f'data-open-key="{ANSWER_KEY}"' in page
+    assert "Decide" in page and f'data-open-key="{ANSWER_KEY}"' in page
 
 
 def test_hold_drawer_offers_only_two_choices(proj, dash, mk_slice):

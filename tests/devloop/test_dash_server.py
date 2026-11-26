@@ -139,15 +139,19 @@ def test_log_has_method_path_and_status_only(srv):
 
 def _plant(proj, dash):
     planted = "password hunter2 https://user:pw@host/x /etc/passwd ghp_PLANTEDSECRET1"
+    # Purpose, next action and problem text are shown to the owner (scrubbed), so they
+    # carry only secret-shaped text. Words such as "hunter2" stay in fields no page reads.
+    shaped = "https://user:pw@host/x /etc/passwd ghp_PLANTEDSECRET1"
     for key in dash.values():
         try:
             slices.set_fields(
-                proj, key, purpose=planted, next_action=planted, waiting_on=planted
+                proj, key, purpose=shaped, next_action=shaped, waiting_on=planted
             )
         except slices.SliceError:
             pass
     notes.ticklog(proj, planted)
-    notes.problem(proj, "leaky", impact=planted, fix=planted, detail=planted)
+    notes.problem(proj, "leaky", impact=shaped, fix=shaped, detail=shaped)
+    notes.problem(proj, "leaky-words", impact="x", fix="y", detail="z")
     return planted
 
 
@@ -163,7 +167,6 @@ def test_routes_leak_nothing_planted(proj, dash, srv, tmp_path):
             "/etc/passwd",
             "PLANTEDSECRET",
             str(tmp_path),
-            "space is short",
         ):
             assert needle not in text, (path, needle)
         assert not [
@@ -353,7 +356,7 @@ def test_transcript_secrets_reach_no_route(proj, dash, srv):
     assert codex["model"] == "gpt-6.2-astra" and codex["tools"] == 3
     gate = next(d for d in state["drawers"] if d["key"] == dash["gate"])
     assert {"name": "view.py", "edits": 1} in gate["files"]
-    assert "SHELL" in bodies["/"] and "view.py" in bodies["/fragment"]
+    assert "SHELL" not in bodies["/"] and "view.py" not in bodies["/fragment"]
     for path, text in bodies.items():
         for value in PLANTED_TRANSCRIPT:
             assert value not in text, (path, value)

@@ -260,10 +260,10 @@ def test_drawer_files_from_claude_edit_and_write(proj, dash):
 
 
 def test_drawer_sources_capped(proj, dash):
-    for i in range(31):
+    for i in range(61):
         put_slice(proj, "ROWX", f"S{i:02d}", "DEVELOP")
     v = build(proj)
-    assert len(v["drawers"]) == live.DRAWER_SLICES == 30
+    assert len(v["drawers"]) == live.DRAWER_SLICES == 60
 
 
 def test_drawer_run_status_and_verdict_from_result_header(proj, dash):

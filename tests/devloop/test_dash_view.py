@@ -104,7 +104,8 @@ def test_one_question_and_three_problems(proj):
     assert v["counts"]["problems"] == 3 and len(v["problems"]) == 3
     page = render.render_page(v)
     assert 'id="problems"' in page and "Known problems" in page
-    assert "Tech lead" in page and "Which?" in page and "Recommended: x" in page
+    assert "Which?" in page and ">x<" in page and "Decide" in page
+    assert 'data-open-key="q1"' in page and "No fix recorded" not in page
 
 
 def test_stuck_flag_after_stale_secs(proj, dash):
@@ -331,26 +332,25 @@ def test_free_text_never_reaches_the_view(proj, dash):
         slices.set_fields(
             proj,
             key,
-            purpose=PLANTED[0],
-            next_action=PLANTED[1] + PLANTED[3],
-            waiting_on=PLANTED[2],
+            purpose=PLANTED[2],
+            next_action=PLANTED[2] + PLANTED[3],
+            waiting_on=PLANTED[0],
         )
     from devloop import notes
 
     notes.ticklog(proj, "TICKLINE " + " ".join(PLANTED))
-    notes.problem(proj, "leaky", impact=PLANTED[0], fix=PLANTED[2], detail=PLANTED[1])
+    notes.problem(proj, "leaky", impact=PLANTED[2], fix=PLANTED[3], detail=PLANTED[2])
     text = json.dumps(build(proj))
-    for planted in (
-        *PLANTED,
-        str(store.state_dir(proj)),
-        "space is short",
-    ):
+    # Purpose, next action and problem text are shown scrubbed: paths and tokens go.
+    for planted in (PLANTED[2], PLANTED[3], str(store.state_dir(proj))):
         assert planted not in text
+    # Fields no page reads stay out entirely, words included.
+    assert "password hunter2" not in text and "TICKLINE" not in text
 
 
 def test_node_status_comes_from_the_file_only(proj, dash):
-    nodes = {n["name"]: n["ok"] for n in build(proj)["nodes"]}
-    assert nodes == {"node-a": True, "node-b": False}
+    srcs = {s["label"]: s["ok"] for s in build(proj)["sources"]}
+    assert srcs == {"Node-a": True, "Node-b": False}
 
 
 def test_tick_facts(proj, dash):
@@ -536,7 +536,7 @@ def test_owner_question_shown_in_full_with_real_hint(proj, home):
     page = render.render_page(v)
     text = html.unescape(page)
     assert "hunter2" in text
-    assert "devloop-state p answer q-full <option>" in text
+    assert "devloop-state p answer q-full <option>" in text and "Decide" in text
 
 
 def test_hold_answer_uses_hold_key(proj, dash):

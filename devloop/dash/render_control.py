@@ -71,11 +71,13 @@ def _source(v, item, token, copy_path, note="") -> str:
         forms.append(_free_text(item, token))
     detail = f'<p class="detail">{e(item["detail"])}</p>' if item["detail"] else ""
     text = copy_text(v["project"], key, copy_path)
+    cmd = f"devloop-state {v['project']} answer {key} <option>"
+    cli = f'<p class="muted">Or in a terminal: <code>{e(cmd)}</code></p>'
     copy = f'<button type="button" class="copy" data-copy="{e(text)}">Copy for Claude</button>'
     return (
         f'<div id="qs-{e(key)}" data-title="{e(key)}" data-version="{e(item["version"])}">'
         f'<h3 class="qtitle">{e(item["question"] or "Question")}</h3>{detail}{note}'
-        f'<div class="qforms">{"".join(forms)}</div>'
+        f'<div class="qforms">{"".join(forms)}</div>{cli}'
         f'<div class="qcopy">{copy}</div>'
         '<p class="qmsg muted" role="status" aria-live="polite"></p></div>'
     )

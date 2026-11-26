@@ -13,7 +13,7 @@ import re
 from .. import evidence, notes, runs, slices, snapshot, status, store, tick
 from .. import project as projmod
 from ..scrub import plain, redact_secrets, scrub
-from . import live, memory, transcript
+from . import live, memory, roadmap, transcript, words
 
 SCHEMA = 2
 OWNER_TEXT_LIMIT = 1000
@@ -21,7 +21,7 @@ SHIPPED_LIMIT = 20
 DECIDED_LIMIT = 20
 ACTIVITY_LIMIT = 20
 CHIPS = slices.PHASES[:10]
-NEEDS = ("question", "hold")
+NEEDS = ("question", "hold", "stuck")
 PROBLEMS = ("stuck", "problem", "unreadable")
 RUN_STATES = ("executing", "awaiting-apply", "awaiting-release")
 SHIPPED_KINDS = ("merge", "row-close")
@@ -63,6 +63,10 @@ _CARD = {
     "since": "at?",
     "owner": "label",
     "stuck": "bool",
+    "purpose": "line?",
+    "next_action": "line?",
+    "wait": "wait?",
+    "wait_for": "label?",
     "checklist": {
         "available": "bool",
         "met": "int",
@@ -118,6 +122,9 @@ VIEW_SCHEMA = {
         {
             "kind": "word",
             "key": "id?",
+            "row": "id?",
+            "slice": "id?",
+            "title": "owner_text?",
             "owner": "label",
             "count": "int?",
             "since": "at?",
@@ -156,8 +163,28 @@ VIEW_SCHEMA = {
         }
     ],
     "controls": {"paused": "bool", "tick_running": "bool"},
+    "known_problems": [
+        {
+            "key": "id",
+            "impact": "line?",
+            "detail": "line?",
+            "fix": "line?",
+            "open": "bool",
+            "closed_at": "at?",
+            "count": "int?",
+            "last_seen": "at?",
+        }
+    ],
     "rows": [
-        {"row": "id", "oldest_at": "at?", "stuck": "bool", "cards": [_CARD]},
+        {
+            "row": "id",
+            "title": "owner_text?",
+            "done": "int",
+            "total": "int",
+            "oldest_at": "at?",
+            "stuck": "bool",
+            "cards": [_CARD],
+        },
     ],
     "kpi": {
         "running": "int",
@@ -213,17 +240,20 @@ VIEW_SCHEMA = {
                 {
                     "ref": "id",
                     "role": "label",
+                    "icon": "icon",
                     "harness": "harness",
                     "started_at": "at?",
+                    "ended_at": "at?",
                     "status": "word?",
                     "verdict": "word?",
+                    "summary": "line?",
                 }
             ],
             "calls": [{"at": "at?", "tag": "tag", "target": "target?"}],
             "files": [{"name": "target", "edits": "int"}],
         }
     ],
-    "nodes": [{"name": "id", "ok": "bool", "at": "at?"}],
+    "sources": [{"label": "line", "ok": "bool", "why": "line?", "at": "at?"}],
     "slots": [{"pool": "id", "label": "label", "cap": "int", "used": "int"}],
     "memory": ("null", _MEMORY),
     "shipped": [
@@ -236,6 +266,7 @@ VIEW_SCHEMA = {
             "at": "at",
         }
     ],
+    "recent": [{"date": "line", "title": "owner_text", "bullets": ["owner_text"]}],
     "activity": [{"at": "at", "kind": "word", "words": "line"}],
     "parked": [_CARD],
 }
@@ -298,6 +329,10 @@ def _scalar(kind, value, labels, where):
     if kind == "model":
         if transcript.safe_model(value) != value:
             raise ViewError(f"{where}: model is not a plain name")
+        return value
+    if kind == "wait":
+        if value not in words.WAIT:
+            raise ViewError(f"{where}: wait not in the fixed table")
         return value
     if kind == "icon":
         if value not in live.ICON_IDS:
@@ -425,6 +460,14 @@ class _Ctx:
         self.executing_by_key = {
             r["key"]: r["role"] for r in self.runs if r["state"] == "executing"
         }
+        self.apply_keys = {
+            r["key"] for r in self.runs if r["state"] == "awaiting-apply"
+        }
+        self.titles = _try(lambda: roadmap.titles(cfg), self.bad, "roadmap-titles", {})
+
+    def title_of(self, row):
+        """The plain name of a roadmap row, or None; one shared owner-text rule."""
+        return _owner_text(self.titles.get(row), roadmap.TITLE_LIMIT + 4)
 
     iso = staticmethod(_iso)
     when = staticmethod(_when)
@@ -514,6 +557,21 @@ def _checklist(ctx, s):
     }
 
 
+def _wait(ctx, s, stuck):
+    """Who a slice with no running worker waits on: a fixed word and, for a slot, its pool."""
+    on = s["waiting_on"] or ""
+    pool = on[: -len(" slot")] if on.endswith(" slot") else None
+    if s["key"] in ctx.executing_by_key:
+        return None, None
+    if _is_hold(s) or on.startswith("question "):
+        return "owner", None
+    if pool in projmod.SLOTS:
+        return "slot", projmod.pool_label(ctx.cfg, pool)
+    if s["key"] in ctx.apply_keys:
+        return "apply", None
+    return ("stuck" if stuck else "loop"), None
+
+
 def _card(ctx, s):
     held = s["phase"] in ("HELD", "PARKED")
     phase = (s["parked_from"] or "FRAME") if held else s["phase"]
@@ -524,6 +582,7 @@ def _card(ctx, s):
         and s["phase"] in slices.ACTIVE
         and _age(s["last_moved_at"], ctx.now) > snapshot.STALE_SECS
     )
+    wait, wait_for = _wait(ctx, s, stuck)
     return {
         "key": s["key"],
         "row": s["row"],
@@ -544,6 +603,10 @@ def _card(ctx, s):
         "since": _iso(s["last_moved_at"]),
         "owner": _owner_of(ctx, s, held),
         "stuck": stuck,
+        "purpose": _plain_line(s["purpose"], 160),
+        "next_action": _plain_line(s["next_action"], 220),
+        "wait": wait,
+        "wait_for": wait_for,
         "checklist": _checklist(ctx, s),
     }
 
@@ -554,6 +617,10 @@ def _by_age(card):
 
 def _rows(ctx):
     live = [s for s in ctx.slices if s["phase"] in slices.ACTIVE]
+    total, done = {}, {}
+    for s in ctx.slices:
+        total[s["row"]] = total.get(s["row"], 0) + 1
+        done[s["row"]] = done.get(s["row"], 0) + (s["phase"] == "DONE")
     by_row = {}
     for s in live:
         by_row.setdefault(s["row"], []).append(_card(ctx, s))
@@ -563,6 +630,9 @@ def _rows(ctx):
         rows.append(
             {
                 "row": row,
+                "title": ctx.title_of(row),
+                "done": done[row],
+                "total": total[row],
                 "oldest_at": min(
                     (c["since"] for c in cards if c["since"]), default=None
                 ),
@@ -592,22 +662,15 @@ def _need(kind, owner, key=None, count=None, since=None, **extra):
 
 def _plain_line(text, limit=300):
     """Loop-written text, scrubbed like every other public line; None when empty."""
-    if not isinstance(text, str):
-        return None
-    out = scrub(text, limit)
-    # The cut can end on a space or inside a pattern; settle on text that scrubs to itself,
-    # the form the sealed schema accepts.
-    for _ in range(4):
-        again = scrub(out, limit)
-        if again == out:
-            return out or None
-        out = again
-    return None
+    return live.view_line(text, limit)
 
 
 def _owner_item(kind, owner, key=None, since=None, **extra):
     """An item for the owner: the question fields are always present, empty for a hold."""
     fields = {
+        "row": None,
+        "slice": None,
+        "title": None,
         "answer_key": None,
         "question": None,
         "detail": None,
@@ -718,10 +781,21 @@ def _decided(ctx):
     return out[:DECIDED_LIMIT]
 
 
+def _work(ctx, s) -> dict:
+    """The slice an owner item is about: row, slice name and the row's plain name."""
+    return {"row": s["row"], "slice": s["slice"], "title": ctx.title_of(s["row"])}
+
+
 def _needs_you(ctx):
-    """Items that only the Product owner can answer: open questions and holds."""
+    """Items that only the Product owner can answer: open questions, holds and stuck work.
+
+    A held slice and its `hold:KEY` question are one item: the hold carries the
+    question's key, text and options. Stuck work counts only when the slice waits on a
+    question; work waiting on the loop belongs to the work table, not to the owner.
+    """
     out = []
     held_keys = {s["key"] for s in ctx.slices if _is_hold(s)}
+    by_key = {s["key"]: s for s in ctx.slices}
 
     records = _question_records(ctx)
     for q in records.values():
@@ -729,12 +803,14 @@ def _needs_you(ctx):
         if hold and q["key"][len(notes.HOLD_PREFIX) :] in held_keys:
             continue  # shown once, on the hold item
         if q["wait"] and not q["answer"]:
+            about = by_key.get(q["key"][len(notes.HOLD_PREFIX) :]) if hold else None
             out.append(
                 _owner_item(
                     "question",
                     ctx.owner,
                     q["key"],
                     since=_iso(q["asked_at"]),
+                    **(_work(ctx, about) if about else {}),
                     **_question_fields(ctx, q),
                 )
             )
@@ -750,9 +826,25 @@ def _needs_you(ctx):
                     ctx.owner,
                     s["key"],
                     since=_iso(s["last_moved_at"]),
+                    **_work(ctx, s),
                     **extra,
                 )
             )
+    asked = {i["key"] for i in out}
+    for row in _rows_cache(ctx):
+        for c in row["cards"]:
+            s = by_key[c["key"]]
+            on = s["waiting_on"] or ""
+            if c["stuck"] and on.startswith("question ") and on[9:] not in asked:
+                out.append(
+                    _owner_item(
+                        "stuck",
+                        ctx.owner,
+                        c["key"],
+                        since=c["since"],
+                        **_work(ctx, s),
+                    )
+                )
     return out
 
 
@@ -790,6 +882,48 @@ def _problems(ctx):
     return out
 
 
+FIXED_SHOWN_DAYS = 7
+KNOWN_PROBLEMS_LIMIT = 40
+
+
+def _known_problems(ctx):
+    """The problem log as the owner reads it: what goes wrong, the fix, and its status.
+
+    Open problems first (newest sighting first), then fixed ones from the last seven
+    days. Older fixed problems are left out.
+    """
+
+    def entries():
+        data = store.read_json(store.state_path(ctx.project) / "problems.json")
+        return list(data.get("problems", {}).values())
+
+    cutoff = ctx.now - datetime.timedelta(days=FIXED_SHOWN_DAYS)
+    out = []
+    for e in _try(entries, ctx.bad, "problems", []):
+        if not isinstance(e, dict) or not isinstance(e.get("key"), str):
+            continue
+        if not _plain_key(e["key"]):
+            continue
+        closed = _iso(e.get("closed_at"))
+        if not e.get("open") and not (closed and _when(closed) >= cutoff):
+            continue
+        out.append(
+            {
+                "key": e["key"],
+                "impact": _plain_line(e.get("impact"), 200),
+                "detail": _plain_line(e.get("detail"), 200),
+                "fix": _plain_line(e.get("fix"), 200),
+                "open": bool(e.get("open")),
+                "closed_at": closed,
+                "count": _int_or_none(e.get("count")),
+                "last_seen": _iso(e.get("last_seen")),
+            }
+        )
+    out.sort(key=lambda p: p["last_seen"] or "", reverse=True)
+    out.sort(key=lambda p: not p["open"])
+    return out[:KNOWN_PROBLEMS_LIMIT]
+
+
 def _rows_cache(ctx):
     if not hasattr(ctx, "_rows_value"):
         ctx._rows_value = _rows(ctx)
@@ -802,18 +936,42 @@ def _unreadable(ctx):
     ]
 
 
-def _nodes(ctx):
+# Names `_try` records for a file it could not read; each needs a label in `words.FILES`.
+SOURCE_FILES = (
+    "merges",
+    "closures",
+    "questions",
+    "problems",
+    "tick-state",
+    "nodes",
+    "roadmap-titles",
+    "shipped-doc",
+)
+
+
+def _sources(ctx):
+    """Health of what the page reads: the loop's snapshot commands and the dashboard's
+    own files. Names come from the `words` registry, never from file text."""
     data = _try(
         lambda: store.read_json(store.state_path(ctx.project) / "node-status.json"),
         ctx.bad,
         "nodes",
         {},
     )
-    return [
-        {"name": name, "ok": v.get("ok") is True, "at": _iso(v.get("at"))}
+    out = [
+        {
+            "label": words.command_label(name),
+            "ok": v.get("ok") is True,
+            "why": None if v.get("ok") is True else "command failed",
+            "at": _iso(v.get("at")),
+        }
         for name, v in sorted(data.items())
         if isinstance(v, dict)
     ]
+    # Any other name is a damaged slice file: one line for all of them.
+    labels = dict.fromkeys(words.FILES.get(n, words.SLICE_FILES) for n in ctx.bad)
+    out += [{"label": x, "ok": False, "why": "damaged", "at": None} for x in labels]
+    return out
 
 
 def _slots(ctx):
@@ -861,6 +1019,21 @@ def _shipped(ctx, merges, closures):
             )
     out.sort(key=lambda e: _when(e["at"]), reverse=True)
     return out[:SHIPPED_LIMIT]
+
+
+def _recent(ctx):
+    """The owner's recently shipped record, newest first, as plain text only."""
+    out = []
+    for sec in _try(lambda: roadmap.shipped(ctx.cfg), ctx.bad, "shipped-doc", []):
+        title = _owner_text(sec["title"], 200)
+        if title:
+            bullets = [
+                b
+                for b in (_owner_text(b, roadmap.BULLET_LIMIT) for b in sec["bullets"])
+                if b
+            ]
+            out.append({"date": sec["date"], "title": title, "bullets": bullets})
+    return out
 
 
 def _activity(ctx):
@@ -937,10 +1110,11 @@ def build_view(project, proc="/proc", now=None, cache=None) -> dict:
         "problems": problems,
         "decided": _decided(ctx),
         "rows": _rows_cache(ctx),
-        "nodes": _nodes(ctx),
         "slots": slots,
         "memory": _memory(ctx),
         "shipped": _shipped(ctx, merges, closures),
+        "recent": _recent(ctx),
+        "known_problems": _known_problems(ctx),
         "activity": _activity(ctx),
         "parked": _parked(ctx),
     }
@@ -961,6 +1135,7 @@ def build_view(project, proc="/proc", now=None, cache=None) -> dict:
     view["feed"] = live.feed(ctx, cache)
     view["drawers"] = live.drawers(ctx, states, drawer_keys)
     view["kpi"] = live.kpi(ctx, view, states, now_s)
+    view["sources"] = _sources(ctx)  # last: every reader above may add a damaged name
     sealed = _seal(view, VIEW_SCHEMA, _labels(cfg))
     sealed["version"] = version_of(sealed)
     return sealed

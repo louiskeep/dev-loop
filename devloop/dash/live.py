@@ -5,15 +5,18 @@ the run directories. Nothing here passes free text on; `view._seal` checks every
 again, so a field added here without a schema entry cannot reach a page.
 """
 
+import datetime
 import hashlib
 
 from .. import runs, slices, status, store
+from ..scrub import scrub
 from . import transcript
 
 MAX_LIVE = 16  # executing runs given a card, newest first
 MAX_DRAWER_FILES = 8  # finished-run transcripts parsed per build
 DRAWER_RUNS = 8  # runs listed per slice drawer
-DRAWER_SLICES = 30  # active slices given a drawer source
+DRAWER_SLICES = 60  # active slices given a drawer source
+SUMMARY_LIMIT = 120
 DRAWER_CALLS = 20
 DRAWER_FILES = 12
 HEADER_BYTES = 8192  # result.md is read for its header only, never whole
@@ -191,6 +194,38 @@ def _result_header(rd) -> dict:
         return {}
 
 
+def _ended_at(rd):
+    """When the worker stopped, from its exit file; None while it runs or if unreadable."""
+    try:
+        at = store.read_json(rd / "exit").get("ended_at")
+    except (OSError, store.StoreError):
+        return None
+    try:
+        datetime.datetime.fromisoformat(at)
+    except (TypeError, ValueError):
+        return None
+    return at
+
+
+def _summary(hdr, icon):
+    """The result's own one-line summary; a test run falls back to its tests line."""
+    text = hdr.get("summary") or (hdr.get("tests") if icon == "test" else None)
+    return view_line(text, SUMMARY_LIMIT)
+
+
+def view_line(text, limit):
+    """Loop-written text cut to a line that scrubs to itself (the sealed `line` form)."""
+    if not isinstance(text, str):
+        return None
+    out = scrub(text, limit)
+    for _ in range(4):
+        again = scrub(out, limit)
+        if again == out:
+            return out or None
+        out = again
+    return None
+
+
 def drawers(ctx, states, keys) -> list:
     out = []
     for key in _drawer_keys(ctx, keys):
@@ -199,12 +234,16 @@ def drawers(ctx, states, keys) -> list:
         for r in history:
             spec = runs.KINDS[r["req"]["kind"]]
             hdr = _result_header(r["rd"])
+            icon = ICONS[r["req"]["kind"]]
             run_rows.append(
                 {
                     "ref": r["ref"],
                     "role": r["role"],
+                    "icon": icon,
                     "harness": spec.harness,
                     "started_at": r["started_at"],
+                    "ended_at": _ended_at(r["rd"]),
+                    "summary": _summary(hdr, icon),
                     "status": hdr.get("status")
                     if hdr.get("status") in runs.STATUSES
                     else None,
