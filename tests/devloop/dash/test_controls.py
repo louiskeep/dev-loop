@@ -1185,16 +1185,18 @@ def test_override_form_round_trips(proj, dash, srv):
     assert (q["answer"], q["applied"]) == ("A", "A")
 
 
-def test_controls_render_paused_and_tick_running(proj, dash, monkeypatch):
-    _, page = render_page(proj, "tok")
-    assert 'action="/act/pause"' in page and "Run a tick now" in page
-    assert 'action="/act/resume"' not in page
+def test_controls_render_no_loop_buttons(proj, dash, monkeypatch):
+    # Owner 2026-11-26: no Pause, Resume or tick button on the page, in any loop state.
+    def assert_none(page):
+        for action in ("/act/pause", "/act/resume", "/act/tick"):
+            assert f'action="{action}"' not in page
+        assert "Run a tick now" not in page and "A tick is running" not in page
+
+    assert_none(render_page(proj, "tok")[1])
     store.set_paused(proj, True, "cli")
-    _, page = render_page(proj, "tok")
-    assert 'action="/act/resume"' in page and 'action="/act/pause"' not in page
+    assert_none(render_page(proj, "tok")[1])
     monkeypatch.setattr(tick, "running", lambda *a, **kw: True)
-    _, page = render_page(proj, "tok")
-    assert "A tick is running" in page and 'action="/act/tick"' not in page
+    assert_none(render_page(proj, "tok")[1])
 
 
 def test_hold_form_key_survives_a_hex_looking_slice_name(proj, dash, srv):

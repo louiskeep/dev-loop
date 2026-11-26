@@ -125,17 +125,9 @@ def decided_list(v, now) -> str:
 
 
 def controls(v, token) -> str:
-    c = v["controls"]
-    pause = (
-        _simple("/act/resume", token, "Resume")
-        if c["paused"]
-        else _simple("/act/pause", token, "Pause")
-    )
-    if c["tick_running"]:
-        run = '<button type="button" disabled>A tick is running</button>'
-    else:
-        run = _simple("/act/tick", token, "Run a tick now")
-    return f'<div class="controls">{pause}{run}<span class="cmsg muted" role="status"></span></div>'
+    # Pause and "Run a tick now" were taken off the page (owner 2026-11-26): a live /loop
+    # session drives the project, and neither button reaches it. The routes stay for scripts.
+    return '<div class="controls"><span class="cmsg muted" role="status"></span></div>'
 
 
 def _simple(action, token, label) -> str:
