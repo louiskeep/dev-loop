@@ -634,3 +634,12 @@ def test_each_held_or_parked_slice_shows_once(proj, dash):
         hits = [n for n in items if key in (n["key"] or "")]
         assert len(hits) == 1 and hits[0]["kind"] == "hold"
         assert hits[0]["answer_key"] == f"hold:{key}" and hits[0]["options"]
+
+
+def test_a_released_park_leaves_needs_you_at_once(proj, dash):
+    """After the owner approves, the slice waits only for the tick to resume it."""
+    key = dash["parked"]
+    notes.ensure_hold_question(proj, key)
+    notes.answer(proj, f"hold:{key}", "approve")
+    items = build(proj)["needs_you"]
+    assert [n for n in items if key in (n["key"] or "")] == []

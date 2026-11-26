@@ -728,9 +728,15 @@ def _question_fields(ctx, q):
 
 
 def _is_hold(s):
-    """A slice waiting on the owner's release: held, or parked for an owner reason."""
+    """A slice waiting on the owner's release: held, or parked for an owner reason.
+
+    An owner-parked slice the owner already released only waits for the tick to
+    resume it, so it no longer needs the owner.
+    """
     return s["phase"] == "HELD" or (
-        s["phase"] == "PARKED" and s["park_reason"] in slices.OWNER_PARKS
+        s["phase"] == "PARKED"
+        and s["park_reason"] in slices.OWNER_PARKS
+        and not s.get("owner_answered")
     )
 
 
