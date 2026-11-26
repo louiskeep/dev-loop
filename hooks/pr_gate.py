@@ -39,8 +39,8 @@ RETARGET_REASON = (
     "put a long body in --body-file"
 )
 STANDALONE_REASON = (
-    "run gh pr create by itself, not with && ; | or a newline: an earlier command "
-    "could switch the branch after this check"
+    "run gh pr create by itself. A shell joiner such as && or a substitution can "
+    "switch the branch after this check. For multiline text, put the body in --body-file"
 )
 UNREADABLE_REASON = (
     "a project config cannot be read, so the guarded repos are unknown; "
@@ -142,8 +142,6 @@ def main() -> int:
     try:
         if create and _RETARGET.search(command):
             return _deny(RETARGET_REASON)
-        if create and _COMPOUND.search(_REDIRECT.sub("", command)):
-            return _deny(STANDALONE_REASON)
         gate, unreadable = _configured(cwd)
         # An unreadable config hides which repos are guarded: a create or a skip word is
         # denied everywhere (plan B2 rule 5).
@@ -151,6 +149,8 @@ def main() -> int:
             return _deny(UNREADABLE_REASON)
         if gate is None:
             return 0
+        if create and _COMPOUND.search(_REDIRECT.sub("", command)):
+            return _deny(STANDALONE_REASON)
         if create:
             ok, reason = _receipt_ok(cwd, gate["receipt"])
             if not ok:

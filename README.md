@@ -357,8 +357,10 @@ in `project.json`: `override_env` (default `DEVLOOP_PUSH_OVERRIDE`) and `receipt
 `-quality-gate` (`acme-quality-gate` is valid), so it cannot name a git file such as
 `index`. The installer writes the variable name into the shim, so run `devloop-install`
 again after changing it. It refuses a repo whose effective `core.hooksPath` (local,
-global or system) is set, since git would skip the shim. `gh pr create` must be its own
-command: the gate denies it when `&&`, `;`, `|` or a newline joins it to another.
+global or system) is set, since git would skip the shim. In a configured repo, run
+`gh pr create` by itself. The gate denies any shell joiner or substitution
+(`;`, `&`, `|`, a newline, a backtick, `$(`, `<(`, or `>(`), even inside quoted text.
+It ignores stream redirects such as `2>&1`. For a multiline body, use `--body-file`.
 
 A sixth pattern is planning or coding from memory instead of the rules.
 The `rules_gate` hook (PreToolUse and PostToolUse on Edit, Write and

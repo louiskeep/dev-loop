@@ -112,6 +112,12 @@ def test_pr_create_needs_a_receipt_for_head(world):
     assert denied(run_hook("gh pr create --fill", repo, env))
 
 
+def test_an_unborn_head_without_a_receipt_denies_create(world):
+    repo, env, _ = world
+    _git(repo, "checkout", "--orphan", "unborn")
+    assert denied(run_hook("gh pr create --fill", repo, env))
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -244,6 +250,31 @@ def test_an_unreadable_config_denies_a_skip_word_in_any_repo(world, command):
 
 
 # ---- AT25: other repos ----
+
+
+HEREDOC_CREATE = '''gh pr create --title t --body "$(cat <<'EOF'
+PR body
+EOF
+)"'''
+
+
+@pytest.mark.parametrize("location", ["unconfigured", "tmp"])
+def test_a_heredoc_body_is_allowed_outside_guarded_repos(world, location):
+    _, env, tmp = world
+    cwd = Path("/tmp")
+    if location == "unconfigured":
+        cwd = tmp / "other"
+        _git(tmp, "init", "-q", str(cwd))
+    assert allowed(run_hook(HEREDOC_CREATE, cwd, env))
+
+
+def test_a_guarded_repo_denies_a_heredoc_body_and_names_body_file(world):
+    repo, env, _ = world
+    stamp(repo)
+    r = run_hook(HEREDOC_CREATE, repo, env)
+    assert denied(r)
+    reason = json.loads(r.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "--body-file" in reason
 
 
 def test_a_repo_outside_every_project_config_is_not_gated(world):

@@ -550,6 +550,9 @@ mutate "the installer writes to the worktree git dir" $GH \
   '["rev-parse", "--path-format=absolute", "--git-common-dir"]' '["rev-parse", "--path-format=absolute", "--git-dir"]' $R
 mutate "the receipt compare is a prefix match" hooks/pr_gate.py \
   'and receipt == head:' 'and receipt.startswith(head):' $P
+mutate "an unborn HEAD matches a missing receipt" hooks/pr_gate.py \
+  'githooks.is_object_id(head) and receipt == head' 'receipt == head' \
+  "$P::test_an_unborn_head_without_a_receipt_denies_create"
 mutate "every remote is protected" $GH \
   '    if len(argv) > 1 and not is_protected_url(argv[1], cwd):' '    if False:' $R
 mutate "P2a allows a tag update" $GH \
@@ -613,6 +616,13 @@ mutate "the repo listing drops the project's gate names" devloop/project.py \
   tests/devloop/test_push_gate_config.py
 mutate "the PR gate allows a create joined to another command" hooks/pr_gate.py \
   '        if create and _COMPOUND.search(_REDIRECT.sub("", command)):' '        if create and False:' $P
+scope_check=$(sed -n '/^        gate, unreadable = _configured(cwd)$/,/^            return 0$/p' "$WORK/hooks/pr_gate.py")
+standalone_check='        if create and _COMPOUND.search(_REDIRECT.sub("", command)):
+            return _deny(STANDALONE_REASON)'
+mutate "the PR gate checks for shell joiners before checking repo scope" hooks/pr_gate.py \
+  "$scope_check
+$standalone_check" "$standalone_check
+$scope_check" "$P::test_a_heredoc_body_is_allowed_outside_guarded_repos"
 mutate "the PR gate treats a newline as no separator" hooks/pr_gate.py \
   '_COMPOUND = re.compile(r"[;&|\r\n`]|\$\(|[<>]\(")' '_COMPOUND = re.compile(r"[;&|`]|\$\(|[<>]\(")' $P
 mutate "the installer checks only the local hooks path" $GH \
