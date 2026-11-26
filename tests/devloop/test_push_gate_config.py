@@ -72,15 +72,26 @@ def test_a_bad_push_gate_block_is_a_config_error(tmp_path, monkeypatch, block):
         project.load_project("p")
 
 
-def test_push_gate_for_a_listed_repo_is_that_projects_block(tmp_path, monkeypatch):
+def test_push_gate_names_for_a_listed_repo_is_that_projects_block(
+    tmp_path, monkeypatch
+):
     repo = tmp_path / "r"
     repo.mkdir()
     _write(tmp_path, monkeypatch, repo, receipt="acme-gate", override_env="ACME_PUSH")
-    assert project.push_gate_for(repo.resolve()) == {
+    assert project.push_gate_names(repo.resolve()) == {
         "override_env": "ACME_PUSH",
         "receipt": "acme-gate",
     }
-    assert project.push_gate_for(tmp_path / "other") is None
+    # An unlisted repo gets the defaults, so no caller fills them itself.
+    assert project.push_gate_names(tmp_path / "other") == project.push_gate({})
+
+
+def test_the_override_name_rule_is_the_shims(tmp_path, monkeypatch):
+    # One owner of the rule: project validates with githooks' own pattern.
+    assert not hasattr(project, "_ENV_NAME")
+    _write(tmp_path, monkeypatch, tmp_path / "r", override_env="lower")
+    with pytest.raises(project.ConfigError):
+        project.load_project("p")
 
 
 def _git(cwd, *args):

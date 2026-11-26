@@ -596,7 +596,9 @@ mutate "the PR gate allows a skip word when a config is unreadable" hooks/pr_gat
 mutate "the PR gate reads the receipt under a fixed name" hooks/pr_gate.py \
   '(Path(git_dir) / receipt)' '(Path(git_dir) / "devloop-quality-gate")' $P
 mutate "the receipt writer ignores the project's receipt name" bin/devloop-gate-pass \
-  '(gate or {}).get("receipt", project.PUSH_GATE_RECEIPT)' 'project.PUSH_GATE_RECEIPT' $P
+  '    )["receipt"]' '    )["receipt"] and project.PUSH_GATE_RECEIPT' $P
+mutate "an unlisted repo gets no push gate defaults" devloop/project.py \
+  '    return push_gate({})' '    return {}' tests/devloop/test_push_gate_config.py
 mutate "the shim ignores the project's override name" $GH \
   '{OVERRIDE_VAR}={override_env} exec' '{OVERRIDE_VAR}={DEFAULT_OVERRIDE_ENV} exec' tests/devloop/test_push_gate_config.py
 mutate "the override accepts a variable the shim did not name" $GH \

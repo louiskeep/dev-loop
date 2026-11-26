@@ -89,14 +89,15 @@ def _configured(cwd):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from devloop import project
 
-    repos, unreadable = project.configured_repos()
+    loaded = project.load_all()
+    repos, unreadable = project.configured_repos(loaded)
     common = _git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
     if not common:
         return None, unreadable
     mine = Path(common).parent.resolve()
-    return (
-        project.push_gate_for(mine) if any(p == mine for _, _, p in repos) else None
-    ), unreadable
+    if not any(p == mine for _, _, p in repos):
+        return None, unreadable
+    return project.push_gate_names(mine, loaded), unreadable
 
 
 def _receipt_ok(cwd, receipt):

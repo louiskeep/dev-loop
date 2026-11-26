@@ -94,12 +94,14 @@ MARKER = "# devloop-ref-policy v1"
 # writes the resolved name into the shim, which hands it to this file in the environment.
 DEFAULT_OVERRIDE_ENV = "DEVLOOP_PUSH_OVERRIDE"
 OVERRIDE_VAR = "DEVLOOP_PUSH_OVERRIDE_VAR"
-_ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+# The one rule for an override variable name. It is shell text in the shim, so this
+# module owns it; project.json validation uses the same pattern.
+ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 
 
 def shim(override_env=DEFAULT_OVERRIDE_ENV) -> str:
     """The clone shim text for a project whose override variable is `override_env`."""
-    if not _ENV_NAME.fullmatch(override_env):
+    if not ENV_NAME.fullmatch(override_env):
         raise ValueError("override variable name")
     return f"""#!/bin/sh
 {MARKER}

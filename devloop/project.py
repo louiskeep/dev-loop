@@ -86,7 +86,6 @@ def pool_label(cfg, slot) -> str:
 # choice (the `push_gate` block); these are the neutral defaults. The override name is
 # the one fact githooks.py also needs, so its default lives there (stdlib-only module).
 PUSH_GATE_RECEIPT = "devloop-quality-gate"
-_ENV_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 _FILE_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 
 
@@ -326,7 +325,7 @@ def _validate(cfg: dict, project: str) -> dict:
             _fail("dash.host", "must be str")
     gate = _opt(cfg, "push_gate", dict)
     for key, value in (gate or {}).items():
-        pattern = {"override_env": _ENV_NAME, "receipt": _FILE_NAME}.get(key)
+        pattern = {"override_env": githooks.ENV_NAME, "receipt": _FILE_NAME}.get(key)
         if pattern is None:
             _fail(f"push_gate.{key}", "unknown key")
         if not isinstance(value, str) or not pattern.fullmatch(value):
@@ -367,7 +366,7 @@ def project_names() -> list:
     )
 
 
-def _load_all():
+def load_all():
     """([(name, cfg)] for each project with a project.json, names of unreadable ones)."""
     loaded, unreadable = [], []
     for name in project_names():
@@ -380,15 +379,15 @@ def _load_all():
     return loaded, unreadable
 
 
-def configured_repos():
+def configured_repos(loaded=None):
     """The one reader of which repos the project configs list.
 
     Returns (repos, unreadable): a (project, repo_name, resolved_path) for each repo of
     each project that has a project.json, and the names of projects whose config cannot
     be loaded. The caller picks the rule for an unreadable one: the installer reports it,
-    the PR gate denies.
+    the PR gate denies. `loaded` is a `load_all()` result, for a caller that reads once.
     """
-    loaded, unreadable = _load_all()
+    loaded, unreadable = loaded or load_all()
     repos = [
         (name, repo["name"], Path(repo["path"]).resolve())
         for name, cfg in loaded
@@ -406,13 +405,16 @@ def push_gate(cfg) -> dict:
     }
 
 
-def push_gate_for(repo_path):
-    """The push gate names of the first project that lists `repo_path`, or None."""
-    loaded, _ = _load_all()
-    for _, cfg in loaded:
+def push_gate_names(repo_path, loaded=None) -> dict:
+    """The push gate names for `repo_path`: those of the first project that lists it, or
+    the defaults when none does. No caller fills defaults itself.
+
+    `loaded` is a `load_all()` result, for a caller that reads once."""
+    configs, _ = loaded or load_all()
+    for _, cfg in configs:
         if any(Path(r["path"]).resolve() == repo_path for r in cfg["repos"]):
             return push_gate(cfg)
-    return None
+    return push_gate({})
 
 
 def base_branches(cfg) -> str:
