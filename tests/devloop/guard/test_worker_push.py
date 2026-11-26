@@ -71,3 +71,46 @@ def test_guard_leaves_the_repo_config_alone(proj, tmp_path, repo):
         text=True,
     )
     assert r.returncode != 0
+
+
+def _hook(repo_dir, name, body):
+    hook = repo_dir / ".git" / "hooks" / name
+    hook.write_text(f"#!/bin/sh\n{body}\n")
+    hook.chmod(0o755)
+
+
+def test_hooks_of_the_repository_running_git_are_the_ones_that_run(
+    proj, tmp_path, repo
+):
+    a, _ = repo
+    b = tmp_path / "other"
+    subprocess.run(["git", "init", "-q", str(b)], check=True)
+    marker = tmp_path / "marker"
+    _hook(a, "pre-commit", f"echo A >> {marker}")
+    _hook(b, "pre-commit", f"echo B >> {marker}; exit 1")
+    _hook(b, "post-index-change", f"echo index-B >> {marker}")
+    (b / "f").write_text("f")
+    script = (
+        f"git -C {b} add f; git -C {b} -c user.name=t -c user.email=t@t commit -qm x"
+    )
+    run_payload(proj, tmp_path, a, script)
+    assert marker.read_text().split() == ["index-B", "index-B", "B"]
+    assert subprocess.run(
+        ["git", "-C", str(b), "rev-parse", "-q", "--verify", "HEAD"]
+    ).returncode
+
+
+def test_pre_push_rejects_when_it_cannot_copy_its_input(proj, tmp_path, repo):
+    wt, _ = repo
+    run_payload(proj, tmp_path, wt, "true")
+    hook = store.run_dir(proj, "r1") / "githooks" / "pre-push"
+    bad = tmp_path / "badbin"
+    bad.mkdir()
+    (bad / "cat").write_text("#!/bin/sh\nexit 1\n")
+    (bad / "cat").chmod(0o755)
+    env = {"PATH": f"{bad}:/usr/bin:/bin", "DEVLOOP_BASE_BRANCHES": "main"}
+    line = "refs/heads/x 1 refs/heads/main 2\n"
+    r = subprocess.run(
+        [str(hook), "origin", "u"], input=line, text=True, env=env, cwd=wt
+    )
+    assert r.returncode != 0
