@@ -614,7 +614,7 @@ mutate "the repo listing drops the project's gate names" devloop/project.py \
 mutate "the PR gate allows a create joined to another command" hooks/pr_gate.py \
   '        if create and _COMPOUND.search(_REDIRECT.sub("", command)):' '        if create and False:' $P
 mutate "the PR gate treats a newline as no separator" hooks/pr_gate.py \
-  '_COMPOUND = re.compile(r"[;&|\r\n`]|\$\(")' '_COMPOUND = re.compile(r"[;&|`]|\$\(")' $P
+  '_COMPOUND = re.compile(r"[;&|\r\n`]|\$\(|[<>]\(")' '_COMPOUND = re.compile(r"[;&|`]|\$\(|[<>]\(")' $P
 mutate "the installer checks only the local hooks path" $GH \
   '["config", "--get", "core.hooksPath"]' '["config", "--local", "--get", "core.hooksPath"]' \
   tests/devloop/test_push_gate_config.py
