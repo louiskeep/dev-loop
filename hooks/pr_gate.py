@@ -52,9 +52,9 @@ SKIP_REASON = "git hooks must run here; do not skip them"
 def _receipt_reason(head: str) -> str:
     return (
         f"Quality gate not satisfied for HEAD {head[:8]}. Before opening a PR: "
-        "(1) dispatch the 'dennis' agent to review this change (he runs /code-review, "
-        "/security-review and /qa and returns a verdict) and resolve every BLOCKER and "
-        "HIGH; (2) dispatch the 'barry' agent to sync the docs to the change; "
+        "(1) get the review roster for the slice's risk to pass on this head (R1 Codex "
+        "GO; R2 Dennis, then Codex GO) and resolve every BLOCKER and HIGH; (2) sync "
+        "the docs to the change (barry for mechanical updates); "
         "(3) record the pass: devloop-gate-pass. Then re-run gh pr create. "
         "Committing more after the gate re-arms it, by design."
     )

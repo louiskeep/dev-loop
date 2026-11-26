@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import evidence, notes, slices, store
+from . import board, evidence, notes, slices, store
 from . import project as projmod
 from .scrub import scrub
 
@@ -482,3 +482,30 @@ def merge(project, key) -> MergeResult:
             "refused", f"not merged: {scrub(err) or 'GitHub kept the PR open'}"
         )
     return _unknown(project, key)
+
+
+def record_direct(project, key, pr, head) -> MergeResult:
+    """Ledger entry for a PR merged by hand, once GitHub confirms it merged at `head`.
+
+    Uses the same writer as `merge`, so the dashboard counts it. The slice is not moved.
+    """
+    cfg = projmod.load_project(project)
+    s = slices.load(project, key)
+    if s["pr"] != pr or not _same_head(s["head"], head):
+        return _result("refused", "that PR and head are not this slice's PR and head")
+    repo_cfg, _, base = repo_settings(cfg, s["repo"])
+    state = confirm_pr(cfg, s["repo"], pr, base, head)
+    if state != "merged":
+        return _result(
+            "refused", f"GitHub does not show PR {pr} merged at that head: {state}"
+        )
+    view = _view(repo_cfg, pr, "headRefOid,headRefName") or {}
+    full = view.get("headRefOid")
+    if full != s["head"] or len(full or "") != 40:
+        return _result("refused", "GitHub's PR head is not this slice's full head")
+    if s["branch"] and view.get("headRefName") != s["branch"]:
+        return _result("refused", "GitHub's PR branch is not this slice's branch")
+    # The full SHA from GitHub keeps one ledger key however the head was typed.
+    board.record_merge(project, {"slug": _slug(repo_cfg), "pr": pr, "head": full}, s)
+    store.append_event(project, "merged", key=key, row=s["row"], slice=s["slice"])
+    return _result("merged", "recorded")

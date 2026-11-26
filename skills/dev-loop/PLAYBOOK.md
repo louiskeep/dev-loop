@@ -1,11 +1,22 @@
 # Dev loop playbook
 
-The tick reads this page on every run. A project may add its own `playbook_doc`. That
-file can add to this page or tighten it. It never loosens it.
+This page holds the done state per phase, the scenarios, the testing shapes and the
+close-out. Both modes use it.
 
-Tags: `[code]` means `devloop-state` checks the item and the snapshot shows it as met or
-missing. The tag text matches the checklist name in the snapshot. `[judgment]` means the
-tick decides and writes its reason in `next_action`.
+- Live mode (the default, `"mode": "live"`): one orchestrator session runs the loop, and
+  slice runners are its subagents. `ORCHESTRATOR.md` is the procedure. The orchestrator
+  checks every item below itself. `devloop-state` records the moves but skips the
+  evidence checks.
+- Headless mode (optional, off): a cron tick reads this page on every run, and
+  `devloop-state` refuses a move while a `[code]` item is missing.
+
+A project may add its own `playbook_doc`. That file can add to this page or tighten it. It
+never loosens it.
+
+Tags: `[code]` means `devloop-state` checks the item in headless mode and the snapshot
+shows it as met or missing. The tag text matches the checklist name in the snapshot.
+`[judgment]` means the orchestrator (or the tick) decides and writes its reason in
+`next_action`.
 
 ## Done state per phase
 
@@ -44,7 +55,7 @@ An R3 slice goes to HELD with a question. Only the owner releases it.
 ### SELF_CHECK
 
 - selfcheck GO on head [code]
-- the tick read the diff: placement, duplicate mechanisms, size against the plan,
+- the orchestrator read the diff: placement, duplicate mechanisms, size against the plan,
   changelog, sentries [judgment]
 - every class in the recurring defects catalog was checked on this diff [judgment]
 
@@ -80,9 +91,9 @@ On a failed review, triage the findings first (see REMEDIATE). Then move to REME
 
 Review rounds never park a slice. A round is one REVIEW to REMEDIATE move.
 
-| Round | Who fixes | Dispatch |
-|-------|-----------|----------|
-| 1 to 3 | the Claude builder | `devloop-dispatch PROJECT builder KEY` |
+| Round | Who fixes (live) | Dispatch (headless) |
+|-------|------------------|---------------------|
+| 1 to 3 | a Claude slice runner, which fixes, runs T0, merges the base branch, reviews the delta with Codex, runs the near tests and pushes in one session | `devloop-dispatch PROJECT builder KEY` |
 | 4 to 6 | Codex | `devloop-dispatch PROJECT codex-builder KEY` |
 | 7 | nobody: the slice goes back to PLAN with reason `redesign` | none |
 
@@ -104,18 +115,26 @@ the fixer as a root-cause fix through that registry.
 - t1 GO on head [code]
 - code review GO on head, for every reviewer in the roster [code]
 - no other slice of this row is in DOCUMENT [code]
-- the merge command also asks GitHub: the base branch, the head, the required checks and
-  the changelog entry. It refuses with the reason and merges nothing.
+- GitHub CI is green on the head, and the branch contains the base branch [judgment]
+- headless only: `devloop-merge` also asks GitHub for the base branch, the head, the
+  required checks and the changelog entry. It refuses with the reason and merges nothing.
 - the full suite was needed or not, per the testing triggers [judgment]
 - the PR is rebased on the base branch when the project requires it [judgment]
 
-Merge only with `devloop-merge PROJECT KEY`. A direct `gh pr merge` is blocked.
-Only the orchestrator merges or pushes to a base branch. Workers and subagents may push feature
-branches, and a hook denies them any merge or base-branch push.
+Live mode: the orchestrator merges with
+`gh pr merge N --squash --match-head-commit HEAD_SHA`, run by itself, once the merge standard
+in `ORCHESTRATOR.md` holds on that head. Run `gh pr ready N` first on a draft PR. Post to
+Slack before and after.
+
+Headless mode: merge only with `devloop-merge PROJECT KEY`. The headless tick runs with
+`DEVLOOP_HEADLESS=1`, and a hook denies it a direct `gh pr merge`.
+
+Only the orchestrator merges or pushes to a base branch. Workers and subagents may push
+feature branches, and a hook denies them any merge or base-branch push.
 
 A row may have many slices open at once. They each go through the phases on their own. The
-one ordering rule: a slice may not enter GATE, and `devloop-merge` refuses it, while another
-slice of the same row is in DOCUMENT. Finish that slice's docs first.
+one ordering rule: a slice may not enter GATE while another slice of the same row is in
+DOCUMENT. In headless mode `devloop-merge` refuses it. Finish that slice's docs first.
 
 ### DOCUMENT
 
@@ -143,6 +162,10 @@ An owner question is open. Do not work around it.
 
 ## Scenarios
 
+Rows that name `devloop-dispatch` or `devloop-merge` are the headless commands. In live
+mode, do the same step with a slice runner or with `gh pr merge`, and record the move with
+`devloop-state`.
+
 | What happened | What to do | Command |
 |---|---|---|
 | A worker FAILED once | Dispatch the same run again with the first run as `--retry-of`. | `devloop-dispatch P KIND KEY --brief F --retry-of RUN` |
@@ -153,7 +176,7 @@ An owner question is open. Do not work around it.
 | Dennis or Codex said NO-GO | Move the slice to REMEDIATE. The round counter goes up. | `devloop-state P slice move KEY REMEDIATE --reason ...` |
 | A reviewer said GO-WITH-FIXES | It is not a GO. Treat it as NO-GO and fix the findings. | same as NO-GO |
 | Plan round cap reached for Dennis | Dispatch Codex next. It repairs the plan with `codex-fix`. | `devloop-dispatch P codex-fix KEY --reviewer codex --brief F` |
-| Round 3 on one artifact | The slice is parked. Ask the owner for a plan fix or a decision. | `devloop-state P ask KEY ... --wait` |
+| Code review round 3 failed | Do not park. Round 4 goes to Codex, per the REMEDIATE ladder. After round 6 fails, the slice goes back to PLAN to redesign. | `devloop-dispatch P codex-builder KEY --brief F` (headless) |
 | Main is red | Stop merging. Fix main first. Park other merge work. | `devloop-state P problem main-red ...` |
 | The PR is behind its base or conflicts | Rebase in the worktree, push, set the new head, return to SELF_CHECK. No round counts. | `devloop-state P slice move KEY SELF_CHECK --reason rebase` |
 | The new head only merges the base branch into the old head, and the base side touches no file the slice changed | Set the head. The t1, selfcheck and code review GOs carry to it with the note `carried-from OLD` and an `evidence-carried` event. The slice need not return to SELF_CHECK. GitHub CI still runs on the new head, and the merge command checks it. Any other head change resets the evidence. | `devloop-state P slice set KEY --head SHA` |
@@ -172,7 +195,17 @@ An owner question is open. Do not work around it.
 
 ## Worker briefs
 
-Every brief carries: the goal and the row, the risk and the rulebook paths, the plan path
+### slice-runner
+
+Live mode. The brief is `runner-header.md` (copied and filled in for the project) plus the
+task. The runner builds, runs T0, merges the base branch, reviews itself with Codex (up to 3
+rounds), runs the near tests and pushes. Codex GO and green near tests are both on the
+head it hands back. It hands back merge-ready.
+It never merges, never edits the plan and never runs Dennis on its own work.
+
+### Headless worker briefs
+
+Every headless brief carries: the goal and the row, the risk and the rulebook paths, the plan path
 and the acceptance tests it defines, the files in scope, the test depth to run, where to
 run tests, the recurring-defects check, the standing rules, the lessons for the area,
 what not to do, and the hand-back contract. The sections below add what each role needs.

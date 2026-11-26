@@ -1,5 +1,6 @@
 {
   "name": "example",
+  "mode": "live",
   "intent": "Describe what this project is building and why.",
   "roadmap": {
     "path": "/path/to/ROADMAP.md",
