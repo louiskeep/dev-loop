@@ -2,6 +2,7 @@
 
 import datetime
 import json
+import os
 
 import pytest
 
@@ -90,3 +91,21 @@ def test_damaged_request_files_are_skipped_and_healthy_runs_still_count(two):
     plant(q, "kind.1", kind=[])  # a legacy request whose kind is not a name
     plant(q, "kind.2", kind={"a": 1}, memory_mb=None)
     assert runs.reserved_mb() == 250
+
+
+def test_unreadable_foreign_request_leaves_healthy_reservation(two, monkeypatch):
+    p, q = two
+    path = plant(p, "bad.1", memory_mb=900) / "request.json"
+    path.chmod(0)
+    if os.access(path, os.R_OK):
+        # A privileged test runner can read mode 000. Model the normal user's error.
+        read = store.read_json
+
+        def read_as_user(candidate):
+            if candidate == path:
+                raise PermissionError(path)
+            return read(candidate)
+
+        monkeypatch.setattr(store, "read_json", read_as_user)
+    plant(q, "ok.1", memory_mb=700)
+    assert runs.reserved_mb() == 700

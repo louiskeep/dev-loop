@@ -426,11 +426,11 @@ mutate "a legacy reservation uses the wrong project's estimate" devloop/runs.py 
   $G/test_host_memory.py::test_legacy_request_uses_its_owning_projects_estimate
 mutate "a damaged proc record hides a reservation" devloop/runs.py \
   '            req = store.read_json(rd / "request.json")
-        except store.StoreError:
+        except (store.StoreError, OSError):
             continue
         if req:
             yield rd, req' '            req = _merged(rd)
-        except store.StoreError:
+        except (store.StoreError, OSError):
             continue
         if req:
             yield rd, req' \

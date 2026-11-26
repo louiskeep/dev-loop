@@ -276,7 +276,7 @@ def _frozen_requests(name):
             continue
         try:
             req = store.read_json(rd / "request.json")
-        except store.StoreError:
+        except (store.StoreError, OSError):
             continue
         if req:
             yield rd, req
