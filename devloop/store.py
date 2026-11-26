@@ -164,32 +164,45 @@ def read_json(path, default=None) -> dict:
     return data
 
 
-def read_header(path) -> dict:
-    """Parse `key: value` lines up to a `---` line; {} when the file is missing."""
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return {}
-    out = {}
-    for line in text.splitlines():
+def split_result(text: str):
+    """Split a result file into `(header, body)` at its first `---` line.
+
+    This is the one parser of the boundary: readers and the header rewrite all use it, so
+    they cannot disagree about where the body starts. A repeated header key keeps its
+    last value; spaces around the key are ignored.
+    """
+    header = {}
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
         if line.strip() == "---":
-            break
+            return header, "".join(lines[i + 1 :])
         key, sep, value = line.partition(":")
         if sep and key.strip():
-            out[key.strip()] = value.strip()
-    return out
+            header[key.strip()] = value.strip()
+    return header, ""
+
+
+def read_result(path):
+    """`(header, body)` of a result file; `({}, "")` when it is missing."""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        return {}, ""
+    return split_result(text)
+
+
+def read_header(path) -> dict:
+    """The `key: value` header of a result file; {} when the file is missing."""
+    return read_result(path)[0]
 
 
 def rewrite_header(path, **fields) -> None:
     """Rewrite a result file's header from its parsed fields plus `fields`, keeping the body.
 
-    The reader takes the last value of a repeated key and ignores spaces around the key, so
-    one canonical line per key is the only form every reader agrees on.
+    One canonical line per key is the only form every reader agrees on.
     """
-    text = Path(path).read_text(encoding="utf-8", errors="replace")
-    header = {**read_header(path), **fields}
-    _, _, body = text.partition("\n---\n")
-    lines = "".join(f"{k}: {v}\n" for k, v in header.items())
+    header, body = read_result(path)
+    lines = "".join(f"{k}: {v}\n" for k, v in {**header, **fields}.items())
     write_text(path, f"{lines}---\n{body}")
 
 

@@ -7,7 +7,7 @@ from test_push import commit, remote_head, repo  # noqa: F401
 from test_wrap import mk
 
 
-def run_with_header(proj, tmp_path, wt, header_lines):
+def run_with_header(proj, tmp_path, wt, header_lines, sep="---"):
     """A writer whose result.md has exactly these header lines."""
     text = "\\n".join(header_lines)
     rd = mk(
@@ -16,7 +16,7 @@ def run_with_header(proj, tmp_path, wt, header_lines):
         [
             "sh",
             "-c",
-            f"printf '{text}\\n---\\nok\\n' > $DEVLOOP_RUN_DIR/result.md",
+            f"printf '{text}\\n{sep}\\nok\\n' > $DEVLOOP_RUN_DIR/result.md",
         ],
         kind="builder",
         worktree=str(wt),
@@ -47,6 +47,24 @@ def test_confirmed_sha_is_the_only_head_the_reader_sees(proj, tmp_path, repo, li
     text = (store.out_dir(rd) / "result.md").read_text()
     assert text.count("head") == 1 and "STALE" not in text and "OLDER" not in text
     assert text.endswith("---\nok\n")
+
+
+def test_a_separator_with_trailing_spaces_keeps_the_body(proj, tmp_path, repo):
+    wt, _ = repo
+    sha = commit(wt)
+    rd = run_with_header(proj, tmp_path, wt, ["status: DONE", "head: STALE"], "---  ")
+    res = runs.parse_result(rd, "builder")
+    assert (res.head, res.summary) == (sha, "ok")
+
+
+def test_a_stale_head_before_the_correct_one_leaves_exactly_one(proj, tmp_path, repo):
+    wt, _ = repo
+    sha = commit(wt)
+    rd = run_with_header(
+        proj, tmp_path, wt, ["status: DONE", "head: STALE", f"head: {sha}"]
+    )
+    text = (store.out_dir(rd) / "result.md").read_text()
+    assert text.count("head:") == 1 and "STALE" not in text
 
 
 def test_result_publication_failure_sets_a_failed_exit(

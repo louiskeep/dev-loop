@@ -181,7 +181,7 @@ def _push_writer(rd, req):
     is not on the remote must never become the slice head, so a failure turns the result
     into FAILED with the reason."""
     path = store.out_dir(rd) / "result.md"
-    hdr = store.read_header(path)
+    hdr, body = store.read_result(path)
     if hdr.get("status") != "DONE":
         return
     try:
@@ -189,10 +189,10 @@ def _push_writer(rd, req):
     except Exception as exc:  # any failure to confirm must not leave a DONE result
         pushed, why = None, f"push confirmation failed: {type(exc).__name__}"
     if why is None:
-        if hdr.get("head") != pushed:  # report the commit the remote confirmed
-            store.rewrite_header(path, head=pushed)
+        store.rewrite_header(
+            path, head=pushed
+        )  # report the commit the remote confirmed
         return
-    body = path.read_text(encoding="utf-8", errors="replace").partition("\n---")[2]
     text = f"status: FAILED\nhead: \nverdict: \ntests: {hdr.get('tests', '')}\n"
     text += f"push: {why}\n---\npush failed: {why}\n{body.strip()}\n"
     store.write_text(path, text)
