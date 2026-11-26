@@ -308,3 +308,36 @@ def test_a_non_doc_file_under_docs_is_not_docs_only(fx):
     fx.write("docs/conf.py", "x = 1")
     head = fx.commit("sphinx config")
     assert carry.docs_only(fx.path, "main", head) is False
+
+
+def test_pushed_credits_a_clean_main_merge_on_the_builders_commit(
+    proj, mk_slice, mk_run, cfg_edit, fx
+):
+    cfg_edit(lambda c: c["repos"][0].update(path=str(fx.path), base="main"))
+    built = _feature(fx)
+    fx.advance_main("other.txt")
+    merged = fx.merge_main()
+    k = mk_slice(
+        proj, phase="VERIFY", head=merged, worktree=str(fx.path), head_writer=None
+    )
+    mk_run(proj, "b0", kind="builder", key=k, result_head=built[:9], status="BLOCKED")
+    slices.pushed(proj, k, "b0")
+    assert evidence.head_writer(proj, slices.load(proj, k)) == "builder"
+
+
+def test_pushed_refuses_a_merge_that_adds_its_own_change(
+    proj, mk_slice, mk_run, cfg_edit, fx
+):
+    cfg_edit(lambda c: c["repos"][0].update(path=str(fx.path), base="main"))
+    built = _feature(fx)
+    fx.advance_main("other.txt")
+    fx.merge_main()
+    fx.write("sneak.txt", "y")
+    git(fx.path, "add", "-A")
+    git(fx.path, "commit", "-q", "--amend", "--no-edit")
+    k = mk_slice(
+        proj, phase="VERIFY", head=fx.sha(), worktree=str(fx.path), head_writer=None
+    )
+    mk_run(proj, "b0", kind="builder", key=k, result_head=built, status="BLOCKED")
+    with pytest.raises(slices.SliceError, match="not the slice head"):
+        slices.pushed(proj, k, "b0")

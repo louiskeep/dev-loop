@@ -672,7 +672,8 @@ def pushed(project: str, key: str, run_id: str) -> None:
 
     Credits that builder as the head's writer, but only when the run is an applied
     builder run for this slice and plan lineage and its result names the slice's
-    current head. A head the Tech lead changed matches no run and stays unproven.
+    current head, or a commit the head only merges the base into. A head the Tech lead
+    changed in any other way matches no run and stays unproven.
     """
     from . import runs
 
@@ -693,12 +694,28 @@ def pushed(project: str, key: str, run_id: str) -> None:
         raise SliceError("the run names no commit SHA")
     if req.get("head") and req["head"].startswith(rh):
         raise SliceError("the run wrote no commit: its head is the head it started on")
+    # Ask git outside the lock: the head may be a clean merge of the base into the
+    # builder's commit, the same test that lets evidence carry across such a merge.
+    seen = load(project, key)
+    merged_onto = None
+    if seen["head"] and not seen["head"].startswith(rh):
+        from . import carry, merge
+
+        repo_cfg, _rules, base = merge.repo_settings(
+            projmod.load_project(project), seen["repo"]
+        )
+        path = seen["worktree"] or repo_cfg["path"]
+        full = (
+            carry._git(path, "rev-parse", "--verify", f"{rh}^{{commit}}") or ""
+        ).strip()
+        if full and carry.carry_reason(path, base, full, seen["head"]) is None:
+            merged_onto = seen["head"]
     with _edit(project, key) as s:
         if (req.get("row"), req.get("slice")) != (s["row"], s["slice"]):
             raise SliceError("the run belongs to another slice")
         if req.get("plan_lineage", 0) != s["plan_lineage"]:
             raise SliceError("the run is from an earlier plan")
-        if not s["head"] or not s["head"].startswith(rh):
+        if not s["head"] or not (s["head"].startswith(rh) or s["head"] == merged_onto):
             raise SliceError("the run's head is not the slice head")
         s["head_writer"] = writer_record(req["kind"], s["head"], s["plan_lineage"])
     store.append_event(project, "head-pushed", key=key, run=run_id)
