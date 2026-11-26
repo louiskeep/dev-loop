@@ -50,7 +50,8 @@ DOC_SUFFIXES = (".md", ".rst")
 
 
 def _is_doc(name):
-    return name.endswith(DOC_SUFFIXES) or name.startswith("docs/")
+    # Suffix only: a .py, .json or .yaml file under docs/ can still be read by a test.
+    return name.endswith(DOC_SUFFIXES)
 
 
 def tests_carry(path, old, new):

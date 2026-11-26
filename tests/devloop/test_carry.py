@@ -301,3 +301,10 @@ def test_code_head_still_needs_t1(proj, mk_slice, cfg_edit, fx):
     with pytest.raises(Exception):
         slices.move(proj, k, "REVIEW", reason="no t1")
     assert any("t1" in m for m in _gate_missing(proj, k))
+
+
+def test_a_non_doc_file_under_docs_is_not_docs_only(fx):
+    _docs_feature(fx)
+    fx.write("docs/conf.py", "x = 1")
+    head = fx.commit("sphinx config")
+    assert carry.docs_only(fx.path, "main", head) is False
