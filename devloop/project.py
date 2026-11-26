@@ -306,6 +306,8 @@ def _validate(cfg: dict, project: str) -> dict:
             _fail(f"memory_mb.{key}", "unknown kind")
         if not _int(mb) or mb < 0:
             _fail(f"memory_mb.{key}", "must be an integer >= 0")
+    if cfg.get("mode", "headless") not in ("headless", "live"):
+        _fail("mode", 'must be "headless" or "live"')
     cap = cfg.get("max_dispatch_per_tick", 1)
     if not _int(cap) or cap < 1:
         _fail("max_dispatch_per_tick", "must be an integer >= 1")
@@ -351,3 +353,8 @@ def base_branches(cfg) -> str:
         if rules.get("base"):
             names.add(rules["base"])
     return ",".join(sorted(names))
+
+
+def is_live(cfg) -> bool:
+    """True when a live loop session drives the project instead of the cron tick."""
+    return cfg.get("mode") == "live"

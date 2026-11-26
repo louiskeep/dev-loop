@@ -384,3 +384,20 @@ def test_failed_model_call_leaves_the_decision_outstanding(proj, monkeypatch):
     assert len(prompts) == 2 and all("other: do it" in p for p in prompts)
     tick.tick(proj)
     assert len(prompts) == 2
+
+
+def test_a_live_project_never_starts_a_tick_session(proj, tmp_path, cfg_edit):
+    cfg_edit(lambda c: c.update(mode="live"))
+    tick.tick(proj)
+    assert claude_calls(tmp_path) == []
+    assert "live" in posts(tmp_path)[-1]
+
+
+def test_no_test_can_reach_a_real_model():
+    import shutil
+
+    for name in ("claude", "codex"):
+        r = subprocess.run([shutil.which(name)], capture_output=True, check=False)
+        assert r.returncode in (0, 97)  # a fake from fakebin, or the guard
+    # This module's autouse env puts fakebin first; the guard sits right behind it.
+    assert "no-real-models" in os.environ["PATH"]

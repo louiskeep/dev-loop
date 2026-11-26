@@ -66,6 +66,25 @@ def write_project():
     return write
 
 
+REFUSE = "#!/bin/sh\necho 'test guard: a real model call is blocked' >&2\nexit 97\n"
+
+
+@pytest.fixture(autouse=True)
+def no_real_models(tmp_path_factory, monkeypatch):
+    """No test may start a real model session.
+
+    `claude` and `codex` on PATH refuse, so a code path that a test forgot to fake (a
+    detached tick, a wrapper's wake-up) fails loudly instead of spending real tokens.
+    The `fakebin` fixture still puts its own fakes in front.
+    """
+    d = tmp_path_factory.mktemp("no-real-models")
+    for name in ("claude", "codex"):
+        f = d / name
+        f.write_text(REFUSE)
+        f.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{d}{os.pathsep}{os.environ['PATH']}")
+
+
 @pytest.fixture
 def fakebin(tmp_path, monkeypatch):
     """The shared fake tools (gh, ...) first on PATH, in a per-test copy."""

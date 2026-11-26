@@ -203,6 +203,11 @@ def _pass(project) -> str:
     if (d / "PAUSE").exists():
         status.write_status(project)
         return "paused"
+    if projmod.is_live(cfg):
+        # A live loop session drives this project; a cron or wake-up tick must not
+        # start a model session beside it.
+        status.write_status(project)
+        return "live"
     if store.cap_active(project):
         status.write_status(project)
         return "capped"

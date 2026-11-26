@@ -1010,3 +1010,34 @@ def test_row_close_cli_and_snapshot_listing(proj, home, cfg_edit, tmp_path):
         .split("## Rows ready to close")[1]
         .split("##")[0]
     )
+
+
+# --- live mode: a live loop session records phases for the dashboard ---------
+
+
+def test_live_mode_moves_without_run_evidence(proj, mk_slice, cfg_edit):
+    cfg_edit(lambda c: c.update(mode="live"))
+    k = mk_slice(proj, phase="FRAME", risk=None, rulebooks=[])
+    assert slices.move(proj, k, "DEVELOP", "live loop")["phase"] == "DEVELOP"
+    assert slices.move(proj, k, "GATE", "live loop")["phase"] == "GATE"
+    assert slices.move(proj, k, "DOCUMENT", "merged by the live loop")["phase"] == (
+        "DOCUMENT"
+    )
+
+
+def test_live_mode_still_needs_the_owner_for_a_hold(proj, mk_slice, cfg_edit):
+    cfg_edit(lambda c: c.update(mode="live"))
+    k = mk_slice(proj, phase="HELD", parked_from="FRAME", park_reason="R3 waits")
+    with pytest.raises(slices.TransitionError, match="owner"):
+        slices.move(proj, k, "FRAME", "x")
+    with pytest.raises(slices.TransitionError, match="resumes only"):
+        slices.move(proj, k, "DEVELOP", "x")
+
+
+def test_headless_mode_keeps_every_check(proj, mk_slice):
+    k = mk_slice(proj, phase="FRAME", risk=None, rulebooks=[])
+    with pytest.raises(slices.TransitionError):
+        slices.move(proj, k, "DEVELOP", "x")
+    k = mk_slice(proj, phase="GATE")
+    with pytest.raises(slices.TransitionError, match="merge command"):
+        slices.move(proj, k, "DOCUMENT", "x")

@@ -827,6 +827,9 @@ def _move(project, key, to, reason, via_merge=False, ident=None):
     if to not in PHASES:
         raise TransitionError("unknown phase")
     cfg = projmod.load_project(project)
+    # A live loop session runs its workers as its own subagents, so no run evidence
+    # exists to check. It records phases for the dashboard; the owner's holds still apply.
+    live = projmod.is_live(cfg)
     reason = str(reason)[:500]
     with _edit(project, key) as s:
         frm = s["phase"]
@@ -845,11 +848,11 @@ def _move(project, key, to, reason, via_merge=False, ident=None):
                     )
                 board.record_merge(project, ident, s)
                 s["merge_attempt"], s["merge_unknown"] = None, False
-        elif (frm, to) == ("GATE", "DOCUMENT"):
+        elif (frm, to) == ("GATE", "DOCUMENT") and not live:
             raise TransitionError(
                 "GATE to DOCUMENT happens only through the merge command"
             )
-        if to not in TRANSITIONS[frm]:
+        if to not in TRANSITIONS[frm] and not (live and frm not in ("PARKED", "HELD")):
             raise TransitionError(f"{frm} to {to} is not allowed")
         if frm in ("PARKED", "HELD"):
             if to != s["parked_from"]:
@@ -863,7 +866,7 @@ def _move(project, key, to, reason, via_merge=False, ident=None):
         # must not strand the slice at GATE.
         missing = (
             []
-            if via_merge
+            if via_merge or live
             else [i.label for i in evidence.checks(project, s, cfg, to) if not i.ok]
         )
         if missing:
