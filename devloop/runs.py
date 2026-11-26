@@ -180,6 +180,10 @@ def remove_tree(project, run_id, req=None) -> None:
     """
     rd = store.run_dir(project, run_id)
     tree = rd / "tree"
+    if (req or {}).get("batch_commit") and req.get("worktree"):
+        from . import batch
+
+        batch.drop(req["worktree"], run_id)
     if not tree.exists() and not tree.is_symlink():
         return
     if tree.is_symlink() or tree.resolve() != (rd.resolve() / "tree"):

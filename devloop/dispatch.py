@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from . import project as projmod
+from . import batch as batchmod
 from . import evidence, notes, runs, slices, store
 
 
@@ -161,6 +162,8 @@ def _skeleton(kind, key):
         "level": None,
         "select": [],
         "covers": {},
+        "batch": {},
+        "batch_commit": None,
         "predecessor_run": None,
         "plan_sha": None,
         "head": None,
@@ -229,7 +232,7 @@ def _prepare_review(project, cfg, s, req, kind, reviewer, wt):
             raise runs.Refused("no repair_out configured")
 
 
-def _prepare_test(project, cfg, s, req, level, select, covers, wt):
+def _prepare_test(project, cfg, s, req, level, select, covers, wt, batch=()):
     spec_t = (cfg.get("tests") or {}).get(level or "")
     if not spec_t or not spec_t.get("argv"):
         raise runs.Refused("no command configured for this test level")
@@ -273,9 +276,17 @@ def _prepare_test(project, cfg, s, req, level, select, covers, wt):
             raise runs.Refused(f"{ckey} head is not an ancestor of the tested head")
         frozen[ckey] = other["head"]
     req["covers"] = frozen
+    if batch:
+        if covers:
+            raise runs.Refused("a batch and covers cannot be combined")
+        req["batch"], req["batch_commit"] = batchmod.prepare(
+            project, cfg, s, list(batch), level, select, wt
+        )
 
 
-def _prepare(project, cfg, kind, key, worktree, reviewer, level, select, covers):
+def _prepare(
+    project, cfg, kind, key, worktree, reviewer, level, select, covers, batch=()
+):
     """Validate everything dispatch must freeze. Returns (request skeleton, slice)."""
     req = _skeleton(kind, key)
     if kind == "duty":
@@ -316,7 +327,7 @@ def _prepare(project, cfg, kind, key, worktree, reviewer, level, select, covers)
     if kind in runs.REVIEW_KINDS:
         _prepare_review(project, cfg, s, req, kind, reviewer, wt)
     elif kind == "test":
-        _prepare_test(project, cfg, s, req, level, select, covers, wt)
+        _prepare_test(project, cfg, s, req, level, select, covers, wt, batch)
     elif kind == "codex-builder":
         argv = ((cfg["reviewers"].get("codex") or {}).get("argv") or {}).get(kind)
         if not argv:
@@ -401,6 +412,7 @@ def dispatch(
     level=None,
     select=(),
     covers=(),
+    batch=(),
     retry_of=None,
 ) -> str:
     if kind not in runs.KINDS:
@@ -412,7 +424,16 @@ def dispatch(
     if retry_of is not None and store.TOKEN.fullmatch(retry_of) is None:
         raise runs.Refused("bad retry-of")
     req, s = _prepare(
-        project, cfg, kind, key, worktree, reviewer, level, list(select), list(covers)
+        project,
+        cfg,
+        kind,
+        key,
+        worktree,
+        reviewer,
+        level,
+        list(select),
+        list(covers),
+        list(batch),
     )
     spec = runs.KINDS[kind]
     body = brief.read_text(encoding="utf-8")
@@ -490,6 +511,9 @@ def _freeze(project, req, s, rd, run_id, retry_of, body):
     plan_review = req["purpose"] == "plan" and kind != "codex-fix"
     if spec.pinned and req["purpose"] == "code":
         tree = rd / "tree"
+        at = req["batch_commit"] or req["head"]
+        if req["batch_commit"]:
+            batchmod.keep(req["worktree"], run_id, at)
         made = subprocess.run(
             [
                 "git",
@@ -499,7 +523,7 @@ def _freeze(project, req, s, rd, run_id, retry_of, body):
                 "add",
                 "--detach",
                 str(tree),
-                req["head"],
+                at,
             ],
             capture_output=True,
             stdin=subprocess.DEVNULL,
@@ -520,7 +544,7 @@ def _freeze(project, req, s, rd, run_id, retry_of, body):
         "brief": rd / "brief.md",
         "worktree": work,
         "out": req["out"],
-        "head": req["head"] or "",
+        "head": req["batch_commit"] or req["head"] or "",
         "run_dir": store.out_dir(rd),
         "run_id": run_id,
         "plan": plan_copy or "",
