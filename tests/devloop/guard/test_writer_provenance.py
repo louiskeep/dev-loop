@@ -325,3 +325,21 @@ def test_headless_migration_is_refused(proj, tmp_path, home, monkeypatch):
     result = run_state(home, "migrate")
     assert result.returncode != 0 and "headless" in result.stderr
     assert "head_writer" not in store.read_json(slices.slice_path(proj, key))
+
+
+def test_dispatch_uses_shared_senior_run_kinds(proj, ready, brief, dual, monkeypatch):
+    key, _, _ = ready("REVIEW", risk="R1", head_writer=None)
+    monkeypatch.setattr(
+        evidence, "code_reviewer_kinds", lambda *args: ("codex-review",)
+    )
+    assert go(proj, brief, "codex-review", key, reviewer="dennis")
+
+
+def test_startup_checks_the_agents_selected_by_senior_policy(
+    proj, fakebin, monkeypatch
+):
+    from devloop import check
+
+    monkeypatch.setattr(evidence, "senior_reviewers", lambda cfg: ["alternate"])
+    results = check.run_checks(proj)
+    assert (False, "agents: reviewer agent alternate not found") in results
