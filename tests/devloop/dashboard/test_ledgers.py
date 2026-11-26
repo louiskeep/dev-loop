@@ -57,3 +57,13 @@ def test_healthy_ledgers_are_not_marked(proj, dash):
     v = build(proj)
     assert not (unreadable(v) & {"merges", "closures"})
     assert merges(v) and row_closes(v)
+
+
+@pytest.mark.parametrize(
+    "name,key", [("merges.json", "merges"), ("closures.json", "closures")]
+)
+def test_a_null_ledger_is_marked_unreadable(proj, dash, name, key):
+    write(proj, name, {key: None})
+    v = build(proj)
+    assert key in unreadable(v)
+    assert card(v, dash["gate"])

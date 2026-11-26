@@ -677,16 +677,20 @@ def build_view(project, proc="/proc", now=None) -> dict:
     now = now or datetime.datetime.now(datetime.timezone.utc)
     cfg = projmod.load_project(project)
     ctx = _Ctx(project, cfg, now, proc)
-    raw_merges = _try(lambda: slices.merge_records(project), ctx.bad, "merges", None)
+    unread = object()  # a failed read, as opposed to a file holding JSON null
+    raw_merges = _try(lambda: slices.merge_records(project), ctx.bad, "merges", unread)
     raw_closures = _try(
-        lambda: slices.closure_records(project), ctx.bad, "closures", None
+        lambda: slices.closure_records(project), ctx.bad, "closures", unread
     )
-    merges, closures = status.checked_ledgers(raw_merges, raw_closures)
+    merges, closures = status.checked_ledgers(
+        None if raw_merges is unread else raw_merges,
+        None if raw_closures is unread else raw_closures,
+    )
     for name, raw, ok in (
         ("merges", raw_merges, merges),
         ("closures", raw_closures, closures),
     ):
-        if raw is not None and ok is None:  # read fine, but its content is damaged
+        if raw is not unread and ok is None:  # read fine, but its content is damaged
             ctx.bad.append(name)
     needs = _needs_you(ctx)
     problems = _problems(ctx)
