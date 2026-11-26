@@ -235,6 +235,7 @@ def tick_line(project, outcome: str, summary: str = "", *, last_model_at=None) -
     body = {
         "model": summary or "nothing to do",
         "paused": "paused, collecting finished work only",
+        "live": "a live loop session runs this project, the tick stood down",
         "capped": "waiting for the usage cap to clear",
         "failed": "the tick failed, see the cron log",
     }[outcome]
