@@ -238,7 +238,12 @@ def _plan_items(project, s, cfg):
 
 
 def senior_reviewers(cfg) -> list:
-    return [n for n, spec in cfg["reviewers"].items() if spec.get("kind") == "dennis"]
+    """Reviewers declared `dennis` that may also run the dennis kind they must run here."""
+    return [
+        n
+        for n, spec in cfg["reviewers"].items()
+        if spec.get("kind") == "dennis" and "dennis" in _reviewer_kinds(cfg, n)
+    ]
 
 
 def _applied_writer_runs(project, s):
@@ -256,12 +261,14 @@ def _applied_writer_runs(project, s):
             continue
         if req.get("plan_lineage", 0) != s["plan_lineage"]:
             continue  # a builder run for an earlier plan does not count after a redesign
-        hdr = store.read_header(store.out_dir(rd) / "result.md")
+        res = runs.parse_result(
+            rd, req["kind"]
+        )  # the exit file overrides a DONE header
         if (
             (rd / "applied").is_file()
             and store.request_matches_ledger(project, rd.name)
-            and hdr.get("status") == "DONE"
-            and hdr.get("head") == s["head"]
+            and res.status == "DONE"
+            and res.head == s["head"]
         ):
             found.append(req["kind"])
     return found
@@ -287,7 +294,7 @@ def head_writer(project, s):
     found = _applied_writer_runs(project, s)
     if found:
         return "codex-builder" if "codex-builder" in found else found[-1]
-    return "imported" if s["imported"] and s["approved_plan_sha"] else None
+    return None
 
 
 def _claude_written(project, s) -> bool:

@@ -52,7 +52,7 @@ def _run(argv, timeout):
 
 def _agent_checks(cfg):
     """Each dennis-kind reviewer runs `claude --agent NAME`; the agent must exist."""
-    names = [n for n, s in cfg["reviewers"].items() if s.get("kind") == "dennis"]
+    names = evidence.senior_reviewers(cfg)
     if not names:
         return []
     try:

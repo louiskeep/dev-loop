@@ -200,9 +200,10 @@ def _prepare_review(project, cfg, s, req, kind, reviewer, wt):
     req["reviewer"] = reviewer
     purpose = "plan" if (kind == "codex-fix" or s["phase"] == "PLAN") else "code"
     req["purpose"] = purpose
-    if purpose == "code" and reviewer == evidence.senior_slot(project, cfg, s):
-        if kind != "dennis":
-            raise runs.Refused(f"{reviewer} holds the Senior seat and must run dennis")
+    if purpose == "code" and kind not in evidence.code_reviewer_kinds(
+        project, cfg, s, reviewer
+    ):
+        raise runs.Refused(f"{reviewer} holds the Senior seat and must run dennis")
     argv = (spec_r.get("argv") or {}).get(kind)
     if argv is None and kind == "dennis":
         argv = _claude_argv(cfg["models"]["reviewer"], "--agent", reviewer)

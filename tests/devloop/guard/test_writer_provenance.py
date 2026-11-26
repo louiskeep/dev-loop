@@ -3,7 +3,8 @@
 import pytest
 from runs_support import brief, config, env, finish, go, ready, res  # noqa: F401
 
-from devloop import runs, slices
+from devloop import evidence, runs, slices, store
+from devloop import project as projmod
 
 
 def gate(proj, key):
@@ -144,3 +145,85 @@ def test_dual_kind_senior_may_run_codex_review_on_a_claude_head(
 ):
     key, _, head = ready("REVIEW", risk="R2")
     assert go(proj, brief, "codex-review", key, reviewer="dennis")
+
+
+def test_a_failed_run_with_a_done_header_is_not_credited(proj, ready, mk_run):
+    key, _, head = ready("REVIEW", risk="R1", head_writer=None)
+    d = mk_run(proj, "b1", kind="builder", key=key, head=head)
+    store.write_json(d / "exit", {"code": 1, "reason": "exit", "ended_at": "t"})
+    assert evidence.head_writer(proj, slices.load(proj, key)) is None
+    assert "an applied builder run wrote this head" in unmet(proj, key)
+    assert code_labels(proj, key)[0] == "code review dennis GO on head"
+
+
+def builder_done(proj, key):
+    return dict(slices.exit_checklist(proj, key))["applied builder run DONE on head"]
+
+
+# --- an import allowance belongs to the imported commit ------------------------
+
+
+def imported(proj, tmp_path, head="a" * 40):
+    plan = tmp_path / "plan.md"
+    plan.write_text("Rules consulted: x\n")
+    return slices.import_slice(
+        proj,
+        "IMP",
+        "S1",
+        repo="main",
+        risk="R1",
+        rulebooks=["a.md"],
+        worktree=str(tmp_path),
+        branch="feat/x",
+        pr=None,
+        head=head,
+        plan_path=str(plan),
+        purpose="p",
+        phase="DEVELOP",
+        plan_approved=True,
+    )["key"]
+
+
+def test_the_imported_head_counts_as_claude_written(proj, tmp_path):
+    key = imported(proj, tmp_path)
+    assert evidence.head_writer(proj, slices.load(proj, key)) == "imported"
+    assert builder_done(proj, key) is True
+
+
+def test_moving_an_imported_head_restores_the_unmet_writer_item(proj, tmp_path):
+    key = imported(proj, tmp_path)
+    set_head(proj, key, "b" * 40)
+    assert evidence.head_writer(proj, slices.load(proj, key)) is None
+    assert builder_done(proj, key) is False
+
+
+def test_a_new_plan_lineage_drops_the_import_allowance(proj, tmp_path):
+    key = imported(proj, tmp_path)
+    s = slices.load(proj, key)
+    s["plan_lineage"] += 1
+    slices._save(proj, s)
+    assert evidence.head_writer(proj, slices.load(proj, key)) is None
+
+
+# --- the Senior seat goes to a reviewer that may run dennis --------------------
+
+
+def test_senior_seat_skips_a_dennis_kind_reviewer_that_cannot_run_dennis(
+    proj, ready, brief, cfg_edit
+):
+    def edit(c):
+        first = dict(c["reviewers"]["dennis"])
+        first["kinds"] = ["codex-review"]
+        first["argv"] = {
+            "codex-review": ["codex-review", "{worktree}", "{brief}", "{out}"]
+        }
+        c["reviewers"] = {"dennis0": first, **c["reviewers"]}
+
+    cfg_edit(edit)
+    key, _, head = ready("REVIEW", risk="R1", head_writer=None)
+    s = slices.load(proj, key)
+    s["head_writer"] = slices.writer_record("codex-builder", head)
+    slices._save(proj, s)
+    cfg = projmod.load_project(proj)
+    assert evidence.senior_slot(proj, cfg, s) == "dennis"
+    assert go(proj, brief, "dennis", key, reviewer="dennis")

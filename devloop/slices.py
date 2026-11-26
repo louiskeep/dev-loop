@@ -227,7 +227,7 @@ def _writer_record(v) -> bool:
     """One record binds who wrote a head to the commit and the plan it was written for."""
     return (
         isinstance(v, dict)
-        and v.get("kind") in WRITER_KINDS
+        and v.get("kind") in (*WRITER_KINDS, "imported")
         and isinstance(v.get("sha"), str)
         and bool(v["sha"])
         and _nat(v.get("plan_lineage"))
@@ -449,6 +449,8 @@ def import_slice(
     if plan_approved:
         probe = {"plan_path": plan_path, "worktree": worktree}
         overrides["approved_plan_sha"] = plan_sha(probe)
+        if head:  # the owner vouches for this commit only, under the plan just approved
+            overrides["head_writer"] = writer_record("imported", head)
     return _create(project, row, slice_id, repo, risk, **overrides)
 
 
