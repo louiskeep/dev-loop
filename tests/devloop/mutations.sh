@@ -504,6 +504,9 @@ mutate "a request with bad UTF-8 escapes the memory scan" devloop/store.py \
         text, bad = "", True' '    except ZeroDivisionError:
         text, bad = "", True' \
   $G/test_host_memory.py::test_damaged_request_files_are_skipped_and_healthy_runs_still_count
+mutate "frozen memory depends on a valid run kind" devloop/runs.py \
+  'if type(frozen) is int and frozen >= 0:' 'if type(frozen) is int and frozen >= 0 and isinstance(req.get("kind"), str):' \
+  $G/test_host_memory.py::test_frozen_memory_counts_with_a_damaged_kind
 mutate "a wrong-typed kind reaches the estimate lookup" devloop/runs.py \
   '            if not isinstance(req.get("kind"), str):' '            if False:' \
   $G/test_host_memory.py::test_damaged_request_files_are_skipped_and_healthy_runs_still_count

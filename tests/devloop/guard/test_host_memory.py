@@ -109,3 +109,9 @@ def test_unreadable_foreign_request_leaves_healthy_reservation(two, monkeypatch)
         monkeypatch.setattr(store, "read_json", read_as_user)
     plant(q, "ok.1", memory_mb=700)
     assert runs.reserved_mb() == 700
+
+
+def test_frozen_memory_counts_with_a_damaged_kind(two):
+    p, _ = two
+    plant(p, "new.1", kind=[], memory_mb=4096)
+    assert runs.reserved_mb() == 4096
