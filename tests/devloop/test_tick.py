@@ -386,11 +386,12 @@ def test_failed_model_call_leaves_the_decision_outstanding(proj, monkeypatch):
     assert len(prompts) == 2
 
 
-def test_a_live_project_never_starts_a_tick_session(proj, tmp_path, cfg_edit):
+def test_a_live_project_never_starts_a_tick_session(proj, tmp_path, cfg_edit, home):
     cfg_edit(lambda c: c.update(mode="live"))
     tick.tick(proj)
     assert claude_calls(tmp_path) == []
-    assert "live" in posts(tmp_path)[-1]
+    assert posts(tmp_path) == []  # the live session posts its own updates
+    assert (home / "p" / "STATUS.md").is_file()  # the dashboard still refreshes
 
 
 def test_no_test_can_reach_a_real_model():
