@@ -309,6 +309,8 @@ def reserved_mb(now=None) -> int:
                 continue
             if started < cutoff or (rd / "exit").is_file():
                 continue
+            if not isinstance(req.get("kind"), str):
+                continue  # a damaged request reserves nothing and breaks no one else
             frozen = req.get("memory_mb")
             if type(frozen) is int and frozen >= 0:
                 total += frozen

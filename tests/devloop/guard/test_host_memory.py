@@ -79,3 +79,14 @@ def test_a_project_whose_config_cannot_load_still_counts_a_legacy_run(two, home)
     plant(q, "legacy.1")
     (home / "q" / "project.json").write_text("{bad")
     assert runs.reserved_mb() > 0
+
+
+def test_damaged_request_files_are_skipped_and_healthy_runs_still_count(two):
+    p, q = two
+    plant(p, "ok.1", memory_mb=200)
+    bad = plant(p, "bad.1")
+    (bad / "request.json").write_bytes(b"\xff\xfe{")
+    plant(q, "ok.2", memory_mb=50)
+    plant(q, "kind.1", kind=[])  # a legacy request whose kind is not a name
+    plant(q, "kind.2", kind={"a": 1}, memory_mb=None)
+    assert runs.reserved_mb() == 250

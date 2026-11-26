@@ -149,11 +149,13 @@ def write_json(path, obj: dict) -> None:
 def read_json(path, default=None) -> dict:
     """Read a JSON object. A missing file gives `default` ({} when None)."""
     path = Path(path)
+    bad = False
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return {} if default is None else default
-    bad = False
+    except UnicodeDecodeError:
+        text, bad = "", True
     try:
         data = json.loads(text)
     except ValueError:
