@@ -116,8 +116,13 @@ def slot_resumes(project, all_slices):
         if s["phase"] == "PARKED"
         and s["parked_from"]
         and s["park_reason"] not in slices.OWNER_PARKS
-        and "tester slot" in (s["waiting_on"] or "").lower()
+        and _SLOT_ONLY.fullmatch((s["waiting_on"] or "").strip().lower())
     ]
+
+
+# A wait that names only a free tester slot. Anything more ("row X and tester slot")
+# is a real dependency and stays parked.
+_SLOT_ONLY = re.compile(r"(a )?(free )?tester slot( free)?")
 
 
 def _slice_block(project, s, running):

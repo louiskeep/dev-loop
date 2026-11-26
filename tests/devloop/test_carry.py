@@ -120,7 +120,7 @@ def _events(proj):
 
 def test_set_head_carries_evidence_and_records_event(proj, slice_on, fx):
     k, old = slice_on
-    fx.advance_main("other.txt")
+    fx.advance_main("notes.md")
     new = fx.merge_main()
     s = slices.set_fields(proj, k, head=new)
     bucket = s["evidence"][new]
@@ -158,10 +158,10 @@ def test_set_head_resets_for_a_plain_new_commit(proj, slice_on, fx):
 
 def test_a_second_hop_keeps_the_original_run_binding(proj, slice_on, fx):
     k, old = slice_on
-    fx.advance_main("o1.txt")
+    fx.advance_main("o1.md")
     mid = fx.merge_main()
     slices.set_fields(proj, k, head=mid)
-    fx.advance_main("o2.txt")
+    fx.advance_main("o2.md")
     new = fx.merge_main()
     s = slices.set_fields(proj, k, head=new)
     assert s["evidence"][new]["t1"]["carried_from"] == old
@@ -170,9 +170,58 @@ def test_a_second_hop_keeps_the_original_run_binding(proj, slice_on, fx):
 
 def test_a_carried_entry_still_needs_its_run_to_match(proj, slice_on, fx):
     k, old = slice_on
-    fx.advance_main("other.txt")
+    fx.advance_main("notes.md")
     new = fx.merge_main()
     slices.set_fields(proj, k, head=new)
     with slices._edit(proj, k) as s:
         s["evidence"][new]["t1"]["carried_from"] = "f" * 40
     assert any(m.startswith("t1 GO") for m in _gate_missing(proj, k))
+
+
+def test_code_from_main_carries_reviews_but_not_tests(proj, slice_on, fx):
+    """A clean merge of disjoint code can still break a test, so t1 reruns."""
+    k, _old = slice_on
+    fx.advance_main("dep.py")
+    new = fx.merge_main()
+    bucket = slices.set_fields(proj, k, head=new)["evidence"][new]
+    assert "t1" not in bucket
+    assert {"selfcheck", "code:codex"} <= set(bucket)
+
+
+def test_failed_fetch_does_not_carry(fx):
+    old = _feature(fx)
+    fx.advance_main("notes.md")
+    new = fx.merge_main()
+    git(fx.path, "remote", "set-url", "origin", str(fx.path.parent / "gone.git"))
+    assert "fetch" in carry.carry_reason(fx.path, "main", old, new)
+
+
+def test_base_that_already_holds_the_old_head_keeps_the_slice_files(fx):
+    fx.branch("feat")
+    fx.edit_top()
+    old = fx.commit("slice edits shared.txt")
+    fx.advance_main_bottom()
+    new = fx.merge_main()
+    # Main later takes the old feature head too; the slice's files must still count.
+    fx.checkout("main")
+    git(fx.path, "merge", "-q", "--no-ff", "--no-edit", old)
+    git(fx.path, "push", "-q", "origin", "main")
+    fx.checkout("feat")
+    assert "slice file" in carry.carry_reason(fx.path, "main", old, new)
+
+
+def test_an_unapplied_run_on_the_old_head_blocks_carry(proj, slice_on, fx, mk_run):
+    k, old = slice_on
+    mk_run(
+        proj,
+        "r-rerun",
+        kind="test",
+        key=k,
+        head=old,
+        level="t1",
+        verdict="NO-GO",
+        applied=False,
+    )
+    fx.advance_main("notes.md")
+    new = fx.merge_main()
+    assert new not in slices.set_fields(proj, k, head=new)["evidence"]

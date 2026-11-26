@@ -591,9 +591,30 @@ def _carry_plan(project, pending, fields):
 
     repo_cfg, _rules, base = merge.repo_settings(cfg, pending["repo"])
     path = fields.get("worktree") or pending["worktree"] or repo_cfg["path"]
+    if _unsettled_runs(project, pending, old):
+        return None
     if carry.carry_reason(path, base, old, new) is not None:
         return None
-    return {"old": old, "new": new, "writer": evidence.head_writer(project, pending)}
+    return {
+        "old": old,
+        "new": new,
+        "tests": carry.tests_carry(path, old, new),
+        "writer": evidence.head_writer(project, pending),
+    }
+
+
+def _unsettled_runs(project, s, head):
+    """True while a run on `head` has not been applied: its verdict could still veto."""
+    from . import runs
+
+    for rd, req in runs.iter_runs(project):
+        if (req.get("row"), req.get("slice")) != (s["row"], s["slice"]):
+            continue
+        if req.get("head") != head:
+            continue
+        if not runs.is_done(rd):
+            return True
+    return False
 
 
 def _carry_evidence(s, carry):
@@ -608,6 +629,8 @@ def _carry_evidence(s, carry):
         if kind not in CARRY_KINDS and not kind.startswith("code:"):
             continue
         if e.get("verdict") != "GO" or kind in dst:
+            continue
+        if kind == "t1" and not carry.get("tests"):
             continue
         entry = {
             **e,

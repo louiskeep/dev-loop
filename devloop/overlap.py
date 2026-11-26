@@ -17,6 +17,8 @@ _PATH = re.compile(r"[\w.@+-]+(?:/[\w.@+-]+)+|[\w-]+\.[A-Za-z0-9]{1,5}")
 
 def _branch_files(path, base, branch):
     ref = carry.base_ref(path, base)
+    if ref is None:
+        return None
     for cand in (branch, f"origin/{branch}"):
         mb = (carry._git(path, "merge-base", ref, cand) or "").strip()
         if mb:
@@ -24,24 +26,54 @@ def _branch_files(path, base, branch):
     return None
 
 
+def _worktree_files(path):
+    """Staged, unstaged and untracked paths in the slice's own worktree."""
+    out = carry._git(path, "status", "--porcelain", "--untracked-files=all")
+    if out is None:
+        return set()
+    return {
+        ln[3:].split(" -> ")[-1].strip('"') for ln in out.splitlines() if len(ln) > 3
+    }
+
+
+def _cells(ln):
+    return [c.strip() for c in ln.strip().strip("|").split("|")]
+
+
 def _placement_files(s):
-    """File paths in the plan's Placement table, or None when there is none to read."""
+    """Every path the plan's Placement table names, or None when there is none to read.
+
+    A File column is read even for names with no extension (Dockerfile), joined to a
+    Directory column when the row has one. Paths in other cells count too: naming a
+    neighbour as well only adds a false overlap, never hides a real one.
+    """
     f = slices.plan_file(s)
     if f is None or not Path(f).is_file():
         return None
-    lines, files, inside = (
-        Path(f).read_text(errors="replace").splitlines(),
-        set(),
-        False,
-    )
-    for ln in lines:
+    files, inside, header = set(), False, None
+    for ln in Path(f).read_text(errors="replace").splitlines():
         if ln.lstrip().startswith("#"):
-            inside = "placement" in ln.lower()
-        elif inside and ln.lstrip().startswith("|") and not set(ln) <= set("|-: "):
-            for cell in ln.strip().strip("|").split("|"):
-                cell = cell.strip().strip("`")
-                if _PATH.fullmatch(cell):
-                    files.add(cell)
+            inside, header = "placement" in ln.lower(), None
+            continue
+        if not inside or not ln.lstrip().startswith("|"):
+            continue
+        if set(ln) <= set("|-: "):
+            continue
+        cells = _cells(ln)
+        if header is None:
+            header = [c.lower() for c in cells]
+            continue
+        row = dict(zip(header, cells))
+        folder = next((v for k, v in row.items() if "dir" in k), "").strip("`/ ")
+        for k, v in row.items():
+            for tok in re.split(r"[\s,;]+", v.replace("`", " ")):
+                tok = tok.strip("()[]")
+                if not tok:
+                    continue
+                if "file" in k and re.fullmatch(r"[\w.@+/-]+", tok):
+                    files.add(f"{folder}/{tok}" if folder and "/" not in tok else tok)
+                elif _PATH.fullmatch(tok):
+                    files.add(tok)
     return files or None
 
 
@@ -49,11 +81,15 @@ def changed_files(cfg, s):
     """The files a slice changes: its branch diff, else its plan's table, else None."""
     repo_cfg, _rules, base = merge.repo_settings(cfg, s["repo"])
     path = s["worktree"] or repo_cfg["path"]
+    found = []
     if s["branch"]:
-        files = _branch_files(path, base, s["branch"])
-        if files is not None:
-            return files
-    return _placement_files(s)
+        found.append(_branch_files(path, base, s["branch"]))
+    if s["worktree"] and Path(s["worktree"]).is_dir():
+        found.append(_worktree_files(s["worktree"]))
+    found.append(_placement_files(s))
+    known = [f for f in found if f is not None]
+    # Planned files count with committed ones: a fresh branch has no diff yet.
+    return set().union(*known) if any(known) else None
 
 
 def overlaps(project, open_slices=None):
@@ -62,10 +98,17 @@ def overlaps(project, open_slices=None):
     open_slices = [
         s for s in (open_slices or slices.list_slices(project)) if s["phase"] != "DONE"
     ]
-    files = {s["key"]: changed_files(cfg, s) for s in open_slices}
+    files = {}
+    for s in open_slices:
+        try:
+            files[s["key"]] = changed_files(cfg, s)
+        except (OSError, StopIteration, KeyError, ValueError, slices.SliceError):
+            files[s["key"]] = None  # this slice is unknown; the other pairs still show
     pairs = []
     for a, b in combinations(open_slices, 2):
-        if a["row"] == b["row"] or files[a["key"]] is None or files[b["key"]] is None:
+        if a["row"] == b["row"] or a["repo"] != b["repo"]:
+            continue
+        if files[a["key"]] is None or files[b["key"]] is None:
             continue
         shared = sorted(files[a["key"]] & files[b["key"]])
         if shared:
