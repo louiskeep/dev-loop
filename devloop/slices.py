@@ -7,7 +7,6 @@ flock, so a refused move leaves the file byte for byte as it was.
 import contextlib
 import copy
 import hashlib
-import json
 import re
 import subprocess
 from pathlib import Path
@@ -453,51 +452,6 @@ def import_slice(
         if head:  # the owner vouches for this commit only, under the plan just approved
             overrides["head_writer"] = writer_record("imported", head)
     return _create(project, row, slice_id, repo, risk, **overrides)
-
-
-def _import_head_unchanged(project, key, head):
-    """Check the audit trail starting at the slice-new event written by import."""
-    path = store.state_dir(project) / "events.jsonl"
-    created = False
-    try:
-        with store.locked(path), path.open(encoding="utf-8") as events:
-            for line in events:
-                ev = json.loads(line)
-                if ev.get("key") != key:
-                    continue
-                if ev.get("kind") == "slice-new":
-                    created = True
-                elif created and (
-                    ev.get("kind") == "head-changed" or ev.get("head", head) != head
-                ):
-                    print(f"skipped {key}: head moved since import")
-                    return False
-    except (OSError, ValueError, AttributeError) as exc:
-        raise SliceError("cannot verify import event history") from exc
-    return created
-
-
-def migrate_imported_writers(project) -> list:
-    """Stamp only legacy imports whose original head still has no known writer."""
-    store.require_interactive("migrate")
-    done = []
-    for path in sorted(_slices_dir(project).glob("*.json")):
-        with store.locked(path):
-            s = store.read_json(path)
-            if "head_writer" in s:
-                continue
-            _validate(s)
-            if not (s["imported"] and s["head"] and s["approved_plan_sha"]):
-                continue
-            if evidence.head_writer(project, s):
-                continue
-            if not _import_head_unchanged(project, s["key"], s["head"]):
-                continue
-            s["head_writer"] = writer_record("imported", s["head"], s["plan_lineage"])
-            _save(project, s)
-        store.append_event(project, "writer-migrated", key=s["key"])
-        done.append(s["key"])
-    return done
 
 
 # --- editing fields -----------------------------------------------------------

@@ -219,7 +219,6 @@ def build_parser() -> argparse.ArgumentParser:
     an.add_argument("choice")
     sub.add_parser("answers-sync")
     sub.add_parser("check")
-    sub.add_parser("migrate")
     sub.add_parser("pause")
     sub.add_parser("resume")
     sub.add_parser("applied").add_argument("run")
@@ -255,9 +254,6 @@ def main(argv=None) -> int:
             return 0 if ok else 3
         elif args.cmd == "merge-reset":
             slices.merge_reset(args.project, args.key)
-        elif args.cmd == "migrate":
-            for key in slices.migrate_imported_writers(args.project):
-                print(f"migrated {key}")
         elif args.cmd in ("pause", "resume"):
             flag = store.state_dir(args.project) / "PAUSE"
             if args.cmd == "pause":
