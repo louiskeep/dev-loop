@@ -584,9 +584,10 @@ procedure:
 - One live Claude Code session is the orchestrator. A `/loop` heartbeat fires about once an
   hour. Slice-runner hand-backs, background shells and Monitors wake it in between.
 - A slice runner is a Sonnet subagent, started in the background, in its own worktree. It
-  owns one slice from build to merge-ready: build, T0 per edit, Codex self-review with the
-  project's `codex-review` command (up to 3 rounds, fixed in the same session), merge the
-  base branch, the near test selection on the final head, push. A fix round after the
+  owns one slice from build to merge-ready: build, T0 per edit, merge the base branch, Codex
+  self-review with the project's `codex-review` command (up to 3 rounds, fixed in the same
+  session), the near test selection, push. The SHA it hands back carries both the Codex GO
+  and the green near tests. A fix round after the
   orchestrator's review goes back to a runner the same way.
 - The orchestrator reads each diff, runs Dennis on R2 code, dispatches the project's CI
   gate, runs the full suite when a testing trigger applies, merges and posts to Slack.
@@ -632,7 +633,7 @@ Every runner brief is the runner header plus the task. The header ships as
 | `<BUILDER_BRIEF>` | the project's builder brief | `/home/cam/obsidian-vault/10_Projects/decoy/handoffs/LOCAL-BUILDER-BRIEF.md` |
 | `<NODE_DIRECTORY>` | where the test nodes are listed | `/home/cam/obsidian-vault/10_Projects/decoy/NODE-DIRECTORY.md` |
 | `<TEST_RUNNER>` | how tests reach a node | `~/bin/vm-run <engine or cli> <worktree> '<command>'` |
-| `<NEAR_TESTS>` | the near test selection | `~/bin/decoy-test t1` |
+| `<NEAR_TESTS>` | the near test selection; takes the worktree, the head SHA and a label | `~/bin/decoy-test t1` |
 | `<CODEX_REVIEW>` | the Codex review command | `CODEX_PROFILE=review-low ~/bin/codex-review` |
 | `<RELEASE_BAR>` | what a finding must meet to block | `~/.codex/v1-bar-preamble.md` |
 | `<BASE>` | the base branch | `main` |
@@ -645,15 +646,15 @@ Decoy keeps its filled copy at `~/.config/decoy/runner-header.md` and builds a b
 
 - `headless_merge_guard` denies a subagent any `gh pr merge` and any base-branch push. It
   does not restrict the top-level session unless `DEVLOOP_HEADLESS=1` is set.
-- `pr_gate` denies opening a PR until `devloop-gate-pass` recorded the exact HEAD. Run the
-  PR command by itself. Its message names Dennis and Barry. For an R1 slice the runner's
-  Codex GO is the review.
+- `pr_gate` denies opening a PR until `devloop-gate-pass` recorded the exact HEAD. The
+  receipt says Dennis reviewed the head and the docs are synced. The orchestrator records
+  it only when both are true, and runners never record it. Run the PR command by itself,
+  with `--title` and `--body-file`.
 - The `pre-push` shim refuses a loop worker's base-branch push, a tag move and a force push
   over unknown commits. A runner's feature-branch push passes.
 - `gate_guard` (registered by this plugin's `hooks/hooks.json`) denies every `gh pr merge`
-  in a git repo. A project that merges with `gh pr merge` either registers its hooks in
-  `~/.claude/settings.json` without `gate_guard`, or sets `escape_hatch` and prefixes the
-  merge with `DEVLOOP_OVERRIDE=<reason>`, which `gate_guard` logs to `.loop-audit.log`.
+  in a git repo. If an installed guard denies the merge, the session stops and asks the
+  owner.
 
 ### Headless mode (optional, off)
 

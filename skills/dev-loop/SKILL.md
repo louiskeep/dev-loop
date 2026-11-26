@@ -21,18 +21,23 @@ use it.
 1. If `project.json` does not exist, ask the setup questions one at a time. Use
    `project.example.json` in this folder as the shape. Set `"mode": "live"`. Write the
    file to the state directory and show it to the user.
-2. Install the commands if they are not on PATH: `devloop-install BIN_DIR` from the
+2. Check that `project.json` says `"mode": "live"`. A config with no `mode` runs as
+   headless, and a cron tick could then start a second model session beside the
+   orchestrator. If the mode is missing or `headless`, tell the user and stop until they
+   set it to `live`. Check that `crontab -l` has no `devloop-tick` line for the project
+   (`devloop-cron remove PROJECT` takes one out).
+3. Install the commands if they are not on PATH: `devloop-install BIN_DIR` from the
    plugin folder.
-3. Check the setup: `devloop-state PROJECT check`. Stop and report if any line says FAIL.
-4. Copy `runner-header.md` from this folder to the project's config folder and fill in
+4. Check the setup: `devloop-state PROJECT check`. Stop and report if any line says FAIL.
+5. Copy `runner-header.md` from this folder to the project's config folder and fill in
    each `<...>` value. The README lists them.
-5. Start the dashboard: `devloop-dash PROJECT --detach`. Give the user the Network URL it
+6. Start the dashboard: `devloop-dash PROJECT --detach`. Give the user the Network URL it
    prints. It binds 127.0.0.1 unless `dash.host` in `project.json` (or `--host`) says
    otherwise. Set `"dash": {"host": "0.0.0.0"}` to open it to the local network.
-6. Start the heartbeat: `/loop` with a prompt that names the goal, the roadmap, the
+7. Start the heartbeat: `/loop` with a prompt that names the goal, the roadmap, the
    project's process doc and `ORCHESTRATOR.md`. Each tick ends with a wake-up about 60
    minutes out. Hand-backs, background shells and Monitors wake the session in between.
-7. Tell the user it started and give the dashboard URL.
+8. Tell the user it started and give the dashboard URL.
 
 ## stop
 

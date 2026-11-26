@@ -10,7 +10,7 @@ The project runs with `"mode": "live"` in `project.json`.
 |---|---|---|---|
 | Orchestrator | The live session (Opus) | Frames rows, writes or approves plans, starts slice runners, reads each diff, runs Dennis on R2 code, dispatches the project's CI gate, runs the full suite on a trigger, merges, records state, posts to Slack, fixes nodes and the process | Takes an owner decision alone, spends money or creates VMs without the owner |
 | Planner | Opus (the orchestrator or an Opus subagent) | Writes the plan: behavior, failure modes, acceptance tests, placement, size | Builds |
-| Slice runner | Sonnet subagent, one worktree each | Builds one slice of an approved plan to merge-ready: build, T0, Codex self-review (up to 3 rounds), merge the base branch, near tests on the final head, push | Writes plans, edits the approved plan, merges, pushes the base branch, reviews with Dennis, posts to Slack |
+| Slice runner | Sonnet subagent, one worktree each | Builds one slice of an approved plan to merge-ready: build, T0, merge the base branch, Codex self-review (up to 3 rounds), near tests, push; Codex GO and green near tests both on the handed-back head | Writes plans, edits the approved plan, merges, pushes the base branch, reviews with Dennis, posts to Slack |
 | Dennis | Opus reviewer agent | Second review on R2 code and big or risky plans | Writes fixes |
 | Codex | the project's `codex-review` and `codex-fix` commands | The runner's self-review on every slice; the plan fixer after 2 Dennis rounds | Merges |
 
@@ -48,11 +48,13 @@ you wait on instead of a shorter wake-up.
 3. SELF-CHECK by the orchestrator: read the diff. Look for placement, a second copy of a
    central mechanism, a missing changelog entry or sentry, size against the plan.
 4. REVIEW: R1 takes the runner's Codex GO on the exact head. R2 also takes Dennis on the
-   exact head, run by the orchestrator. A docs-only slice (only `.md`, `.rst`, `.txt` or
-   `docs/` changed) skips the test step and goes to review.
+   exact head, run by the orchestrator. A docs-only slice skips the test step and goes to
+   review. The project's test command decides what counts as docs-only (in Decoy,
+   `decoy-test` skips only a diff of `.md` and `.rst` files). Do not use a wider rule.
 5. REMEDIATE: send the findings back to a slice runner with the same brief header. The
-   runner fixes, runs T0, does a Codex delta review, merges the base branch, runs the near
-   tests and pushes, in one session. Never split a fix round into separate build, test and
+   runner fixes, runs T0, merges the base branch, does a Codex delta review, runs the near
+   tests and pushes, in one session. Codex GO and green near tests must both be on the
+   head it hands back. Never split a fix round into separate build, test and
    review hops. Review ladder: Claude runners fix rounds 1 to 3, Codex fixes rounds 4 to 6,
    then the plan is redesigned. Review rounds never park a slice.
 6. GATE: see "Merge standard".
@@ -72,6 +74,11 @@ Merge only when all of these hold on the exact PR head:
   moved or deleted tests, a selection that cannot be computed). The full suite compares
   against the saved base-branch baseline.
 
+To open the PR, the orchestrator runs `devloop-gate-pass` in the worktree on the head, then
+`gh pr create --base BASE --title "..." --body-file FILE` as a command by itself (a
+background session cannot answer a title prompt). The receipt says Dennis reviewed the
+head and the docs are synced. Record it only when both are true. Runners never record it.
+
 Then post to Slack, run `gh pr ready N` if the PR is a draft, and merge with
 `gh pr merge N --squash --match-head-commit HEAD_SHA` as a command by itself. Post to Slack
 again after the merge. `devloop-merge` is not needed in live mode.
@@ -86,12 +93,13 @@ happen, one command per change:
 | A slice is framed | `devloop-state PROJECT slice new ROW SLICE --repo REPO --risk R1` |
 | A runner starts | `devloop-state PROJECT slice set KEY --next-action "runner: building"` |
 | A worktree, branch, head or PR exists | `devloop-state PROJECT slice set KEY --worktree DIR --branch B --head SHA --pr N` |
-| The orchestrator's diff read passes | `devloop-state PROJECT selfcheck KEY GO --head SHA` |
 | A slice changes phase | `devloop-state PROJECT slice move KEY PHASE --reason "plain reason"` |
-| A review returns findings | `slice move KEY REMEDIATE --reason "..."` (each move counts one round) |
-| A PR merges | `slice move KEY DOCUMENT --reason "merged PR #N"`, then `slice move KEY DONE --reason "close-out done"` |
+| The orchestrator's diff read passes | first `devloop-state PROJECT slice move KEY SELF_CHECK --reason "diff read"` (the verdict is refused outside SELF_CHECK), then `devloop-state PROJECT selfcheck KEY GO --head SHA` |
+| A review returns findings | `devloop-state PROJECT slice move KEY REMEDIATE --reason "..."` (each move counts one round) |
+| A PR merges | `devloop-state PROJECT slice move KEY DOCUMENT --reason "merged PR #N"`, then after the close-out `devloop-state PROJECT slice move KEY DONE --reason "close-out done"` |
 | The last slice of a row is DONE | `devloop-state PROJECT row-close ROW --confirm-last` |
-| The owner must decide | `devloop-state PROJECT ask KEY --question ... --option ... --recommended ...` |
+| The owner must decide (product, spend, VMs, R3) | `devloop-state PROJECT ask KEY --question ... --option ... --recommended ... --wait`. Without `--wait`, the recommended option is recorded as applied at once |
+| A technical question with a recommended default | the same command without `--wait` |
 | The loop itself breaks | `devloop-state PROJECT problem KEY --impact ... --fix ...` |
 
 In live mode a move skips the headless evidence checks. Owner holds still apply: a HELD or

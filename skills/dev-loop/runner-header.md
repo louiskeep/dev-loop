@@ -6,9 +6,12 @@ lists the values (section "Slice runners").
 
 ## Read first
 
-Read these rulebooks before you write anything:
+Read these rulebooks before you write anything. The rules gate denies your first edit
+until you have read the first three:
 
+- `<RULES_DIR>/README.md` (the routing table)
 - `<RULES_DIR>/00-universal.md`
+- `<RULES_DIR>/development-loop.md`
 - `<RULES_DIR>/testing.md`
 - the rulebooks the task names
 
@@ -48,22 +51,28 @@ gate, the merge and the owner messages.
 1. Build the slice. Write the named tests first and run them red. Run T0 (the test files
    you touched) after each edit.
 2. Sync the docs the slice changes (the plan's slices table says which) and commit.
-3. Review your head with Codex. Write a prompt file that asks for a review of
+3. Merge the base branch into your branch
+   (`chore(merge): bring <BASE> into <slice>`, final line `<COMMIT_SIGNOFF>`).
+4. Review your head with Codex. Write a prompt file that asks for a review of
    `git diff origin/<BASE>...HEAD` against the plan and `<RECURRING_DEFECTS>`, with the
    release bar in `<RELEASE_BAR>`, a verdict of 30 lines or fewer, and the last line
    `VERDICT: GO | GO-WITH-FIXES | NO-GO`. Run
    `<CODEX_REVIEW> <worktree> <prompt-file> <out-file> <KEY>-self`.
-4. Fix every finding that meets the release bar in this same session. Commit, run T0 on
+5. Fix every finding that meets the release bar in this same session. Commit, run T0 on
    what you touched, and review the delta again. Stop after 3 Codex rounds and list what
    is still open.
-5. Merge the base branch into your branch
-   (`chore(merge): bring <BASE> into <slice>`, final line `<COMMIT_SIGNOFF>`).
-6. Run the near test selection once on that final head: `<NEAR_TESTS> <worktree>`. Fix a
-   red test at the root (then one Codex delta review on the fix). Never weaken it.
-7. Push the branch: `git push origin HEAD`. If a hook blocks the push, stop there. The
-   orchestrator pushes. Do not commit after step 6 unless a fix needs it.
-8. Open a draft PR if the task says so: run `devloop-gate-pass` on the final head, then
-   `gh pr create --draft --base <BASE> --body-file FILE` as a command by itself.
+6. Run the near test selection on the head Codex passed:
+   `<NEAR_TESTS> <worktree> "$(git -C <worktree> rev-parse HEAD)" <KEY>`. Fix a red test at
+   the root, never by weakening it. A fix is a new commit, so review that delta with Codex
+   and run the near tests again on the new head.
+7. The SHA you hand back must carry both a Codex GO and green near tests. Any commit after
+   them (a fix, another base merge) needs both again on the new head.
+8. Push the branch: `git push origin HEAD`. If a hook blocks the push, stop there. The
+   orchestrator pushes.
+
+Do not run `devloop-gate-pass` and do not open the PR. The receipt says Dennis reviewed the
+head and the docs are synced, so the orchestrator records it and opens the PR once that is
+true.
 
 You never merge, never push the base branch, never run Dennis on your own work, never edit
 the board and never post to Slack. A hook denies a subagent any merge or base-branch push.

@@ -93,7 +93,7 @@ Review rounds never park a slice. A round is one REVIEW to REMEDIATE move.
 
 | Round | Who fixes (live) | Dispatch (headless) |
 |-------|------------------|---------------------|
-| 1 to 3 | a Claude slice runner, which fixes, runs T0, reviews the delta with Codex, merges the base branch, runs the near tests and pushes in one session | `devloop-dispatch PROJECT builder KEY` |
+| 1 to 3 | a Claude slice runner, which fixes, runs T0, merges the base branch, reviews the delta with Codex, runs the near tests and pushes in one session | `devloop-dispatch PROJECT builder KEY` |
 | 4 to 6 | Codex | `devloop-dispatch PROJECT codex-builder KEY` |
 | 7 | nobody: the slice goes back to PLAN with reason `redesign` | none |
 
@@ -176,7 +176,7 @@ mode, do the same step with a slice runner or with `gh pr merge`, and record the
 | Dennis or Codex said NO-GO | Move the slice to REMEDIATE. The round counter goes up. | `devloop-state P slice move KEY REMEDIATE --reason ...` |
 | A reviewer said GO-WITH-FIXES | It is not a GO. Treat it as NO-GO and fix the findings. | same as NO-GO |
 | Plan round cap reached for Dennis | Dispatch Codex next. It repairs the plan with `codex-fix`. | `devloop-dispatch P codex-fix KEY --reviewer codex --brief F` |
-| Round 3 on one artifact | The slice is parked. Ask the owner for a plan fix or a decision. | `devloop-state P ask KEY ... --wait` |
+| Code review round 3 failed | Do not park. Round 4 goes to Codex, per the REMEDIATE ladder. After round 6 fails, the slice goes back to PLAN to redesign. | `devloop-dispatch P codex-builder KEY --brief F` (headless) |
 | Main is red | Stop merging. Fix main first. Park other merge work. | `devloop-state P problem main-red ...` |
 | The PR is behind its base or conflicts | Rebase in the worktree, push, set the new head, return to SELF_CHECK. No round counts. | `devloop-state P slice move KEY SELF_CHECK --reason rebase` |
 | The new head only merges the base branch into the old head, and the base side touches no file the slice changed | Set the head. The t1, selfcheck and code review GOs carry to it with the note `carried-from OLD` and an `evidence-carried` event. The slice need not return to SELF_CHECK. GitHub CI still runs on the new head, and the merge command checks it. Any other head change resets the evidence. | `devloop-state P slice set KEY --head SHA` |
@@ -198,8 +198,9 @@ mode, do the same step with a slice runner or with `gh pr merge`, and record the
 ### slice-runner
 
 Live mode. The brief is `runner-header.md` (copied and filled in for the project) plus the
-task. The runner builds, runs T0, reviews itself with Codex (up to 3 rounds), merges the
-base branch, runs the near tests on the final head and pushes. It hands back merge-ready.
+task. The runner builds, runs T0, merges the base branch, reviews itself with Codex (up to 3
+rounds), runs the near tests and pushes. Codex GO and green near tests are both on the
+head it hands back. It hands back merge-ready.
 It never merges, never edits the plan and never runs Dennis on its own work.
 
 ### Headless worker briefs
