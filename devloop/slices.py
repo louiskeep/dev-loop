@@ -687,18 +687,18 @@ def pushed(project: str, key: str, run_id: str) -> None:
     res = runs.parse_result(rd, req["kind"])
     if res.status not in ("DONE", "BLOCKED"):
         raise SliceError(f"the run ended {res.status}")
-    if req.get("head") and req["head"] == res.head:
+    rh = (res.head or "").strip().lower()
+    # Builders sometimes write a short SHA; 7 or more hex chars is unambiguous here.
+    if not re.fullmatch(r"[0-9a-f]{7,64}", rh):
+        raise SliceError("the run names no commit SHA")
+    if req.get("head") and req["head"].startswith(rh):
         raise SliceError("the run wrote no commit: its head is the head it started on")
     with _edit(project, key) as s:
         if (req.get("row"), req.get("slice")) != (s["row"], s["slice"]):
             raise SliceError("the run belongs to another slice")
         if req.get("plan_lineage", 0) != s["plan_lineage"]:
             raise SliceError("the run is from an earlier plan")
-        rh = (res.head or "").strip()
-        # Builders sometimes write a short SHA; 7 or more hex chars is unambiguous here.
-        if not s["head"] or not (
-            rh == s["head"] or (len(rh) >= 7 and s["head"].startswith(rh))
-        ):
+        if not s["head"] or not s["head"].startswith(rh):
             raise SliceError("the run's head is not the slice head")
         s["head_writer"] = writer_record(req["kind"], s["head"], s["plan_lineage"])
     store.append_event(project, "head-pushed", key=key, run=run_id)
