@@ -667,6 +667,37 @@ def merge_reset(project: str, key: str) -> None:
     store.append_event(project, "merge-reset", key=key)
 
 
+def pushed(project: str, key: str, run_id: str) -> None:
+    """The Tech lead pushed a builder's own commit after the push hook blocked it.
+
+    Credits that builder as the head's writer, but only when the run is an applied
+    builder run for this slice and plan lineage and its result names the slice's
+    current head. A head the Tech lead changed matches no run and stays unproven.
+    """
+    from . import runs
+
+    rd = store.run_dir(project, run_id)
+    req = runs.read_request(project, run_id)
+    if req.get("kind") not in WRITER_KINDS:
+        raise SliceError("only a builder run can be credited")
+    if not (rd / "applied").is_file() or not store.request_matches_ledger(
+        project, run_id
+    ):
+        raise SliceError("the run is not applied")
+    res = runs.parse_result(rd, req["kind"])
+    if res.status not in ("DONE", "BLOCKED"):
+        raise SliceError(f"the run ended {res.status}")
+    with _edit(project, key) as s:
+        if (req.get("row"), req.get("slice")) != (s["row"], s["slice"]):
+            raise SliceError("the run belongs to another slice")
+        if req.get("plan_lineage", 0) != s["plan_lineage"]:
+            raise SliceError("the run is from an earlier plan")
+        if not s["head"] or res.head != s["head"]:
+            raise SliceError("the run's head is not the slice head")
+        s["head_writer"] = writer_record(req["kind"], s["head"], s["plan_lineage"])
+    store.append_event(project, "head-pushed", key=key, run=run_id)
+
+
 def set_run(project: str, key: str, run_id) -> None:
     """Dispatch records the slice's current run; apply clears it."""
     with _edit(project, key) as s:

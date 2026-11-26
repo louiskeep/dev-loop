@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from devloop import slices, store
+from devloop import evidence, slices, store
 
 STATE_BIN = str(Path(__file__).resolve().parents[2] / "bin" / "devloop-state")
 
@@ -1041,3 +1041,21 @@ def test_headless_mode_keeps_every_check(proj, mk_slice):
     k = mk_slice(proj, phase="GATE")
     with pytest.raises(slices.TransitionError, match="merge command"):
         slices.move(proj, k, "DOCUMENT", "x")
+
+
+def test_pushed_credits_only_the_builders_own_commit(proj, mk_slice, mk_run):
+    k = mk_slice(proj, phase="VERIFY", branch="feat/x", head="a1", head_writer=None)
+    assert evidence.head_writer(proj, slices.load(proj, k)) is None
+    mk_run(proj, "b0", kind="builder", key=k, result_head="zz", status="BLOCKED")
+    mk_run(proj, "b1", kind="builder", key=k, result_head="a1", status="FAILED")
+    mk_run(proj, "b2", kind="builder", key=k, result_head="a1", applied=False)
+    mk_run(proj, "t1", kind="test", key=k, result_head="a1")
+    for run in ("b0", "b1", "b2", "t1"):
+        with pytest.raises(slices.SliceError):
+            slices.pushed(proj, k, run)
+    assert evidence.head_writer(proj, slices.load(proj, k)) is None
+    mk_run(proj, "b3", kind="builder", key=k, result_head="a1", status="BLOCKED")
+    slices.pushed(proj, k, "b3")
+    assert evidence.head_writer(proj, slices.load(proj, k)) == "builder"
+    slices.set_fields(proj, k, head="c9")  # the Tech lead's own later commit
+    assert evidence.head_writer(proj, slices.load(proj, k)) is None

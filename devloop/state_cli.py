@@ -225,6 +225,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("release").add_argument("run")
     sub.add_parser("discard").add_argument("run")
     sub.add_parser("merge-reset").add_argument("key")
+    pu = sub.add_parser("pushed")
+    pu.add_argument("key")
+    pu.add_argument("run")
     rc = sub.add_parser("row-close")
     rc.add_argument("row")
     rc.add_argument("--confirm-last", action="store_true")
@@ -252,6 +255,9 @@ def main(argv=None) -> int:
             )
             print(f"{args.row} {'closed' if ok else 'not closed'}")
             return 0 if ok else 3
+        elif args.cmd == "pushed":
+            slices.pushed(args.project, args.key, args.run)
+            print(f"{args.key} head credited to {args.run}")
         elif args.cmd == "merge-reset":
             slices.merge_reset(args.project, args.key)
         elif args.cmd in ("pause", "resume"):
