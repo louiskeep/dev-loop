@@ -130,17 +130,11 @@ def _stage(c, now):
     return out
 
 
-def _group(row, cols):
+def _row_cell(row):
     title = row["title"]
-    name = (
-        f"{e(title)} <code>{e(row['row'])}</code>"
-        if title
-        else f"<code>{e(row['row'])}</code>"
-    )
-    done = f'<span class="muted">{row["done"]} of {row["total"]} slices done</span>'
-    return (
-        f'<tr class="grp"><th colspan="{cols}" scope="colgroup">{name} {done}</th></tr>'
-    )
+    if title:
+        return f'<strong>{e(title)}</strong><div class="muted"><code>{e(row["row"])}</code></div>'
+    return f"<code>{e(row['row'])}</code>"
 
 
 def work(v, now) -> str:
@@ -149,21 +143,25 @@ def work(v, now) -> str:
         workers.setdefault(w["key"], w)
     rows = []
     for row in v["rows"]:
-        rows.append(_group(row, 5))
         for c in row["cards"]:
             rows.append(
                 f'<tr class="slice" tabindex="0" data-card-key="{e(c["key"])}" '
                 f'data-open-kind="slice" data-open-key="{e(c["key"])}">'
+                + r._cell("Row", _row_cell(row))
                 + r._cell("Slice", _slice_cell(c))
                 + r._cell("Stage", _stage(c, now))
                 + r._cell("Who is on it now", _who(c, workers, now))
-                + r._cell("Next", e(c["next_action"] or ""), "clip")
+                + r._cell("Next step", e(c["next_action"] or ""), "clip")
                 + r._cell("PR", _pr(c))
                 + "</tr>"
             )
-    count = sum(len(row["cards"]) for row in v["rows"])
+    count = len(rows)
     body = (
-        r._table("tbl work", ("Slice", "Stage", "Who is on it now", "Next", "PR"), rows)
+        r._table(
+            "tbl work",
+            ("Row", "Slice", "Stage", "Who is on it now", "Next step", "PR"),
+            rows,
+        )
         if rows
         else '<p class="empty">No slices in progress.</p>'
     )

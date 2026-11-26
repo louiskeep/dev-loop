@@ -87,7 +87,8 @@ def test_stuck_on_the_loop_goes_to_the_work_table(proj, dash):
 def test_work_table_who_is_on_it(proj, dash):
     page = page_of(proj)
     assert re.search(r"Developer \(Claude[^)]*\) for <time", page)
-    assert "Who is on it now" in page and "slices done" in page
+    assert "Who is on it now" in page and ">Row<" in page and ">Next step<" in page
+    assert "slices done" not in page  # owner: one plain row per slice, no group rows
 
 
 def test_row_titles_come_from_the_roadmap(proj, dash, cfg_edit, tmp_path):
