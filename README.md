@@ -647,7 +647,8 @@ Decoy keeps its filled copy at `~/.config/decoy/runner-header.md` and builds a b
 - `headless_merge_guard` denies a subagent any `gh pr merge` and any base-branch push. It
   does not restrict the top-level session unless `DEVLOOP_HEADLESS=1` is set.
 - `pr_gate` denies opening a PR until `devloop-gate-pass` recorded the exact HEAD. The
-  receipt says Dennis reviewed the head and the docs are synced. The orchestrator records
+  receipt says the review roster for the slice's risk passed on this head (R1 Codex, R2
+  Dennis then Codex) and the docs are synced. The orchestrator records
   it only when both are true, and runners never record it. Run the PR command by itself,
   with `--title` and `--body-file`.
 - The `pre-push` shim refuses a loop worker's base-branch push, a tag move and a force push

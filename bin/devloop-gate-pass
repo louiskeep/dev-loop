@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Record that the quality gate passed for the current HEAD.
 
-Run it only after `dennis` reviewed the change and no BLOCKER or HIGH is left, and
-`barry` synced the docs. The receipt is the commit SHA in the worktree's git dir, so the
+Run it only after the review roster for the slice's risk passed on this head (R1 Codex
+GO, R2 Dennis then Codex GO), no BLOCKER or HIGH is left, and the docs are synced. The receipt is the commit SHA in the worktree's git dir, so the
 next commit re-arms the gate. `hooks/pr_gate.py` is the only reader of this file.
 """
 

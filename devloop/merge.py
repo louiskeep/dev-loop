@@ -15,7 +15,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import evidence, notes, slices, store
+from . import board, evidence, notes, slices, store
 from . import project as projmod
 from .scrub import scrub
 
@@ -482,3 +482,22 @@ def merge(project, key) -> MergeResult:
             "refused", f"not merged: {scrub(err) or 'GitHub kept the PR open'}"
         )
     return _unknown(project, key)
+
+
+def record_direct(project, key, pr, head) -> MergeResult:
+    """Ledger entry for a PR merged by hand, once GitHub confirms it merged at `head`.
+
+    Uses the same writer as `merge`, so the dashboard counts it. The slice is not moved.
+    """
+    cfg = projmod.load_project(project)
+    s = slices.load(project, key)
+    _, _, base = repo_settings(cfg, s["repo"])
+    state = confirm_pr(cfg, s["repo"], pr, base, head)
+    if state != "merged":
+        return _result(
+            "refused", f"GitHub does not show PR {pr} merged at that head: {state}"
+        )
+    repo_cfg = repo_settings(cfg, s["repo"])[0]
+    board.record_merge(project, {"slug": _slug(repo_cfg), "pr": pr, "head": head}, s)
+    store.append_event(project, "merged", key=key, row=s["row"], slice=s["slice"])
+    return _result("merged", "recorded")

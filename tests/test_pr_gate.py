@@ -137,7 +137,7 @@ def test_the_denial_text_names_the_steps_and_echoes_nothing_of_the_command(world
     repo, env, _ = world
     r = run_hook("gh pr create --title SECRET-TITLE", repo, env)
     reason = json.loads(r.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
-    for word in ("dennis", "barry", "devloop-gate-pass"):
+    for word in ("Dennis", "Codex", "devloop-gate-pass"):
         assert word in reason
     assert "SECRET-TITLE" not in r.stdout + r.stderr
     assert "not installed" not in r.stderr
@@ -344,7 +344,7 @@ def test_a_healthy_install_denies_with_the_receipt_text_not_the_install_text(wor
     repo, env, tmp = world
     _lib(tmp)
     r = run_settings("gh pr create --fill", repo, env)
-    assert denied(r) and "dennis" in r.stderr
+    assert denied(r) and "Dennis" in r.stderr
     assert "not installed" not in r.stderr
     stamp(repo)
     assert allowed(run_settings("gh pr create --fill", repo, env))

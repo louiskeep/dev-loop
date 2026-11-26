@@ -75,9 +75,11 @@ Merge only when all of these hold on the exact PR head:
   against the saved base-branch baseline.
 
 To open the PR, the orchestrator runs `devloop-gate-pass` in the worktree on the head, then
-`gh pr create --base BASE --title "..." --body-file FILE` as a command by itself (a
-background session cannot answer a title prompt). The receipt says Dennis reviewed the
-head and the docs are synced. Record it only when both are true. Runners never record it.
+`gh pr create --draft --base BASE --title "..." --body-file FILE` as a command by itself
+(a background session cannot answer a title prompt; leave out `--draft` only when the task
+asks for a ready PR). The receipt says the review roster for the slice's risk passed on
+this head (R1 Codex, R2 Dennis then Codex) and the docs are synced. Record it only when
+both are true. Runners never record it.
 
 Then post to Slack, run `gh pr ready N` if the PR is a draft, and merge with
 `gh pr merge N --squash --match-head-commit HEAD_SHA` as a command by itself. Post to Slack
