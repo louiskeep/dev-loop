@@ -687,6 +687,8 @@ def pushed(project: str, key: str, run_id: str) -> None:
     res = runs.parse_result(rd, req["kind"])
     if res.status not in ("DONE", "BLOCKED"):
         raise SliceError(f"the run ended {res.status}")
+    if req.get("head") and req["head"] == res.head:
+        raise SliceError("the run wrote no commit: its head is the head it started on")
     with _edit(project, key) as s:
         if (req.get("row"), req.get("slice")) != (s["row"], s["slice"]):
             raise SliceError("the run belongs to another slice")

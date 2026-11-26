@@ -1071,3 +1071,12 @@ def test_pushed_accepts_a_short_sha_of_the_head(proj, mk_slice, mk_run):
     mk_run(proj, "b1", kind="builder", key=k, result_head="abcdef0", status="BLOCKED")
     slices.pushed(proj, k, "b1")
     assert evidence.head_writer(proj, slices.load(proj, k)) == "builder"
+
+
+def test_pushed_refuses_a_run_that_wrote_no_commit(proj, mk_slice, mk_run):
+    k = mk_slice(proj, phase="VERIFY", branch="feat/x", head="a1", head_writer=None)
+    mk_run(
+        proj, "b0", kind="builder", key=k, head="a1", result_head="a1", status="BLOCKED"
+    )
+    with pytest.raises(slices.SliceError, match="no commit"):
+        slices.pushed(proj, k, "b0")
