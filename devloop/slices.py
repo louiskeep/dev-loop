@@ -454,6 +454,31 @@ def import_slice(
     return _create(project, row, slice_id, repo, risk, **overrides)
 
 
+def migrate_imported_writers(project) -> list:
+    """Give each pre-record imported slice its writer record once; returns the keys.
+
+    A slice imported before the record existed has the `imported` flag and nothing that
+    names its commit. One with no record and no applied writer run that recovery credits
+    is stamped with its current head and plan lineage. Every other slice is left alone,
+    so a second call changes nothing.
+    """
+    done = []
+    for s in list_slices(project):
+        if not (s["imported"] and s["head"] and s["approved_plan_sha"]):
+            continue
+        if s["head_writer"] is not None or evidence.head_writer(project, s):
+            continue
+        with _edit(project, s["key"]) as cur:
+            if cur["head_writer"] is not None or cur["head"] != s["head"]:
+                continue
+            cur["head_writer"] = writer_record(
+                "imported", cur["head"], cur["plan_lineage"]
+            )
+        store.append_event(project, "writer-migrated", key=s["key"])
+        done.append(s["key"])
+    return done
+
+
 # --- editing fields -----------------------------------------------------------
 
 

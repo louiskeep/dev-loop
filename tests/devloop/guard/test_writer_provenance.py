@@ -248,3 +248,47 @@ def test_push_confirmation_and_provenance_read_one_writer_registry(
     mk(proj, tmp_path, ["true"], kind="duty", reader="exit")
     wrap.run(proj, "r1")
     assert pushed == ["duty"]
+
+
+# --- one-time migration of slices imported before the record existed -------------
+
+
+def legacy_import(proj, tmp_path):
+    key = imported(proj, tmp_path)
+    s = slices.load(proj, key)
+    s["head_writer"] = None
+    slices._save(proj, s)
+    return key
+
+
+def test_migration_stamps_a_legacy_import_once(proj, tmp_path):
+    key = legacy_import(proj, tmp_path)
+    assert builder_done(proj, key) is False
+    assert slices.migrate_imported_writers(proj) == [key]
+    assert builder_done(proj, key) is True
+    assert slices.load(proj, key)["head_writer"]["kind"] == "imported"
+    before = slices.slice_path(proj, key).read_bytes()
+    assert slices.migrate_imported_writers(proj) == []
+    assert slices.slice_path(proj, key).read_bytes() == before
+    events = (store.state_dir(proj) / "events.jsonl").read_text()
+    assert events.count('"writer-migrated"') == 1
+
+
+def test_migration_keeps_codex_provenance_from_an_applied_run(proj, ready, mk_run):
+    key, _, head = ready("REVIEW", risk="R1", head_writer=None)
+    s = slices.load(proj, key)
+    s["imported"], s["approved_plan_sha"] = True, "a" * 64
+    slices._save(proj, s)
+    mk_run(proj, "cb1", kind="codex-builder", key=key, head=head)
+    assert slices.migrate_imported_writers(proj) == []
+    assert slices.load(proj, key)["head_writer"] is None
+    assert evidence.head_writer(proj, slices.load(proj, key)) == "codex-builder"
+
+
+def test_state_cli_migrate_reports_the_slice(proj, tmp_path, home):
+    from test_runs_apply import run_state
+
+    key = legacy_import(proj, tmp_path)
+    r = run_state(home, "migrate")
+    assert r.returncode == 0 and r.stdout.strip() == f"migrated {key}"
+    assert run_state(home, "migrate").stdout == ""

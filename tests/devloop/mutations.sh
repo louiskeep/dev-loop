@@ -507,6 +507,13 @@ mutate "a wrong-typed kind reaches the estimate lookup" devloop/runs.py \
 mutate "a null ledger reads as a failed read" devloop/dash/view.py \
   '        if raw is not unread and ok is None:' '        if raw is not None and raw is not unread and ok is None:' \
   $T/dashboard/test_ledgers.py::test_a_null_ledger_is_marked_unreadable
+mutate "migration also stamps slices that recovery already credits" devloop/slices.py \
+  '        if s["head_writer"] is not None or evidence.head_writer(project, s):' \
+  '        if s["head_writer"] is not None:' \
+  $G/test_writer_provenance.py::test_migration_keeps_codex_provenance_from_an_applied_run
+mutate "migration records no event" devloop/slices.py \
+  '        store.append_event(project, "writer-migrated", key=s["key"])' '        pass' \
+  $G/test_writer_provenance.py::test_migration_stamps_a_legacy_import_once
 
 echo
 echo "killed: $killed  survived: $survived  stale: $stale"
