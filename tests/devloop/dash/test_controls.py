@@ -928,6 +928,13 @@ def test_tick_event_failure_keeps_debounce(proj, dash, srv, tmp_path, monkeypatc
 
 def test_overlapping_tick_posts_spawn_once(proj, dash, srv, tmp_path, monkeypatch):
     mark = counting_launcher(tmp_path, monkeypatch)
+    real = tick.spawn_detached
+
+    def slow(*a, **kw):
+        time.sleep(0.4)  # a second post arrives while the first is still starting
+        return real(*a, **kw)
+
+    monkeypatch.setattr(tick, "spawn_detached", slow)
     results = []
     gate = threading.Barrier(2)
 
