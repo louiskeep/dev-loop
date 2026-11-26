@@ -516,6 +516,9 @@ mutate "a null ledger reads as a failed read" devloop/dash/view.py \
 mutate "a base side that touches a slice file still carries evidence" devloop/carry.py \
   '    clash = sorted(own & incoming)' '    clash = []' \
   $T/test_carry.py::test_main_touching_a_slice_file_does_not_carry
+mutate "slices of one row are listed as overlapping" devloop/overlap.py \
+  'if a["row"] == b["row"] or files[a["key"]] is None' 'if files[a["key"]] is None' \
+  $T/test_overlap.py::test_same_row_is_not_listed
 
 echo
 echo "killed: $killed  survived: $survived  stale: $stale"
