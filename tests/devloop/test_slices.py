@@ -1059,3 +1059,15 @@ def test_pushed_credits_only_the_builders_own_commit(proj, mk_slice, mk_run):
     assert evidence.head_writer(proj, slices.load(proj, k)) == "builder"
     slices.set_fields(proj, k, head="c9")  # the Tech lead's own later commit
     assert evidence.head_writer(proj, slices.load(proj, k)) is None
+
+
+def test_pushed_accepts_a_short_sha_of_the_head(proj, mk_slice, mk_run):
+    k = mk_slice(
+        proj, phase="VERIFY", branch="feat/x", head="abcdef0123", head_writer=None
+    )
+    mk_run(proj, "b0", kind="builder", key=k, result_head="abcde", status="BLOCKED")
+    with pytest.raises(slices.SliceError):
+        slices.pushed(proj, k, "b0")
+    mk_run(proj, "b1", kind="builder", key=k, result_head="abcdef0", status="BLOCKED")
+    slices.pushed(proj, k, "b1")
+    assert evidence.head_writer(proj, slices.load(proj, k)) == "builder"

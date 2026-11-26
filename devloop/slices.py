@@ -692,7 +692,11 @@ def pushed(project: str, key: str, run_id: str) -> None:
             raise SliceError("the run belongs to another slice")
         if req.get("plan_lineage", 0) != s["plan_lineage"]:
             raise SliceError("the run is from an earlier plan")
-        if not s["head"] or res.head != s["head"]:
+        rh = (res.head or "").strip()
+        # Builders sometimes write a short SHA; 7 or more hex chars is unambiguous here.
+        if not s["head"] or not (
+            rh == s["head"] or (len(rh) >= 7 and s["head"].startswith(rh))
+        ):
             raise SliceError("the run's head is not the slice head")
         s["head_writer"] = writer_record(req["kind"], s["head"], s["plan_lineage"])
     store.append_event(project, "head-pushed", key=key, run=run_id)
