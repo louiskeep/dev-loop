@@ -70,7 +70,7 @@ def _tick_ok(s, kind):
     )
 
 
-def _verify_run(project, s, entry, *, kinds, expect, covers_ok=False):
+def _verify_run(project, s, entry, *, kinds, expect, covers_ok=False, batch_ok=False):
     """Re-read the run dir behind an evidence entry. Returns (problem or None, request)."""
     run_id = entry.get("run")
     if not run_id:
@@ -85,10 +85,13 @@ def _verify_run(project, s, entry, *, kinds, expect, covers_ok=False):
     if unreadable or not req:
         return f"run {run_id} has no readable request", None
     own = (req.get("row"), req.get("slice")) == (s["row"], s["slice"])
-    covers = req.get("covers") if isinstance(req.get("covers"), dict) else {}
-    if not own and not (covers_ok and s["key"] in covers):
+    via = {}
+    for ok, field in ((covers_ok, "covers"), (batch_ok, "batch")):
+        if ok and isinstance(req.get(field), dict):
+            via.update(req[field])
+    if not own and s["key"] not in via:
         return f"run {run_id} belongs to another slice", None
-    if not own and covers.get(s["key"]) != s["head"]:
+    if not own and via[s["key"]] != s["head"]:
         return f"run {run_id} froze a different head for this slice", None
     if not store.request_matches_ledger(project, run_id):
         return f"run {run_id} request does not match the ledger", None
@@ -154,6 +157,7 @@ def _test_item(project, s, level, label):
         kinds=("test",),
         expect={"level": level, "head": e.get("carried_from") or s["head"]},
         covers_ok=(level == "full"),
+        batch_ok=(level == "t1"),
     )
     if problem is None and level in ("t2", "full") and req.get("select"):
         problem = "the run tested a selection, not the whole level"
@@ -366,9 +370,12 @@ def _outstanding(project, s):
         if runs.is_done(rd) or req.get("kind") not in _EVIDENCE_KINDS:
             continue
         mine = runs.slice_key_of(req) == s["key"] and req.get("head") == s["head"]
-        covers = req.get("covers") if isinstance(req.get("covers"), dict) else {}
+        via = {}
+        for field in ("covers", "batch"):
+            if isinstance(req.get(field), dict):
+                via.update(req[field])
         code_run = req["kind"] == "test" or req.get("purpose") == "code"
-        if code_run and (mine or covers.get(s["key"]) == s["head"]):
+        if code_run and (mine or via.get(s["key"]) == s["head"]):
             out.append(rd.name)
     return out
 
