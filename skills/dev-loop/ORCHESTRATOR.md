@@ -83,7 +83,8 @@ both are true. Runners never record it.
 
 Then post to Slack, run `gh pr ready N` if the PR is a draft, and merge with
 `gh pr merge N --squash --match-head-commit HEAD_SHA` as a command by itself. Post to Slack
-again after the merge. `devloop-merge` is not needed in live mode.
+again after the merge. `devloop-merge` is not needed in live mode. Then record the merge:
+`devloop-state PROJECT merged KEY --pr N --head SHA`.
 
 ## Recording state
 
@@ -108,8 +109,9 @@ In live mode a move skips the headless evidence checks. Owner holds still apply:
 owner-parked slice resumes only after `devloop-state PROJECT answer`.
 
 The merged-today, this-week and total counts in `STATUS.md` and on the dashboard come from
-the merge record that only `devloop-merge` writes. A `gh pr merge` plus a slice move does
-not add to them. Count merges from GitHub until that changes.
+the merge record. `devloop-merge` writes it; after a direct `gh pr merge`, run
+`devloop-state PROJECT merged KEY --pr N --head SHA`. A slice move alone does not add to
+the counts.
 
 ## Stop and ask
 

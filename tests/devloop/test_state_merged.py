@@ -17,7 +17,7 @@ def merged(proj, mk_slice, fakebin, home, tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_GH_JSON", str(gh))
     key = mk_slice(proj, phase="DOCUMENT", head=HEAD, pr=7)
 
-    def run(head=HEAD, **gh_fields):
+    def run(head=HEAD, key=key, **gh_fields):
         gh.write_text(json.dumps(gh_fields))
         return subprocess.run(
             [str(BIN), proj, "merged", key, "--pr", "7", "--head", head],
@@ -55,3 +55,17 @@ def test_refuses_a_head_mismatch(proj, merged):
     r = merged(head="b" * 40, state="MERGED", headRefOid=HEAD)
     assert r.returncode == 3
     assert board.merge_records(proj) == {}
+
+
+def test_refuses_a_key_whose_slice_is_another_pr(proj, merged, mk_slice):
+    other = mk_slice(proj, phase="DOCUMENT", head="c" * 40, pr=9)
+    r = merged(key=other, state="MERGED", headRefOid=HEAD)
+    assert r.returncode == 3
+    assert board.merge_records(proj) == {}
+
+
+def test_a_prefix_then_the_full_sha_is_one_entry(proj, merged):
+    assert merged(head=HEAD[:10], state="MERGED", headRefOid=HEAD).returncode == 0
+    assert merged(state="MERGED", headRefOid=HEAD).returncode == 0
+    keys = list(board.merge_records(proj))
+    assert len(keys) == 1 and keys[0].endswith(f"#7@{HEAD}")

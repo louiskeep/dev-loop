@@ -491,13 +491,21 @@ def record_direct(project, key, pr, head) -> MergeResult:
     """
     cfg = projmod.load_project(project)
     s = slices.load(project, key)
-    _, _, base = repo_settings(cfg, s["repo"])
+    if s["pr"] != pr or not _same_head(s["head"], head):
+        return _result("refused", "that PR and head are not this slice's PR and head")
+    repo_cfg, _, base = repo_settings(cfg, s["repo"])
     state = confirm_pr(cfg, s["repo"], pr, base, head)
     if state != "merged":
         return _result(
             "refused", f"GitHub does not show PR {pr} merged at that head: {state}"
         )
-    repo_cfg = repo_settings(cfg, s["repo"])[0]
-    board.record_merge(project, {"slug": _slug(repo_cfg), "pr": pr, "head": head}, s)
+    view = _view(repo_cfg, pr, "headRefOid,headRefName") or {}
+    full = view.get("headRefOid")
+    if not _same_head(full, head) or (
+        s["branch"] and view.get("headRefName") != s["branch"]
+    ):
+        return _result("refused", "GitHub's PR head or branch is not this slice's")
+    # The full SHA from GitHub keeps one ledger key however the head was typed.
+    board.record_merge(project, {"slug": _slug(repo_cfg), "pr": pr, "head": full}, s)
     store.append_event(project, "merged", key=key, row=s["row"], slice=s["slice"])
     return _result("merged", "recorded")
