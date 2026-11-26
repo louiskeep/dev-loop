@@ -2,6 +2,7 @@
 
 import json
 import pathlib
+import re
 import sys
 
 
@@ -154,6 +155,8 @@ def test_routes_leak_nothing_planted(proj, dash, srv, tmp_path):
     _plant(proj, dash)
     for path in ROUTES:
         text = call(srv, path)[2].decode()
+        # The questions file path appears only in the "Copy for Claude" text (owner request).
+        text = re.sub(r'data-copy="[^"]*"', "", text)
         for needle in (
             "hunter2",
             "user:pw",

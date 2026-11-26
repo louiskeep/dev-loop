@@ -80,6 +80,7 @@ EVENT_ICON = "·"
 SECTION_IDS = (
     "strip",
     "attention",
+    "decided",
     "workers",
     "feed",
     "progress",
@@ -89,6 +90,7 @@ SECTION_IDS = (
     "shipped",
     "parked",
     "sources",
+    "qsources",
 )
 
 e = html.escape
@@ -185,6 +187,11 @@ def _question_detail(n, project):
         parts.append(f'<div class="muted">Options: {opts}</div>')
     if n["recommended"]:
         parts.append(f'<div class="muted">Recommended: {e(n["recommended"])}</div>')
+    if n["answer_key"] and n["version"]:
+        parts.append(
+            f'<div><button type="button" class="link" data-open-kind="q" '
+            f'data-open-key="{e(n["answer_key"])}">Answer here</button></div>'
+        )
     if n["answer_key"]:
         cmd = f"devloop-state {project} answer {n['answer_key']} <option>"
         where = (
@@ -407,11 +414,12 @@ def _details(sid, title, n, body):
 # --- documents --------------------------------------------------------------------
 
 
-def render_fragment(view, now=None) -> str:
+def render_fragment(view, now=None, token="", copy_path="") -> str:
     now = now or datetime.datetime.now(datetime.timezone.utc)
     parts = (
-        render_live.kpi_strip(view, now),
+        render_live.kpi_strip(view, now, token),
         render_live.attention(view, now),
+        render_control.decided_list(view, now),
         render_live.worker_grid(view, now),
         render_live.feed(view, now),
         _progress(view, now),
@@ -421,13 +429,14 @@ def render_fragment(view, now=None) -> str:
         _shipped(view, now),
         _parked(view, now),
         render_live.drawer_sources(view, now),
+        render_control.question_sources(view, token, copy_path),
     )
     return (
         f'<div id="app-body" data-version="{e(view["version"])}">{"".join(parts)}</div>'
     )
 
 
-def render_page(view, now=None) -> str:
+def render_page(view, now=None, token="", copy_path="") -> str:
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -442,7 +451,7 @@ def render_page(view, now=None) -> str:
         '</form><button id="theme" type="button">Theme</button></header>'
         '<div id="stale" class="stale" role="status" hidden>'
         "Updates stopped. Showing the last good data.</div>"
-        f'<main id="app">{render_fragment(view, now)}</main>'
+        f'<main id="app">{render_fragment(view, now, token, copy_path)}</main>'
         '<aside id="drawer" class="drawer" hidden aria-label="Details">'
         '<div class="drawer-bar"><h2 id="drawer-title"></h2>'
         '<button id="drawer-close" type="button" aria-label="Close details">Close</button>'
@@ -453,4 +462,4 @@ def render_page(view, now=None) -> str:
 
 # render_live formats with this module's helpers and this module composes its output, so
 # the import sits last: every helper above exists by the time render_live loads.
-from . import render_live  # noqa: E402
+from . import render_control, render_live  # noqa: E402

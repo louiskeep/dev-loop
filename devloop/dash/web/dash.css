@@ -244,6 +244,23 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; }
 #drawer-body { overflow-y: auto; padding: 0.7rem 0.9rem; flex: 1; }
 body.drawer-open main { margin-right: 420px; }
 
+/* Loop controls and the decisions drawer */
+.controls { display: flex; flex-wrap: wrap; gap: 0.4rem 0.6rem; align-items: center; margin-left: auto; }
+.controls form { margin: 0; }
+button:disabled { opacity: 0.55; cursor: not-allowed; }
+button.link { background: none; border: 0; color: var(--accent); padding: 0.1rem 0.2rem; text-decoration: underline; }
+.qforms { display: grid; gap: 0.5rem; margin: 0.6rem 0; }
+.qform { margin: 0; }
+.qform button { width: 100%; text-align: left; white-space: normal; }
+.qform.rec button { font-weight: 600; }
+.qtext { display: grid; gap: 0.35rem; }
+.qtext textarea { width: 100%; box-sizing: border-box; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 0.4rem; resize: vertical; }
+.qchanged { background: var(--warn-bg); color: var(--warn-fg); border-radius: 6px; padding: 0.5rem 0.7rem; margin-bottom: 0.6rem; }
+.qchanged p { margin: 0 0 0.4rem; }
+.copybox { width: 100%; box-sizing: border-box; margin-top: 0.4rem; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+.qtitle { margin: 0 0 0.3rem; }
+.detail { margin: 0 0 0.5rem; }
+
 @media (min-width: 1100px) {
   #app-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   #app-body > section { grid-column: 1 / -1; }

@@ -16,6 +16,7 @@ import threading
 import time
 from pathlib import Path
 
+from .. import notes, store
 from . import actions, render, transcript, view
 
 WEB = Path(__file__).parent / "web"
@@ -171,7 +172,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _html(self, render_fn):
         # The page carries the write token, so it is never cached or revalidated.
         v = self.server.cache.get()
-        self._send(200, render_fn(v), HTML, no_store=True)
+        body = render_fn(v, token=self.server.token, copy_path=self._questions_path())
+        self._send(200, body, HTML, no_store=True)
+
+    def _questions_path(self):
+        """Where the questions live, for the "Copy for Claude" text only."""
+        try:
+            return str(notes.questions_path(self.server.project))
+        except (OSError, ValueError, notes.NotesError, store.StoreError):
+            return ""
 
     def _conditional(self, make_body, ctype):
         v = self.server.cache.get()

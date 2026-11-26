@@ -10,7 +10,7 @@ healthy cards still render.
 import datetime
 import re
 
-from .. import evidence, notes, runs, slices, snapshot, status, store
+from .. import evidence, notes, runs, slices, snapshot, status, store, tick
 from .. import project as projmod
 from ..scrub import plain, redact_secrets, scrub
 from . import live, memory, transcript
@@ -18,6 +18,7 @@ from . import live, memory, transcript
 SCHEMA = 2
 OWNER_TEXT_LIMIT = 1000
 SHIPPED_LIMIT = 20
+DECIDED_LIMIT = 20
 ACTIVITY_LIMIT = 20
 CHIPS = slices.PHASES[:10]
 NEEDS = ("question", "hold")
@@ -140,6 +141,21 @@ VIEW_SCHEMA = {
             "since": "at?",
         }
     ],
+    "decided": [
+        {
+            "key": "qkey",
+            "question": "owner_text?",
+            "detail": "owner_text?",
+            "options": ["owner_text"],
+            "option_ok": ["bool"],
+            "recommended": "owner_text?",
+            "applied": "owner_text?",
+            "answer": "owner_text?",
+            "at": "at?",
+            "version": "version",
+        }
+    ],
+    "controls": {"paused": "bool", "tick_running": "bool"},
     "rows": [
         {"row": "id", "oldest_at": "at?", "stuck": "bool", "cards": [_CARD]},
     ],
@@ -655,18 +671,59 @@ def _is_hold(s):
     )
 
 
+def _plain_key(key) -> bool:
+    try:
+        notes._key(key)
+    except notes.NotesError:
+        return False
+    return True
+
+
+def _question_records(ctx):
+    """The questions page, read once per view."""
+    if not hasattr(ctx, "_questions_value"):
+
+        def questions():
+            path = notes.questions_path(ctx.project)
+            found = notes.load_questions(path)[1] if path.is_file() else {}
+            # A hand-edited heading that is not a plain key could not be sealed or answered.
+            return {k: q for k, q in found.items() if _plain_key(k)}
+
+        ctx._questions_value = _try(questions, ctx.bad, "questions", {})
+    return ctx._questions_value
+
+
+def _decided(ctx):
+    """Tech questions the Tech lead decided, newest first. The owner can override each."""
+    out = []
+    for q in _question_records(ctx).values():
+        if q["klass"] != "tech" or not q["applied"]:
+            continue
+        options, option_ok = _options(q["options"])
+        out.append(
+            {
+                "key": q["key"],
+                "question": _owner_text(q["question"]),
+                "detail": _owner_text(q["detail"]),
+                "options": options,
+                "option_ok": option_ok,
+                "recommended": _owner_text(q["recommended"]),
+                "applied": _owner_text(q["applied"]),
+                "answer": _owner_text(q["answer"]),
+                "at": _iso(q["answered_at"] or q["asked_at"]),
+                "version": notes.question_version(q),
+            }
+        )
+    out.sort(key=lambda d: d["at"] or "", reverse=True)
+    return out[:DECIDED_LIMIT]
+
+
 def _needs_you(ctx):
     """Items that only the Product owner can answer: open questions and holds."""
     out = []
     held_keys = {s["key"] for s in ctx.slices if _is_hold(s)}
 
-    def questions():
-        path = notes.questions_path(ctx.project)
-        if not path.is_file():
-            return {}
-        return notes.load_questions(path)[1]
-
-    records = _try(questions, ctx.bad, "questions", {})
+    records = _question_records(ctx)
     for q in records.values():
         hold = q["key"].startswith(notes.HOLD_PREFIX)
         if hold and q["key"][len(notes.HOLD_PREFIX) :] in held_keys:
@@ -878,6 +935,7 @@ def build_view(project, proc="/proc", now=None, cache=None) -> dict:
         },
         "needs_you": needs,
         "problems": problems,
+        "decided": _decided(ctx),
         "rows": _rows_cache(ctx),
         "nodes": _nodes(ctx),
         "slots": slots,
@@ -885,6 +943,10 @@ def build_view(project, proc="/proc", now=None, cache=None) -> dict:
         "shipped": _shipped(ctx, merges, closures),
         "activity": _activity(ctx),
         "parked": _parked(ctx),
+    }
+    view["controls"] = {
+        "paused": view["tick"]["paused"],
+        "tick_running": tick.running(project, proc=proc),
     }
     view["problems"] = problems + _unreadable(ctx)
     view["counts"]["needs_you"] = len(view["needs_you"])

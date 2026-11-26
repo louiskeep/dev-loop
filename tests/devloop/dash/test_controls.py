@@ -1,6 +1,7 @@
 """Loop control: question class and detail, answer rules, one write path, POST actions."""
 
 import fcntl
+import html.parser as html_parser
 import http.client
 import json
 import os
@@ -1021,3 +1022,169 @@ def test_short_body_at_eof_is_refused(proj, dash, srv, monkeypatch):
             reply += chunk
     assert reply.startswith(b"HTTP/1.1 400") and reply.endswith(b"Bad request.")
     assert calls.calls == []
+
+
+# --- Task 12: decisions drawer, decided list, controls ------------------------------------
+
+
+class _Forms(html_parser.HTMLParser):
+    """The forms inside one source div, with their hidden fields and button text."""
+
+    def __init__(self, source_id):
+        super().__init__()
+        self.source_id, self.depth, self.forms, self.other = source_id, 0, [], {}
+        self.copy = None
+        self._form = None
+        self._btn = False
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == "div" and (a.get("id") == self.source_id or self.depth):
+            self.depth += 1
+        if not self.depth:
+            return
+        if tag == "form":
+            self._form = {"action": a["action"], "fields": {}, "label": "", "attrs": a}
+            self.forms.append(self._form)
+        elif tag == "input" and self._form is not None and a.get("type") == "hidden":
+            self._form["fields"][a["name"]] = a["value"]
+        elif tag == "textarea" and self._form is not None:
+            self._form["fields"]["other"] = None
+            self._form["textarea_id"] = a.get("id")
+        elif tag == "button" and self._form is not None:
+            self._btn = True
+        elif tag == "button" and "data-copy" in a:
+            self.copy = a["data-copy"]
+
+    def handle_endtag(self, tag):
+        if tag == "form":
+            self._form = None
+        if tag == "button":
+            self._btn = False
+        if tag == "div" and self.depth:
+            self.depth -= 1
+
+    def handle_data(self, data):
+        if self._btn and self._form is not None:
+            self._form["label"] += data
+
+
+def source_forms(page, key):
+    p = _Forms(f"qs-{key}")
+    p.feed(page)
+    return p
+
+
+def render_page(proj, token="tok", path="/x/questions.md"):
+    from devloop.dash import render, view
+
+    v = view.build_view(proj, proc="/nonexistent-proc")
+    return v, render.render_page(v, token=token, copy_path=path)
+
+
+def submit(srv, form, **override):
+    fields = {k: v for k, v in form["fields"].items() if v is not None}
+    fields.update(override)
+    return post(srv, form["action"], fields)
+
+
+def test_decisions_drawer_has_actions(proj, dash):
+    v, page = render_page(proj, "tok123", "/x/questions.md")
+    src = source_forms(page, ANSWER_KEY)
+    labels = [f["label"] for f in src.forms]
+    assert labels[:3] == ["Go with recommended: a", "b", "Save"]
+    for f in src.forms:
+        assert f["action"] == "/act/answer"
+        assert f["fields"]["t"] == "tok123" and f["fields"]["key"] == ANSWER_KEY
+        assert f["fields"]["version"] == version(proj, ANSWER_KEY)
+        assert f["attrs"]["data-key"] == ANSWER_KEY
+        assert f["attrs"]["data-version"] == version(proj, ANSWER_KEY)
+    assert src.forms[2]["textarea_id"] == f"ta-{ANSWER_KEY}-{version(proj, ANSWER_KEY)}"
+    assert src.copy == (
+        f"Help me decide dev loop question {ANSWER_KEY} in project p. The question, "
+        "its options and the background are in /x/questions.md. Read it, explain the "
+        "trade-off, and recommend an option."
+    )
+    assert "Answer here" in page and f'data-open-key="{ANSWER_KEY}"' in page
+
+
+def test_hold_drawer_offers_only_two_choices(proj, dash, mk_slice):
+    notes.ensure_hold_question(proj, dash["held"])
+    _, page = render_page(proj)
+    src = source_forms(page, f"hold:{dash['held']}")
+    assert [f["label"] for f in src.forms] == [
+        "Go with recommended: keep-held",
+        "approve",
+    ]
+    assert all(f["fields"].get("other", 1) == 1 for f in src.forms)  # no free text
+    assert (
+        "textarea"
+        not in page[page.index(f'id="qs-hold:{dash["held"]}"') :].split('id="qs-')[1]
+    )
+
+
+def test_hold_answer_uses_hold_key(proj, dash, srv, mk_slice):
+    k = hold_slice(proj, mk_slice)
+    srv.cache._value = None
+    page = call(srv, "/")[2].decode()
+    src = source_forms(page, f"hold:{k}")
+    approve = next(f for f in src.forms if f["label"] == "approve")
+    assert approve["fields"]["key"] == f"hold:{k}"
+    assert submit(srv, approve)[0] == 303
+    assert slices.load(proj, k)["phase"] != "HELD"
+
+
+def test_option_with_changed_text_is_not_offered(proj, dash):
+    secret = "ghp_DEMOTOKEN1234567"
+    ask(proj, "q-secret", options=["fine", secret], recommended="fine")
+    _, page = render_page(proj)
+    src = source_forms(page, "q-secret")
+    assert [f["label"] for f in src.forms] == ["Go with recommended: fine", "Save"]
+    assert secret not in page
+
+
+def test_decided_for_you_list(proj, dash):
+    ask(
+        proj,
+        "t1",
+        klass="tech",
+        question="Use tool X?",
+        options=["x", "y"],
+        recommended="x",
+    )
+    v, page = render_page(proj)
+    assert [d["key"] for d in v["decided"]] == ["t1"]
+    assert v["decided"][0]["recommended"] == "x" and v["decided"][0]["applied"] == "x"
+    assert "Decided for you" in page and "Tech lead chose x" in page
+    assert 'data-open-kind="q" data-open-key="t1"' in page
+    assert source_forms(page, "t1").forms  # every entry has a source
+
+
+def test_override_form_round_trips(proj, dash, srv):
+    ask(proj, "t1", klass="tech", options=["A", "B"], recommended="A")
+    srv.cache._value = None
+    page = call(srv, "/")[2].decode()
+    to_b = next(f for f in source_forms(page, "t1").forms if f["label"] == "B")
+    assert submit(srv, to_b)[0] == 303
+    assert stored(proj, "t1")["applied"] == "B"
+    srv.cache._value = None
+    page = call(srv, "/")[2].decode()
+    src = source_forms(page, "t1")
+    assert "You chose: B" in page
+    rec = next(f for f in src.forms if f["label"].startswith("Go with recommended"))
+    assert rec["label"] == "Go with recommended: A"
+    assert submit(srv, rec)[0] == 303
+    q = stored(proj, "t1")
+    assert (q["answer"], q["applied"]) == ("A", "A")
+
+
+def test_controls_render_paused_and_tick_running(proj, dash, monkeypatch):
+    _, page = render_page(proj, "tok")
+    assert 'action="/act/pause"' in page and "Run a tick now" in page
+    assert 'action="/act/resume"' not in page
+    store.set_paused(proj, True, "cli")
+    _, page = render_page(proj, "tok")
+    assert 'action="/act/resume"' in page and 'action="/act/pause"' not in page
+    monkeypatch.setattr(tick, "running", lambda *a, **kw: True)
+    _, page = render_page(proj, "tok")
+    assert "A tick is running" in page and 'action="/act/tick"' not in page

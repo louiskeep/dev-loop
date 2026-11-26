@@ -5,7 +5,7 @@ role icons come from a fixed set of inline SVG, never from data.
 """
 
 from . import render as r
-from . import transcript
+from . import render_control, transcript
 
 e = r.e
 
@@ -65,7 +65,7 @@ def _kpi(label, value, extra=""):
     )
 
 
-def kpi_strip(v, now) -> str:
+def kpi_strip(v, now, token="") -> str:
     k, t = v["kpi"], v["tick"]
     if t["capped"]:
         loop = r._chip("warn", "⏸", "Capped", "usage cap active")
@@ -88,7 +88,8 @@ def kpi_strip(v, now) -> str:
     )
     return (
         '<section id="strip" data-section="strip" class="strip" aria-label="Summary">'
-        f'<div class="strip-head"><span class="project">{e(v["project"])}</span>{loop}</div>'
+        f'<div class="strip-head"><span class="project">{e(v["project"])}</span>{loop}'
+        f"{render_control.controls(v, token)}</div>"
         f'<div class="kpis">{"".join(tiles)}</div></section>'
     )
 
