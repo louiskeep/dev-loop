@@ -225,9 +225,19 @@ def test_sources_line_says_ok_or_names_what_failed(proj, dash):
     assert 'id="sources"' in page_of(proj)  # drawer sources only, no health section
 
 
+def test_top_bar_has_no_worker_counts(proj, dash):
+    page = page_of(proj)
+    strip = page[
+        page.index('id="strip"') : page.index("</section>", page.index('id="strip"'))
+    ]
+    for word in ("Developers", "QA ", "Reviewers", "Architects", "Capacity"):
+        assert word not in strip
+    assert "Memory <b>" in strip
+    assert 'id="theme"' in strip
+
+
 def test_top_bar_chips_and_expand_state(proj, dash):
     page = page_of(proj)
-    assert re.search(r"Developers <b>\d+/8</b>", page)
     assert "Memory <b>" in page
     assert '<span class="k">Needs you</span>' not in page
     assert 'data-toggle="topdetail"' in page and 'id="topdetail"' in page

@@ -30,7 +30,6 @@ def test_page_renders_from_fixture_offline(proj, dash, monkeypatch):
         assert f'id="{sid}"' in page, sid
     assert page.count('<tr class="slice"') == sum(len(r["cards"]) for r in v["rows"])
     assert 'href="https://github.com/own/main/pull/5"' in page
-    assert "Developers" in page and "QA" in page and "Reviewers" in page
     assert "<script>" not in page  # no inline script; the one script is a file
 
 

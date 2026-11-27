@@ -40,10 +40,7 @@ def _stat(label, value):
 
 
 def _pools(v):
-    out = [
-        f'<span class="pill">{e(s["label"])} <b>{s["used"]}/{s["cap"]}</b></span>'
-        for s in v["slots"]
-    ]
+    out = []
     m = v["memory"]
     if m is None:
         out.append('<span class="pill">Memory <b>n/a</b></span>')
@@ -54,18 +51,6 @@ def _pools(v):
             f"{r._chip(kind, icon, word)}</span>"
         )
     return '<span class="dot" aria-hidden="true">·</span>'.join(out)
-
-
-def _capacity_body(v):
-    out = []
-    for s in v["slots"]:
-        frac = s["used"] / s["cap"] if s["cap"] else 0
-        label = f"{s['label']} {s['used']} of {s['cap']}"
-        out.append(
-            f'<li class="slot"><span>{e(s["label"])} <strong>{s["used"]}/{s["cap"]}</strong></span>'
-            f"{r._bar([('used', frac), ('free', 1.0)], label=label)}</li>"
-        )
-    return f'<h3>Capacity</h3><ul class="slots">{"".join(out)}</ul>'
 
 
 def _memory_body(v):
@@ -143,14 +128,14 @@ def top_bar(v, now, token="") -> str:
         + goal
         + '<button type="button" class="chips" data-toggle="topdetail" '
         'aria-expanded="false" aria-controls="topdetail" '
-        'title="Show capacity, memory and data sources">'
+        'title="Show memory and data sources">'
         f'{_pools(v)}<span class="caret" aria-hidden="true">▾</span></button>'
         f"{render_control.controls(v, token)}"
         '<button id="theme" type="button" class="theme">Theme</button>'
     )
     panel = (
         '<div id="topdetail" class="panel" hidden>'
-        f"{_capacity_body(v)}{_memory_body(v)}<h3>Data sources</h3>{sources_line(v)}</div>"
+        f"{_memory_body(v)}<h3>Data sources</h3>{sources_line(v)}</div>"
     )
     return (
         '<section id="strip" data-section="strip" class="strip" aria-label="Summary">'
