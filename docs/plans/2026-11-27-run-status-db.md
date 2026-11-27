@@ -1065,7 +1065,7 @@ rule.
 commits (the 5 rules-sync commits and dash-mc's 9), a full suite on each merge head, and
 the ancestor check plus the reviewed adds list. The reviewer is Codex.
 
-**Size, honestly:** about 290 lines of conflict resolution in 3 regions; two semantic
+**Size, re-estimated:** about 290 lines of conflict resolution in 3 regions; two semantic
 reads of the live `hooks/rules_gate.py`; 5 rebased rules commits; 3 PRs and 3 full-suite
 runs; and the reviewed adds list over 44 dash-mc commits. About one working day.
 
