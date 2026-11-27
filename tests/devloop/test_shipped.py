@@ -409,3 +409,11 @@ def test_install_flag_prints_usage_and_installs_nothing(tmp_path, arg):
     )
     assert out.returncode == 2 and "usage" in out.stderr
     assert not list(tmp_path.glob("--*")) and not (h / ".local").exists()
+
+
+def test_board_phase_map_must_be_a_mapping(proj, ready_cfg, cfg_edit):
+    from devloop import project as projmod
+
+    cfg_edit(lambda c: c.update(board={"cmd": ["true"], "phase_map": []}))
+    with pytest.raises(projmod.ConfigError, match="board.phase_map"):
+        projmod.load_project(proj)
