@@ -1,6 +1,6 @@
 ---
 Status: plan
-updated: 2026-11-27 (revision 2, after Dennis round 1)
+updated: 2026-11-27 (revision 3, after Dennis round 2 and code review)
 ---
 
 # RUN-STATUS: programmatic run statuses in a SQLite store
@@ -27,7 +27,7 @@ Owner decisions (2026-11-27):
   suite on the merge head, and the ancestor check plus a reviewed list of what each
   landed branch adds (section 10.2). The owner approved this exception on 2026-11-27.
 
-Revision 2 changes (Dennis round 1, NO-GO with 7 V1 and 11 DESIGN findings): slice 0 now
+After Dennis round 1, slice 0
 lands from the real install source, and the parity diff is replaced by an ancestor check.
 Three invariants are added (I14 to I16). The import keeps every record. A run can now
 cover many slices. Leases are judged at read time, and long waits are declared. The
@@ -121,8 +121,7 @@ Read from `~/.local/state/devloop/decoy/` and GitHub on 2026-11-27, read only.
    main (#822)".
 5. **A red check under "merge when green".** Engine PR #789 (`58--G7-1`) has its required
    check `engine-gate/verdict` failing. Engine PR #809 (`F31-AUDIT--AE3`) has
-   `compat-preflight` failing. That check is not in the engine's required list in
-   `project.json`. Both slices say they will merge when green. Nothing in the state shows
+   `compat-preflight` failing. Engine main requires it through branch protection. GitHub reports BLOCKED. Both slices say they will merge when green. Nothing in the state shows
    that green will not come.
 6. **Orphaned headless runs in live mode.** Four run directories have `exit` and no
    `applied`, `rejected`, `released` or `discarded`: the runs of `ENGINE-SELECT--S1`,
@@ -230,7 +229,7 @@ Searched on 2026-11-27, online and in the codebase.
   idle limit), `tick._alert` (one alert per reason per six hours), `scrub.py` (secret,
   path and hex patterns), `store.canonical_digest` on dash-mc (a canonical JSON digest),
   `check.run_checks` (the doctor checks), and `merge.repos.<repo>.required_checks` in
-  `project.json` (the required-check list).
+  `project.json` (the loop configuration).
 
 **What the design follows:** WAL with `synchronous=FULL` (today's code fsyncs every
 write, so durability stays the same), `busy_timeout=5000`, `BEGIN IMMEDIATE` for every
@@ -299,9 +298,9 @@ same file.
   `state/text.py`. The phase rules are in one table, and the phase 2 trigger data is
   generated from it.
 - **Dependency inversion, only where a second backend really exists.** The phase 2
-  switch needs `slices.load_all`, `status.events`, `runs.iter_runs` and
-  `notes.load_questions` to keep their signatures while the storage under them changes.
-  Those four functions are the seam. No new abstract layer is added.
+  switch preserves the public read contracts. Slices and ledger readers select the backend.
+  The question parser and headless run directory iterator still read their input files.
+  The dashboard reads the question copy through a separate read operation. No new abstract layer is added.
 - **One place per fact:** headless roles stay in `runs.KINDS` and `runs.KIND_PHASES`,
   unchanged. Live kinds go in a separate table, `state/phases.py: LIVE_KINDS`, with a
   deadline and the allowed phases per kind (section 5.2). Legal moves are in
@@ -337,14 +336,14 @@ smaller, because phases and validators move out.
 |---|---|---|
 | Refusal exit code | `state_cli.REFUSALS` and the `REFUSED:` line with exit 3 | Reuse as is; new errors join the tuple |
 | Name checks | `store.NAME`, `store.TOKEN`, `store.check_name` | Reuse for slice keys, run ids and steps |
-| Secret and path shapes | `scrub._TOKEN`, `_URL_CRED`, `_LONG`, `_PATH` | `text.py` imports them; no second copy |
+| Secret and path shapes | `scrub._TOKEN`, `_URL_CRED`, `_LONG`, `_PATH` | Expose one public pattern check in scrub.py and reuse it from text.py |
 | Headless deadlines and phases | `runs.KINDS`, `runs.KIND_PHASES` | Read only; unchanged and pinned by a test |
 | Process liveness | `runs.proc_start` (pid plus start time) | `run exec` uses it for the beater |
 | Alert dedupe | `tick._alert` and `alerts.json` | Reuse for silent-run alerts |
 | Canonical digest | `store.canonical_digest` (dash-mc) | Import idempotency and reconcile |
 | Slice validation | `slices._validate`, `_FIELDS` | Moved to `state/fields.py`; slices re-exports |
 | Questions parser | `notes.load_questions`, `notes.read_answers` | The vault page stays the source; the db copies it |
-| Required checks | `project.json merge.repos.<repo>.required_checks` | I14 reads it |
+| Required checks | GitHub PR rollup and repo rules from `merge.repo_settings` | I14 combines them as described in section 7 |
 | Doctor checks | `check.run_checks` | Adds `quick_check` and the stray-JSON warning |
 
 New code is only what has no owner today: the SQLite connection module, the run
@@ -373,7 +372,9 @@ render, the two headless tables) is part of S1 and is kept for every later slice
 ## 4. Schema
 
 One file per project: `~/.local/state/devloop/<project>/devloop.db`, mode 0600, on local
-disk. Every table is `STRICT`. The CHECK value lists are generated from the Python
+disk. Create the database, backups, raw exports, mirrors and journals with owner-only
+access from the first open. Test permissions under umask 022, including WAL sidecars
+and events.jsonl. Every table is `STRICT`. The CHECK value lists are generated from the Python
 tuples named in section 3.2.
 
 Phase 1 (slice S3a) creates `migrations`, `runs`, `run_slices`, `run_log`, `run_seq` and
@@ -415,7 +416,8 @@ CREATE TABLE runs (
   legacy       INTEGER NOT NULL DEFAULT 0 CHECK (legacy IN (0,1)),
   legacy_reason TEXT,
   -- live ids are r-YYYYMMDD-NNNN; headless ids are the store.TOKEN shape the dispatcher made
-  CHECK ((origin = 'live' AND run_id GLOB 'r-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9]*'
+  CHECK ((origin = 'live' AND run_id = printf('r-%s-%04d', substr(run_id,3,8),seq)
+          AND seq > 0 AND run_id GLOB 'r-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9]*'
           AND token IS NOT NULL AND lease_s IS NOT NULL AND seq IS NOT NULL)
       OR (origin = 'headless' AND run_dir IS NOT NULL)),
   CHECK ((state IN ('running','waiting','silent')) = (ended_at IS NULL)),
@@ -430,6 +432,7 @@ CREATE INDEX runs_live ON runs(state, lease_until);
 CREATE TABLE run_slices (
   run_id    TEXT NOT NULL REFERENCES runs(run_id),
   slice_key TEXT NOT NULL,           -- REFERENCES slices(key) from phase 2
+  start_phase TEXT,                  -- required at live admission, per slice for I13
   writer    INTEGER NOT NULL CHECK (writer IN (0,1)),   -- builder or tech-writer
   open      INTEGER NOT NULL CHECK (open IN (0,1)),     -- 1 while the run is not ended
   PRIMARY KEY (run_id, slice_key)
@@ -474,7 +477,7 @@ Phase 2 adds these tables. Columns are shortened here, and every TEXT column is 
 `text.py` registry.
 
 ```sql
-CREATE TABLE repos (name TEXT PRIMARY KEY) STRICT;   -- filled from project.json repos
+CREATE TABLE repos (name TEXT PRIMARY KEY, fetched_at TEXT, gh_at TEXT) STRICT;   -- filled from project.json repos
 CREATE TABLE slices (
   key TEXT PRIMARY KEY, row TEXT NOT NULL, slice TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('build','plan','docs','duty','release')),
@@ -513,9 +516,9 @@ CREATE TABLE phase_moves (mode TEXT, kind TEXT, from_phase TEXT, to_phase TEXT,
 CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1),
   mode TEXT NOT NULL CHECK (mode IN ('headless','live')),
   allow_override INTEGER NOT NULL DEFAULT 0,      -- set inside one transaction by --override
-  fetched_at TEXT, gh_at TEXT) STRICT;
+  dispatch_seq INTEGER NOT NULL DEFAULT 0) STRICT;
 CREATE TRIGGER slice_phase_legal BEFORE UPDATE OF phase ON slices
-  WHEN (SELECT allow_override FROM settings) = 0 AND NOT EXISTS (
+  WHEN NEW.phase <> OLD.phase AND (SELECT allow_override FROM settings) = 0 AND NOT EXISTS (
     SELECT 1 FROM phase_moves m WHERE m.mode = (SELECT mode FROM settings)
       AND m.kind = NEW.kind AND m.from_phase = OLD.phase AND m.to_phase = NEW.phase)
   BEGIN SELECT RAISE(ABORT, 'illegal phase move'); END;
@@ -524,19 +527,23 @@ CREATE TABLE slice_moves (id INTEGER PRIMARY KEY, key TEXT NOT NULL REFERENCES s
   run_id TEXT REFERENCES runs(run_id), override INTEGER NOT NULL DEFAULT 0) STRICT;
 CREATE TABLE events (id INTEGER PRIMARY KEY, at TEXT NOT NULL, kind TEXT NOT NULL,
   slice_key TEXT, run_id TEXT, fields TEXT NOT NULL CHECK (json_valid(fields)),
-  once_key TEXT UNIQUE,                                     -- append_event(once=...)
+  -- once=(field,value) searches prior rows of the same kind under the write lock
   source_line INTEGER UNIQUE) STRICT;                       -- line number in events.jsonl
 -- events and slice_moves get the same append-only triggers as run_log
 CREATE TABLE questions (key TEXT PRIMARY KEY, slice_key TEXT,  -- a copy of the vault page
   kind TEXT NOT NULL CHECK (kind IN ('wait','default')),
   status TEXT NOT NULL CHECK (status IN ('open','answered','defaulted','withdrawn')),
+  question TEXT NOT NULL, context TEXT,
+  page_record TEXT NOT NULL CHECK (json_valid(page_record)), -- full parsed record, including decision receipt
   options TEXT NOT NULL CHECK (json_valid(options)), recommended TEXT, answer TEXT,
   applied TEXT, asked_at TEXT, answered_at TEXT, page_sha TEXT NOT NULL,
-  CHECK ((status IN ('answered','defaulted')) = (answer IS NOT NULL))) STRICT;
+  CHECK (status <> 'answered' OR answer IS NOT NULL),
+  CHECK (status <> 'defaulted' OR applied IS NOT NULL)) STRICT;
 CREATE TABLE problems (key TEXT PRIMARY KEY,
   source TEXT NOT NULL CHECK (source IN ('agent','invariant','lease','import')),
   open INTEGER NOT NULL CHECK (open IN (0,1)), impact TEXT NOT NULL, fix TEXT NOT NULL,
-  detail TEXT, count INTEGER NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL)
+  detail TEXT, closed_at TEXT, extra TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(extra)),
+  count INTEGER NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL)
   STRICT;
 CREATE TABLE lessons (key TEXT PRIMARY KEY, area TEXT NOT NULL, wrong TEXT NOT NULL,
   instead TEXT NOT NULL, at TEXT NOT NULL, extra TEXT NOT NULL CHECK (json_valid(extra)))
@@ -547,7 +554,8 @@ CREATE TABLE closures (row TEXT PRIMARY KEY, closed INTEGER NOT NULL CHECK (clos
   entry TEXT NOT NULL CHECK (json_valid(entry))) STRICT;            -- closures.json
 CREATE TABLE alerts (reason TEXT PRIMARY KEY, last_at TEXT NOT NULL) STRICT;
 CREATE TABLE import_raw (id INTEGER PRIMARY KEY, source TEXT NOT NULL, name TEXT NOT NULL,
-  text TEXT NOT NULL, reason TEXT NOT NULL) STRICT;   -- anything that did not parse
+  position INTEGER NOT NULL, payload BLOB NOT NULL, reason TEXT NOT NULL,
+  UNIQUE(source, name, position)) STRICT;
 CREATE TABLE import_log (id INTEGER PRIMARY KEY, source TEXT NOT NULL, sha TEXT NOT NULL,
   rows INTEGER NOT NULL, legacy INTEGER NOT NULL, raw INTEGER NOT NULL, at TEXT NOT NULL)
   STRICT;
@@ -558,12 +566,17 @@ Notes:
 - **Legacy rows.** Rows imported from the history that break a rule (a plan slice in
   VERIFY, a reviewer run with no verdict) are stored with `legacy=1` and a
   `legacy_reason`. The relaxed CHECKs accept them, and I17 (section 7) reports each one
-  until a person fixes it through a normal command, which clears the flag. New writes
-  can never set `legacy=1`: `db.write` refuses it, and only `importer.py` holds the
-  importer capability.
+  until repaired. Only the importer may mark a row legacy. A normal insert uses 0.
+  On update, db.write reads the old row inside the write transaction. A normal edit
+  can retain 1 and its reason while a recorded violation remains. Check the proposed
+  row against the normal constraints, including other open PR holders even if flagged. When it passes, clear
+  the flag and reason in that same update. Refuse a new violation or a 0 to 1 change.
+  Include S2's legal repair moves in the generated phase_moves table. A field-only
+  edit does not run the move trigger.
 - `waiting_on` today is free text. It becomes `waiting_kind`, `waiting_ref` and
   `waiting_note`, so case 3 becomes a join. The import maps old text to
-  `waiting_kind='external'`, with the text in `waiting_note`. I4 still scans that text.
+  `waiting_kind='external'`, with the text in `waiting_note`. I4 keeps its legacy
+  prefix match for these imported waits after the flip.
 - `kind` is new on slices. S2 adds it to the JSON files as `schema_version` 2. The
   default comes from the key (`state/phases.py: kind_for_key`): a `--plan` or `-plan`
   suffix gives `plan`, `--docs` gives `docs`, `DUTY-RELEASE` gives `release`, another
@@ -571,8 +584,8 @@ Notes:
   corrects a wrong guess.
 - `evidence` and `plan_rounds` stay JSON columns, checked with `json_valid`.
 - A headless run row keeps `run_dir`. Its result file stays on disk. Headless rows also
-  get `run_slices` rows: one from `request.json`'s key, or one per key for a batch
-  request.
+  link to existing slices by request key or batch membership. A standalone duty
+  request keeps its key as metadata (section 8.5).
 
 ## 5. Agent-facing commands
 
@@ -585,13 +598,18 @@ run SQL.
 |---|---|---|
 | 0 | Done | Go on |
 | 2 | Usage error (argparse) | Fix the command |
-| 3 | Refused by a rule (`REFUSED: <reason>` on stderr; the reason names fields only) | Fix the record; never work around it |
+| 3 | Refused by a rule (`REFUSED: <reason>` on stderr; the reason names the rule or field and, for a writer conflict, the holding run id) | Fix the record; never work around it |
 | 4 | Lease lost: the run was abandoned or ended by the orchestrator, or the token does not match | Stop (see below) |
-| 5 | Store unavailable (busy past the timeout, disk full, schema newer than the code) | Retry once after 10 s. If it fails again, keep working and say so in the final message |
+| 5 | Store unavailable (busy past the timeout, disk full, schema newer than the code) | Retry once after 10 s. A failed start cannot spawn work. An admitted run reports the outage |
 
 Code 3 keeps its current meaning, so existing callers do not change.
 
-**After exit 4**, the runner must:
+A wrapped child can exit 4 or 5. For either code from `run exec`, check the token
+with a separate beat. A successful beat leaves the child failure for the caller to
+handle. Never rerun the child solely because its exit code matches a store error.
+Test both child codes.
+
+**After confirmed lease loss**, the runner must:
 
 1. Stop starting new steps. Do not push, open a PR, merge or move a slice.
 2. Leave its worktree and local commits as they are. Do not reset or delete anything.
@@ -599,14 +617,13 @@ Code 3 keeps its current meaning, so existing callers do not change.
 4. Say "lease lost on RUN" in its final message, with what it had done (the last step).
 
 A lapsed lease alone never gives exit 4. A run that was silent and beats again is
-revived (section 6). Exit 4 comes only after `run abandon` or an orchestrator `end`, so
-the orchestrator has decided that the work is no longer wanted.
+revived (section 6). A wrong token or a fenced run gives exit 4.
 
 ### 5.2 Commands
 
 | Command | Who | Effect | Refuses (code) |
 |---|---|---|---|
-| `run start --slice KEY [--slice KEY ...] --role ROLE --kind KIND [--node N] [--lease 20m]` | orchestrator | Inserts a `running` row, one `run_slices` row per slice, and a `started` log row. Prints `RUN=r-YYYYMMDD-NNNN TOKEN=xxxxxxxx`. | unknown slice (3); the kind does not allow a slice's phase in `LIVE_KINDS` (3); a live writer already on a slice (3, from the unique index); lease out of range (3); store (5) |
+| `run start --slice KEY [--slice KEY ...] --role ROLE --kind KIND [--node N] [--lease 20m]` | orchestrator | Inserts a `running` row, one `run_slices` row per slice, and a `started` log row. Prints `RUN=r-YYYYMMDD-NNNN TOKEN=xxxxxxxx`. | unknown slice (3); the kind does not allow a slice's phase in `LIVE_KINDS` (3); a live writer already on a slice (3, include the holding run id even when silent); lease out of range (3); store (5) |
 | `run beat RUN --token T` | runner | Sets `last_beat_at` to now and `lease_until` to now plus `lease_s`. A silent run (by `runs_now`) goes back to `running` with a `revived` log row. | ended or abandoned (4); wrong token (4) |
 | `run log RUN --token T STEP [--note TEXT]` | runner | Appends a log row, then beats. | unknown step (2); the note fails the text rule (3); lease (4) |
 | `run hold RUN --token T --for 90m --why STEP` | runner | One lease extension for a known long local step, capped at `deadline_at`. Logs `lease-held`. | past the deadline (3); lease (4) |
@@ -614,7 +631,7 @@ the orchestrator has decided that the work is no longer wanted.
 | `run exec RUN --token T -- CMD ...` | runner or orchestrator | Runs `CMD` as a child in its own process group. Beats every 60 s while the child lives. Passes the child's exit code and its stdout and stderr through unchanged. | the first beat as for `beat` (4); after that, see "exec on lease loss" |
 | `run end RUN --token T --status done\|blocked\|failed [--verdict V] [--head SHA] [--pr N] [--passed N --failed N] --summary TEXT [--as orchestrator]` | runner or orchestrator | Reads the row, checks the token and state, then sets the end fields and logs `ended`, in one `BEGIN IMMEDIATE` transaction. The same end sent twice is a no-op that exits 0. | reviewer or tester `done` with no verdict (3); head not hex (3); text rule (3); a different end on an ended run (4); wrong token (4) |
 | `run abandon RUN --reason TEXT` | orchestrator | Sets `state=abandoned` and `ended_by=orchestrator`. Later beats get code 4. For a run with a `node` other than devbox, prints the node's cancel hint (memory: a local `vm-run` kill leaves the remote run). | already ended (3) |
-| `run show RUN [--json]` | anyone | One line, or the row (with `state_now`) and its log as JSON | unknown run (3) |
+| `run show RUN [--json]` | anyone | One line, or public run fields (including `state_now`) and typed log steps as JSON | unknown run (3) |
 | `run list [--live] [--silent] [--slice KEY] [--json]` | anyone | Rows from `runs_now` | none |
 | `run watch [--timeout 30m]` | orchestrator | Blocks. Prints one line when a run goes silent, ends or passes its deadline, then exits 0. Exits 1 on timeout. Made for the Monitor tool. | none |
 | `run sweep` | tick | Records the silent state for runs that `runs_now` shows as silent: sets `state=silent`, logs `silent`, opens `lease:<run>` problems, prints `SILENT ...` lines | none |
@@ -623,12 +640,12 @@ the orchestrator has decided that the work is no longer wanted.
 
 **`--head` check.** `run end --head` checks only the hex shape. Then it tries
 `git cat-file -e` in the slice's repo, after one `git fetch origin <branch>` with a 10 s
-limit. If the commit is found, `head_verified=1`. If not, the head is stored with
+limit. Check for a commit object, including after an unavailable fetch. If found, `head_verified=1`. If not, the head is stored with
 `head_verified=0` and the command still exits 0, because a head pushed from the Mac or
 the Dell is often not on the devbox yet. I7 compares heads against GitHub, so an
 unverified head is still checked.
 
-**`exec` on lease loss.** When a background beat gets code 4, `exec` logs `lease-lost`,
+**`exec` on lease loss.** When a background beat gets code 4, `exec` records a fixed local lease-loss diagnostic,
 sends SIGTERM to the child's process group, waits 30 s, sends SIGKILL if the group is
 still alive, and exits 4. It kills only local processes. A job the child started on a
 remote node is the orchestrator's cleanup, through the cancel hint that `run abandon`
@@ -641,6 +658,7 @@ next interval.
 |---|---|---|---|
 | `planner` | planner | 2 h | FRAME, PLAN, REVIEW, REMEDIATE (plan slices) |
 | `builder` | builder | 4 h | DEVELOP, SELF_CHECK, REMEDIATE |
+| `slice-runner` | builder (writer=1) | 6 h | DEVELOP, SELF_CHECK, VERIFY, REMEDIATE, GATE |
 | `dennis` | reviewer | 1.5 h | PLAN, REVIEW |
 | `codex-low`, `codex` | reviewer | 1 h | PLAN, REVIEW, GATE |
 | `codex-fix` | planner | 1 h | PLAN, REMEDIATE |
@@ -648,12 +666,17 @@ next interval.
 | `tech-writer` | tech-writer | 1 h | DOCUMENT |
 | `duty` | duty | 1 h | any |
 
+At `run start`, validate the role against the live kind, derive its writer flag and
+check the current phase of each covered slice. Later moves, beats and ends do not
+repeat this admission check. Use `--role builder --kind slice-runner` for the default
+runner in ORCHESTRATOR.md.
+
 `runs.KINDS` and `runs.KIND_PHASES` do not change. A test pins both tables, so the
 headless dispatcher accepts exactly what it accepts today.
 
 ### 5.3 How a subagent learns its run id
 
-The orchestrator runs `run start` **before** it spawns the subagent, and pastes the two
+A failed start never admits work, including a store error. The orchestrator runs `run start` **before** it spawns the subagent, and pastes the two
 printed values into the brief. The Agent tool cannot pass environment variables, so the
 brief is the only channel. Because the row exists before the spawn, a subagent that
 crashes before its first command still has a row, and it reads as silent when its lease
@@ -669,7 +692,7 @@ the row is not ended, the orchestrator ends it with `--as orchestrator --status 
 
 ### 5.4 Text for every builder, reviewer, tester and tech-writer brief
 
-`skills/dev-loop/brief-template.md` and the decoy `LOCAL-BUILDER-BRIEF.md` get this
+`skills/dev-loop/runner-header.md`, `skills/dev-loop/brief-template.md` and the decoy `LOCAL-BUILDER-BRIEF.md` get this
 block, which the orchestrator fills in:
 
 ```text
@@ -682,12 +705,15 @@ Run record (required):
   devloop-state decoy run exec RUN --token TOKEN -- <command>
 - Before you wait on something that cannot beat (a detached decoy-vm-t3 run, a Monitor
   wait, CI), declare it: devloop-state decoy run wait RUN --token TOKEN --on t3:<label> --for 3h
+- To watch a detached job on the Mac, replace 12345 with its numeric PID:
+  devloop-state decoy run exec RUN --token TOKEN -- ssh mac 'while kill -0 12345 2>/dev/null; do sleep 30; done'
 - If no step has happened for 10 minutes, run: devloop-state decoy run beat RUN --token TOKEN
 - Last action before your final message:
   devloop-state decoy run end RUN --token TOKEN --status done|blocked|failed
     [--verdict GO|GO-WITH-FIXES|NO-GO] [--head SHA] [--pr N] [--passed N --failed N]
     --summary "one plain sentence"
-- Exit 4 means the run is no longer yours: stop, push nothing, do not run end, and say
+- If exec returns 4 or 5, beat separately to distinguish a child failure.
+- Exit 4 from a beat means the run is no longer yours: stop, push nothing, do not run end, and say
   "lease lost" in your final message. Exit 5: retry once, then go on.
 - Notes and summaries: plain words. No secrets, data values, file paths or command output.
 ```
@@ -718,18 +744,20 @@ Run record (required):
   - `subagent:<run>`, an orchestrator waiting on another run.
   The run shows as `waiting` with its reason until `lease_until`, then as silent. The
   orchestrator may instead run the watcher under `exec` (for example
-  `run exec ... -- ssh <node> tail --pid=<pid> -f /dev/null`), which is a delegated beat:
-  the beat lasts as long as the remote job does.
+  `run exec ... -- ssh mac 'while kill -0 12345 2>/dev/null; do sleep 30; done'`), with the job's numeric PID. The beat lasts as long as the watcher runs.
 - **On expiry:** the run reads as silent. The next `run sweep` (inside every tick) logs
   `silent`, opens problem `lease:<run>` with source `lease`, and records the alert, in one
-  transaction. Silent is not terminal. A late beat revives the run, logs `revived` and
-  closes the problem. Only `run abandon` or an orchestrator `end` fences a run, and after
+  SQLite transaction after the S6 flip. Before the flip, the problem ledger is JSON. Reconcile its
+  open/closed state from the committed run state on each sweep, even after a crash
+  between the two writes. Silent is not terminal. A late beat revives the run, logs `revived` and
+  closes the problem. Sweep records each silent episode once. End and abandon also
+  close an open lease problem. Only `run abandon` or an orchestrator `end` fences a run, and after
   that its beats get code 4.
 - **How the orchestrator is told, in live mode:**
   1. `devloop-tick decoy`, which the orchestrator runs at the start of each iteration,
      prints `SILENT run=<id> role=<role> slices=<keys> last_beat=<n>m` lines to stdout.
      Today the live pass prints nothing.
-  2. STATUS.md gets a "Runner silent" section at the top, read from `runs_now`, so it is
+  2. STATUS.md gets a "Runner silent" section after the existing sections, read from `runs_now`, so it is
      right the moment it is rendered.
   3. The dashboard shows silent runs under "Needs you", read from `runs_now` on each
      request.
@@ -754,30 +782,34 @@ sighting of a new failure alerts once.
 | I1 | `plan-in-build-phase` | a plan slice in DEVELOP, SELF_CHECK, VERIFY, GATE or DOCUMENT | slices | no | S1 | 3 now (VERIFY); 9 in history |
 | I2 | `document-without-shipped-entry` | DOCUMENT or DONE with a merged PR, more than 2 h after the merge, and no `<repo label> #<pr>` line in `shipped_doc` on the goal repo's `origin/main` | slices, `git show` | no | S1 | #817, #791, #832 |
 | I3 | `claim-without-run` | `next_action` names a role "(subagent)", no open run covers the slice in `run_slices`, and the claim is older than the default lease | slices, runs | no | S3b | the five 18:37 tech-writer slices |
-| I4 | `waiting-on-answered-question` | `waiting_kind='owner-question'` and the question is answered or defaulted. Before phase 2: `waiting_on` or `next_action` says "owner" or "question" and names a key that is the prefix of an answered question | slices, questions | no | S1 | NONFK-OOM--C1-docs |
+| I4 | `waiting-on-answered-question` | `waiting_kind='owner-question'` and the question is answered or defaulted. For legacy free-text waits (including imported waiting_note): `waiting_on` or `next_action` says "owner" or "question" and names a key that is the prefix of an answered question | slices, questions | no | S1 | NONFK-OOM--C1-docs |
 | I5 | `gate-branch-lacks-main` | GATE, or REVIEW with a GO, where `origin/<base>` is not an ancestor of `origin/<branch>` (`git merge-base --is-ancestor`) | slices, local git after a fetch | no | S1 | DATE-SHIFT-TYPED--S1b-1 |
 | I6 | `pr-state-mismatch` | a slice before DOCUMENT whose PR is merged or closed, or a slice in DOCUMENT or DONE whose PR is still open | slices, GitHub | yes | S1 | not checked yet |
 | I7 | `head-mismatch` | the slice or last run `head` differs from the PR's `headRefOid` | slices, runs, GitHub | yes | S1 | not checked yet |
 | I8 | `runner-silent` | `runs_now.state_now = 'silent'` | runs | no | S3b | starts with S3b |
 | I9 | `runner-overdue` | not ended and past `deadline_at` | runs | no | S3b | starts with S3b |
-| I10 | `illegal-move` | a `slice-moved` event since the last tick that is not in the live move table, or a move recorded with `override` | events | no | S1 | 100 of 722 |
+| I10 | `illegal-move` | a `slice-moved` event since the last tick outside the move table for its mode and kind, or a move recorded with `override` | events | no | S1 | 100 of 722 |
 | I11 | `held-without-question` | HELD, or PARKED for an owner reason, with no open `hold:<key>` question; or a hold that was answered but is still held after one tick | slices, questions | no | S1 | not checked yet |
 | I12 | `stale-slice` | an active slice that is not waiting, with no move, no run and no log row for 12 h | slices, runs | no | S1 | not checked yet |
 | I13 | `ended-run-not-applied` | a live run ended `done` more than 30 minutes ago, and a slice it covers is still in the phase the run started in | runs, slices | no | S3b | starts with S3b |
-| I14 | `required-check-red` | a slice in VERIFY, REVIEW or GATE with a PR, whose PR head has a required check in state FAILURE, ERROR, CANCELLED, TIMED_OUT or ACTION_REQUIRED, while the slice is not in REMEDIATE and `next_action` does not name a fix | slices, GitHub | yes | S1 | #789 (`engine-gate/verdict`) |
+| I14 | `required-check-red` | a slice in VERIFY, REVIEW or GATE with a PR, whose head has a red required check, or whose merge state is BLOCKED with any red check | slices, GitHub | yes | S1 | #789 and #809 |
 | I15 | `orphaned-headless-run` | a run directory with `exit` and none of `applied`, `rejected`, `released`, `discarded` while the mode is live; or a slice whose `run` field names such a run | run dirs, slices | no | S1 | 4: ENGINE-SELECT--S1, EXPECT-OFF-ROUTE--S2, WHEN-READS-SOURCE--S2, 24zj--E-S1a |
 | I16 | `pr-shared` | two slices not in DONE, PARKED or HELD with the same repo and PR | slices | no | S1 | #828, #829 |
 | I17 | `legacy-row` | a row imported with `legacy=1` that is still flagged | slices, runs | no | S5 | 3 plan slices in VERIFY, plus the #828 and #829 pairs |
 
-**I14 in detail.** The required-check list per repo is
-`project.json merge.repos.<repo>.required_checks` (cli: 8 contexts; engine:
-`engine-gate/verdict`). `project.example.json` documents the key. The same GraphQL call
-as I6 and I7 also reads
-`commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 50) { nodes {
-... on CheckRun { name conclusion } ... on StatusContext { context state } } } } } } }`.
-A failing check that is not on the list (such as `compat-preflight` on #809) is shown on
-the same STATUS.md line as information, but it does not fail I14. A repo with no list
-reads as `unchecked`, never as pass.
+New move events carry mode, kind and the override flag. For historical replay use
+recorded mode when available. Mark ambiguous cases unchecked. An override changes
+only the move-table check. Preserve owner authorization, held-slice release checks,
+row constraints and headless evidence checks.
+
+**I14 in detail.** For PR N, read `mergeStateStatus` and the current head's rollup.
+On each CheckRun request `name`, `conclusion` and `isRequired(pullRequestNumber: N)`.
+On each StatusContext request `context`, `state` and `isRequired(pullRequestNumber: N)`.
+Pass each alias its own integer PR number. A check is required if GitHub returns true
+or its name matches an entry in `project.json merge.repos.<repo>.required_checks` or
+the repo's `gate_status`. Absent config contributes no names. FAILURE, ERROR, CANCELLED,
+TIMED_OUT and ACTION_REQUIRED are red. A red required check fires I14. BLOCKED with
+any red check also fires. The slice phase alone determines when I14 applies.
 
 **How often:** every tick. In live mode that is every orchestrator iteration, because
 `devloop-tick` already runs first. In headless mode it is the cron tick.
@@ -789,15 +821,19 @@ tick (section 6).
 - Local checks: reading about 77 slice files, about 2,600 events and the `exit` and
   `applied` names in 527 run directories takes under 1 s.
 - I2 and I5 need one `git fetch` per repo per tick, 1 to 3 s each. A fetch younger than
-  5 minutes is reused (stamped in `tick-state.json`, and in `settings` after phase 2).
+  5 minutes is reused (stamped in `tick-state.json`, and per repo in `repos` after phase 2).
   After the fetch, `git show` and `merge-base` take about 20 ms per slice.
-- I6, I7 and I14 make **one** GraphQL call per repo per tick. It uses one alias per open
-  slice PR (today 18 GATE PRs plus the VERIFY and REVIEW ones, about 30 in all), each
-  with `state merged headRefOid baseRefName` and the check rollup above. With 50 contexts
+- I6, I7 and I14 start with one GraphQL call per repo per tick. It uses one alias per distinct repo PR number in the snapshot, including closed or merged PRs
+  for I6 (today 18 GATE PRs plus the VERIFY and REVIEW ones, about 30 in all), each
+  with `state merged headRefOid baseRefName mergeStateStatus` and the check rollup above. With 50 contexts
   per PR, one call costs about 1 to 2 points of the 5,000-point hourly budget. Results
-  are cached for 10 minutes, so a busy hour costs about 12 calls per repo. If the
+  are cached for up to 10 minutes. If the
   GraphQL call fails, the fallback is one `gh pr view N --json statusCheckRollup,...`
-  per PR (about 30 calls), at most once per 10 minutes. With `--no-github`, or when `gh`
+  per PR (about 30 calls), at most once per 10 minutes. On GraphQL, request pageInfo
+  and follow cursors on the same head. A known failure still fires. If a context page, required flag or
+  merge state needed to decide I14 is missing, report `unchecked`. The per-PR CLI
+  rollup alone cannot prove a red unlisted check optional. Keep prior open findings on
+  an unchecked result. Cache by PR and head. With `--no-github`, or when `gh`
   fails both ways, I6, I7 and I14 report `unchecked`, never `pass`.
 - A check that raises an error is reported as `FAIL invariant-error <name>`, and the
   other checks still run.
@@ -809,7 +845,7 @@ tick (section 6).
 - **Writers:** up to 16 runs, the orchestrator, the tick and an operator shell. Each
   command opens its own connection with `isolation_level=None`, then sets
   `journal_mode=WAL` (persistent), `busy_timeout=5000`, `foreign_keys=ON` and
-  `synchronous=FULL`. Every write is one `BEGIN IMMEDIATE ... COMMIT` inside
+  `synchronous=FULL`. Check strict Python types before binding values because SQLite STRICT can coerce numeric strings and booleans. Every write is one `BEGIN IMMEDIATE ... COMMIT` inside
   `db.write()`, including writes that read first (`run end`, `run beat` on a silent run,
   `slice move`). Each transaction holds the lock for well under 10 ms. At about 1 write
   per second at peak, waits are rare and short.
@@ -837,12 +873,12 @@ inside run directories.
 | `alerts.json` | `tick._alert` | import to `alerts` | archived |
 | `merges.json` (merge ledger) | `board.py` | import to `merges` | archived |
 | `closures.json` (row closures; absent today) | `board.py` | import to `closures` when present | archived |
-| `seq.json` | `store.next_seq` | import to `settings` and `run_seq` | archived |
+| `seq.json` | `store.next_seq` | import to `settings.dispatch_seq`; keep the live `run_seq` independent | archived |
 | `runs.index.json` | `store.register_request` | import to `runs.request_sha` | archived |
 | `runs/<id>/` (527 dirs, incl. `repair.json`) | wrapper, `apply.py` | keep on disk; index as `runs` rows | 1,969 run locks stay |
 | `project.json` | the owner | keep (config) | stays |
 | `node-status.json` | node-watch (outside the plugin) | keep (external producer) | stays |
-| `tick-state.json` | `tick.py` | keep (tick runtime); fetch stamps move to `settings` | stays |
+| `tick-state.json` | `tick.py` | keep (tick runtime); fetch stamps move to `repos` | stays |
 | `dash.json`, `dash-port.json` | dashboard | keep (dashboard runtime) | stays |
 | `STATUS.md` | `status.write_status` | keep (output) | stays |
 | `PAUSE`, `cap-until` | operator, tick | keep (flags) | none |
@@ -858,14 +894,19 @@ The vault page is the source of truth for questions and answers, before and afte
 flip. The owner answers there, and the owner's workflow does not change. The
 `questions` table is a copy:
 
+- Keep the vault parser `notes.load_questions(path)` and its four-part return value.
+  A defaulted question has the recommended option in applied and can have a null
+  answer (notes.py:410). Preserve that distinction in the copy and its tests.
 - `notes.ask` writes the page first, then the copy, under the page lock.
 - `answers-sync` (each tick, and at the start of any command that reads questions)
-  re-reads the page when its sha256 differs from `questions.page_sha`, applies answers
-  as today, and refreshes the copy in one transaction.
+  keeps the existing receipt and interactive authorization rules. Only an authorized
+  writer applies an answer. Refresh the parsed page snapshot in one DB transaction.
+  Read-only dashboard requests never apply an answer or open a write connection.
+  If the snapshot is stale, read the authoritative page or report unchecked.
 - Readers (I4, I11, the dashboard) read the copy after that sync. If the page cannot be
   read, they report `unchecked`.
 - Nothing writes an answer into the table directly. A test changes an answer in the
-  table and checks that the next sync puts back the page's value.
+  table and checks that a reconcile detects the mismatch and a refresh restores the page record.
 
 ### 8.4 Crash safety
 
@@ -877,14 +918,15 @@ flip. The owner answers there, and the owner's workflow does not change. The
   The tick runs it once a day and keeps 7 copies. `devloop-state check` adds
   `PRAGMA quick_check`.
 - Schema newer than the code (after a code rollback past a migration): every command
-  exits 5 with "schema newer than this code". The rollback steps in 8.6 cover this.
+  using the store refuses before writing. Existing commands return their documented
+  refusal code 3. New run and db commands return 5 with "schema newer than this code". The rollback steps in 8.6 cover this.
 
 ### 8.5 Migration (phase 2)
 
 Expand, migrate, verify, contract (data-and-migrations rulebook):
 
 1. **Expand (S5).** Migration 2 creates the phase 2 tables. `db import --dry-run` prints
-   counts, the legacy rows with their reasons, and the raw rows. `db import --apply`
+   counts and source names with fixed reason codes. Raw payloads stay private. `db import --apply`
    imports in one transaction per source. **Every record goes in; nothing is skipped:**
    - `slices/*.json`: each file is checked with `state/fields.py`. Known fields go to
      columns, the rest go to `extra`, and the `history` entries go to `slice_moves`. A
@@ -895,29 +937,61 @@ Expand, migrate, verify, contract (data-and-migrations rulebook):
    - `events.jsonl`: every line goes to `events`, with the raw object in `fields` and the
      line number in `source_line`. A line that does not parse goes to `import_raw`.
    - `runs/*`: every directory becomes a `runs` row with `origin='headless'`, its own id,
-     `run_dir` set, and `run_slices` rows from `request.json`. The state comes from the
+     `run_dir` set, and applicable `run_slices` rows from `request.json`. The state comes from the
      `exit`, `applied`, `rejected`, `released` and `discarded` files; a run that has none
-     is `lost`. A run whose files break a CHECK is imported with `legacy=1`.
+     is checked for liveness as described below. Preserve a representable violation as legacy.
    - `problems.json`, `lessons.json`, `alerts.json`, `merges.json`, `closures.json`,
      `seq.json` and `runs.index.json` go to their tables (8.2). `OWNER-QUESTIONS.md` goes
      to `questions` through `notes.load_questions`.
+   - Stage source identities before enforcing foreign keys. Populate slices first,
+     then rebuild phase 1 run_slices with the FK in a final transaction. Restore its
+     indexes and close trigger before releasing writes. Check foreign_key_check.
+     If an existing live link has no valid slice parent, leave that link and its
+     phase 1 schema intact, report the key and defer finalization until repaired.
+     For a duty request without a slice (dispatch.py:294), keep the request key as
+     metadata without creating a slice link. For batch requests use the keys of
+     request.batch. For a no-exit run, check wrapper/payload liveness under the
+     admission lock before recording lost. Preserve runs.iter_runs and holds_slot
+     behavior, including writers awaiting apply. Never feed live rows to collect.
+   - When a record cannot satisfy even the relaxed schema, preserve its original
+     bytes in import_raw (BLOB), keyed by source and record position. This includes
+     invalid UTF-8, missing parents and unknown types. Emit a fixed reason code.
+     Test interrupted re-import with malformed bytes and existing S3b links intact.
    - Each source's sha256 and its row, legacy and raw counts go to `import_log`.
 
-   The import is idempotent. Events key on `source_line`, slices on the key plus the
+   For each shadow refresh, read a consistent source under its existing lock. A
+   snapshot can advance several legal moves between imports. Apply it as an import
+   after validation. Preserve the ordered history, including repeated identical
+   entries, and record each imported entry once. The import is idempotent. Events key on `source_line`, slices on the key plus the
    canonical digest, and runs on the run id. A second run adds zero rows.
 2. **Shadow (S5, at least 2 days of live use).** JSON stays the source of truth. Each tick
    runs an incremental import and then `db reconcile`. The reconcile compares per-slice
-   canonical digests (the JSON against the database rendered back to JSON), event counts
-   per kind, the sets of problems, questions and merges, and the run counts. A difference
+   canonical digests, ordered events, full ledger and question records, counters and
+   headless request hashes against the source. Compare live runs separately. Preserve
+   the original line position and bytes for raw records on export. A difference
    opens problem `inv:db-drift:<subject>`. The flip needs 2 days in a row with zero drift.
-3. **Flip (S6).** `project.json "store": "sqlite"`. The four read seams
+3. **Flip (S6).** Quiesce state writers, finish the last import, verify parity and switch
+   `project.json "store": "sqlite"` before releasing writers. The read contracts
    (`slices.load_all`, `status.events`, `runs.iter_runs`, `notes.load_questions`) and
-   every writer in `slices.py`, `notes.py`, `board.py` and `store.append_event` switch to
-   the database. The dashboard and STATUS.md do not change, because they call the seams.
-   **For 7 days every write command also writes the JSON mirror**, after its database
-   commit and in the same command: the slice file it changed, the ledger it changed, and
-   the `events.jsonl` line, which keeps being appended. The mirror is never more than one
-   command behind, and it does not depend on the database being readable.
+   the owners of the files in 8.2 keep their public signatures. Route single-slice
+   reads and edits (slices.py:266, 286), counters, request hashes and ledger access
+   through the selected backend. Replace direct problem reads in dash/view.py:1004
+   and 1033, and the problem and lesson reads in status.py:144 and 153. Persist
+   closed_at and other existing ledger fields for the dashboard's recent history.
+   Keep scanning headless request, process and exit files. Refresh their index on new
+   dispatch and state changes, including after S7. Test dispatch, collect and apply
+   with the archived JSON files absent.
+
+   **Seven-day mirror.** Serialize migrated writes and backend switches under one project
+   lock using store.locked. Recheck the backend after taking the lock. Before committing
+   SQL, durably mark the mirror dirty on disk. Commit slice, move, event and ledger
+   changes for one logical operation together. Publish the affected private JSON files
+   and events in commit order. Clear the marker only after all files and directory
+   entries are durable. Report success after publication. After interruption or a mirror
+   error, the next writer or rollback first rebuilds the dirty mirror from a consistent
+   SQLite snapshot, including exact event order, without duplicate appends. A clean
+   marker permits rollback with an unreadable database. If dirty and the database is
+   unreadable, stop for recovery. Never activate a stale mirror.
 4. **Contract (S7).** After 7 days with no rollback, the mirror writes stop. The files
    marked "archived" in 8.2 and their locks move (they are not deleted) to
    `archive-YYYYMMDD/` in the state directory. Deleting the archive later is a separate
@@ -925,17 +999,16 @@ Expand, migrate, verify, contract (data-and-migrations rulebook):
 
 ### 8.6 Rollback
 
-- **Before the flip:** delete nothing. Removing `devloop.db*` returns the system to its
-  earlier state, except for the live run rows written since S3b. `db export` first
-  writes a copy of them to `runs-export.jsonl`.
-- **After the flip, within 7 days:** set `"store": "json"`. The mirror is current to the
-  last write command, so no export is needed, and a corrupt database does not block the
-  flip back. The run tables stay in use, as in phase 1.
-- **Code rollback past a migration:** run `db backup`, then `db downgrade --to N`, then
-  install the older lib. Each migration has one downgrade step, which drops only the
-  tables that migration added. Each downgrade has a test.
-- **After the contract step:** rollback means restoring the files from
-  `archive-YYYYMMDD/`. The S7 archive test covers this path.
+- **Before the flip:** JSON remains authoritative for migrated state. Keep the live-run
+  database. Before rolling back S3b, stop writers and take a verified private backup.
+- **Within seven days of the flip:** under the project lock, check the mirror marker,
+  recover if necessary, then switch to JSON. A corrupt run database still requires
+  recovery for live-run commands. Keep it and its WAL for recovery.
+- **Code rollback past a migration:** stop writers, back up and verify the current
+  database before a downgrade. Preserve live-run history and restore the prior schema,
+  including the phase 1 run_slices table and its indexes.
+- **After S7:** export current SQLite data under the project lock and verify it before
+  switching back. The archive alone cannot recover writes made after S7.
 
 ### 8.7 Keeping old commands working
 
@@ -953,8 +1026,10 @@ text enters (the command boundary), and again at the database write.
 - **Choke point:** `state/text.py` holds one registry,
   `COLUMNS = {(table, column): TextRule(limit, kind)}`, with the kinds `note`, `summary`,
   `reason`, `token`, `path`, `ref` and `json`. Two places use it:
-  1. Every free-text CLI argument has `type=text.arg(table, column)`, so argparse rejects
-     bad text before any other code runs (exit 3, and the message names the field only).
+  1. Parse command syntax first. Validate free-text fields with `text.arg(table, column)`
+     under the CLI refusal handler (exit 3 with the field name). An argparse type
+     failure normally exits 2 and may echo the input. Use fixed usage messages on
+     the new command parsers, including malformed integers, choices and extra args.
   2. `db.write(table, row)` runs the same rule on every TEXT column, so a code path that
      skips the CLI still cannot store bad text.
 - **What is refused (kinds `note`, `summary`, `reason`):** text over the limit (note 120,
@@ -963,18 +1038,21 @@ text enters (the command boundary), and again at the database write.
   three or more parts (`_PATH`); email addresses; runs of 9 or more digits; quoted spans
   over 20 characters. The text is refused, not scrubbed, so the record stays true and
   the agent learns the rule.
-- **Kind `ref`** (`wait_on`, `waiting_ref`): `KIND:REF` with both parts in the
-  `store.TOKEN` shape.
+- **Kind `ref`.** Parse run wait_on as KIND:REF. Check KIND against WAIT_KINDS and
+  fullmatch the reference with store.TOKEN. Slice waiting_ref holds just the reference
+  because waiting_kind already holds the kind.
 - **Kind `path`** (`worktree`, `plan_path`, `run_dir`): the value must resolve under an
   allowed root (the repos in `project.json`, the state directory, the vault). Path
   values are never shown on public pages.
 - **Imported history:** old text is stored as it was, because an import must not change
-  the record. A row whose text fails the rule gets `text_ok=0`, and readers pass that
-  text through `scrub()`.
+  the record. Preserve raw input in private storage. Use fixed words, counts and typed IDs for
+  public run output. Allowlist fields before serialization. Omit arbitrary notes, summaries, wait text and raw JSON even
+  if they pass pattern checks. A short data value can look like an ordinary word.
+  Test a short marker as well as known secret shapes across renderers and refusals.
 - **Guard test (fitness function):** it walks the built argparse tree of `devloop-state`
-  and fails on any `str` argument without a `text.arg` type. It also walks the reflected
+  and fails on any `str` free-text input without a registered validator. It also walks the reflected
   schema (`PRAGMA table_info` for every table and view) and fails on any TEXT column
-  missing from `COLUMNS`. **Mutation:** remove `type=text.arg(...)` from
+  missing from `COLUMNS`. **Mutation:** remove the text validator from
   `run end --summary`; the guard must go red. Adding a TEXT column to `runs` without a
   registry entry must also turn it red.
 
@@ -984,8 +1062,8 @@ text enters (the command boundary), and again at the database write.
 
 - Every slice branches from the plugin's `origin/main` and merges back to `main` when it
   is done. Nothing stays on a side branch.
-- One slice is open at a time, in order. S1 and S2 may run in parallel, because they
-  touch different files. A later slice branches from `main` after the earlier one merges.
+- One slice is open at a time, in order. S1 defines the pure move and kind rules used by I1 and I10. S2 installs those
+  same rules on the write path. A later slice branches from `main` after the earlier one merges.
 - Merges go through PRs, under the standing merge authority (double gate GO for R2).
   `devloop-install` from `main` happens only after slice 0 is done (section 10.2).
 - Commits use Conventional Commits with the final line `cam`. T0 runs per edit, T1 per
@@ -1015,32 +1093,31 @@ open branch.
 
 **Steps:**
 
-- **S0a. Bring local main in line.** Local `main` has 5 unpushed "rules: sync ..."
-  commits, on no other branch, and is 1 commit behind `origin/main`. Rebase them onto
-  `origin/main` in a fresh worktree. They touch rule-text files only, so they need a
-  read, not a code review. Then land them through a PR. After that, local `main` equals
-  `origin/main`.
-- **S0b. Land push-gate-s1.** Push the branch as it is. Open a PR to `main` and merge
-  `main` into the branch in a fresh worktree. Read `hooks/rules_gate.py` for meaning,
-  because it auto-merges main's 85 changed lines with the branch's own edits, and it is
-  the live hook. Run the full suite on the merge head. Merge with a merge commit.
-- **S0c. Land dash-mc.** Push its 9 unpushed commits. In a fresh worktree, merge the new
-  `origin/main` into dash-mc. The trial merges on 2026-11-27 show three conflict
-  regions:
-  - `config.json`: 1 region, 18 lines; keep both sets of keys;
-  - `tests/test_rules_gate.py`: 1 region, 252 lines; keep both sets of tests;
-  - `skills/dev-loop/SKILL.md`: 1 region, 20 lines, from push-gate-s1.
-  Read `hooks/rules_gate.py` for meaning again: dash-mc changed 153 lines of it, and the
-  merge base changed 85. `devloop/project.py`, `runs.py`, `state_cli.py`, `PLAYBOOK.md`,
-  `TICK.md` and `mutations.sh` merge automatically, and their diffs are read too. Run
-  the full suite, plus the dashboard against a read-only copy of the live state
-  (`DEVLOOP_HOME` set to the copy). Merge with a merge commit.
+- **S0a. Re-sync the rules.** Branch from `origin/main` in a fresh worktree. Read the
+  five local-main commits and re-sync `rules/development-loop.md` from
+  `/home/cam/dev-rules/development-loop.md`. Check that the result includes their
+  decisions and main's rules-gate requirements. Land the sync by PR after the suite.
+- **S0b. Land push-gate-s1.** Start the integration branch at the install source
+  `a753f7f`. Merge the new main into it. Resolve the two trial-merge conflicts in
+  `config.json` (keep both sets of keys) and `tests/test_rules_gate.py` (keep both
+  sets of tests). Read the auto-merged live hook, `hooks/rules_gate.py`, for meaning.
+  Run the full suite on the merge head and land by PR with a merge commit.
+- **S0c. Land dash-mc.** Review and push its nine local commits. Merge the new main
+  into dash-mc in a fresh worktree. The trial merge conflicts only in
+  `skills/dev-loop/SKILL.md`. Preserve the runner procedure and dashboard instructions.
+  Check the auto-merged hook, project, run and CLI code, playbook, tick instructions
+  and mutations script. Run the full suite and the dashboard against a read-only copy
+  of the state. Land by PR with a merge commit.
 - **Done when:**
-  1. `git merge-base --is-ancestor a753f7f origin/main` and
+  1. Fetch origin successfully in the plugin repo, then check that
+     `git merge-base --is-ancestor a753f7f origin/main` and
      `git merge-base --is-ancestor <dash-mc head> origin/main` both succeed.
   2. The reviewed adds list (below) is in the slice-0 PR description.
   3. Reinstall from main. `devloop-install` writes the source sha to a `SOURCE` file in
-     the version directory, which is a small change in this slice. Then the next tick and
+     the version directory before activation. The check fetches origin in the plugin
+     repo first. If the fetch, source SHA or ref is unavailable, report `unchecked`.
+     Test a stale tracking ref with a failed fetch. Only a fresh ancestor result
+     satisfies slice 0. Then the next tick and
      `devloop-state decoy check` pass, and `devloop-state decoy merged --help` works.
 
 **The reviewed adds list.** For each landed branch, the PR lists what it adds over the
@@ -1066,7 +1143,7 @@ commits (the 5 rules-sync commits and dash-mc's 9), a full suite on each merge h
 the ancestor check plus the reviewed adds list. The reviewer is Codex.
 
 **Size, re-estimated:** about 290 lines of conflict resolution in 3 regions; two semantic
-reads of the live `hooks/rules_gate.py`; 5 rebased rules commits; 3 PRs and 3 full-suite
+reads of the live `hooks/rules_gate.py`; one rules re-sync covering five local commits; 3 PRs and 3 full-suite
 runs; and the reviewed adds list over 44 dash-mc commits. About one working day.
 
 ### 10.3 Build slices
@@ -1074,7 +1151,7 @@ runs; and the reviewed adds list over 44 dash-mc commits. About one working day.
 | Slice | Phase | Risk | Size (source + tests) | Depends on |
 |---|---|---|---|---|
 | S1 Read-only invariants on today's store | 1 | R1 | 380 + 380 | S0 |
-| S2 Live move table, slice kind, phases and fields moved out of `slices.py` | 1 | R2 | 220 + 260 | S0 |
+| S2 Live move table, slice kind, phases and fields moved out of `slices.py` | 1 | R2 | 220 + 260 | S1 |
 | S3a Storage: db, schema, text registry, guards | 1 | R2 | 320 + 320 | S1, S2 |
 | S3b Run commands, leases, waits, sweep, run invariants | 1 | R2 | 480 + 420 | S3a |
 | S4 Briefs, skill, STATUS.md and dashboard readers for runs | 1 | R1 | 250 + 150 | S3b |
@@ -1095,8 +1172,7 @@ on the tick's stdout; problems with `inv:` keys; the contract snapshot tests (3.
 **Failure modes:** `gh` is missing or fails, so I6, I7 and I14 report `unchecked`, never
 pass. A fetch fails, so I2 and I5 report `unchecked`. A check raises an error: it
 reports `invariant-error`, and the other checks still run. The questions page is
-missing: I4 and I11 report `unchecked`. A repo has no `required_checks`: I14 reports
-`unchecked` for it.
+missing: I4 and I11 report `unchecked`. Without configured names, I14 still checks GitHub requirements and BLOCKED.
 
 **Acceptance tests:**
 
@@ -1109,7 +1185,10 @@ missing: I4 and I11 report `unchecked`. A repo has no `required_checks`: I14 rep
 - `test_inv_gate_branch_lacks_main_fires` (a temp repo where the branch is behind main)
 - `test_inv_pr_state_mismatch_fires`, `test_inv_head_mismatch_fires`,
   `test_inv_required_check_red_fires` and `test_inv_required_check_red_ignores_optional`
-  (a fake `gh` on PATH that returns #789 and #809 shapes)
+  (fake gh: #809 fires for required compat-preflight, also when isolated from BLOCKED.
+  #789 fires on an UNSTABLE PR by configured name. Test gate_status alone too. A red
+  unlisted check with isRequired false passes on UNSTABLE and fires on BLOCKED.
+  Repeat with CheckRun and StatusContext and vary next_action without changing the result.)
 - `test_inv_orphaned_headless_run_fires` (a run directory with `exit` and no `applied`,
   mode live)
 - `test_inv_pr_shared_fires` (two open slices with one PR)
@@ -1118,13 +1197,19 @@ missing: I4 and I11 report `unchecked`. A repo has no `required_checks`: I14 rep
 - `test_problem_closes_when_invariant_passes`
 - `test_every_invariant_has_a_firing_test` (guard: walks `INVARIANTS` and requires a
   `test_inv_<name>_fires` test for each entry that is turned on)
+- Add firing fixtures for I10, I11 and I12 now and I17 in S5. Normalize registry
+  names from hyphens to underscores for test discovery. For I12, use headless run
+  files in S1 and add live run logs in S3b. Compare abbreviated heads with the
+  existing merge head comparison for I7.
 - `test_live_state_copy_finds_todays_cases` (golden test on a scrubbed copy of the
   2026-11-27 slices, questions and run-directory names, checked into `tests/fixtures/`;
-  it must show the hits in section 7 and nothing else)
+  include synthetic rollups and git refs, fix the clock and replay from a fixed
+  event offset. Assert the known findings for enabled checks. The 100 historical
+  moves outside the headless table are input for I10, not its expected failure count.)
 - `test_contract_snapshots` (3.5)
 
 **Mutations that must go red:** I5 returns no failures; the GitHub error path returns
-pass; I14 reads every check instead of the required list; I15 treats `rejected` as not
+pass; ignore isRequired; ignore BLOCKED; treat every optional red check as required; I15 treats `rejected` as not
 applied; one test named by the registry guard is deleted.
 
 #### S2. Live move table, slice kind, phases out of slices.py (R2)
@@ -1175,7 +1260,7 @@ make `--override` skip the event; change one headless transition.
 #### S3a. Storage: db, schema, text registry, guards (R2)
 
 **Behavior:** `state/db.py` (connect, pragmas, `write()`, `read()`, migrations by
-`user_version`, and refusal of `legacy=1` outside the importer), `state/schema.py`
+`user_version`, and the legacy transition rule in section 4), `state/schema.py`
 (migration 1: `migrations`, `runs`, `run_slices`, `run_log`, `run_seq`, `runs_now`),
 `state/text.py` (the registry), and the four guards. No command uses the database yet,
 except `db status`.
@@ -1217,7 +1302,7 @@ the `WHERE writer = 1 AND open = 1` index; add `from devloop import slices` to
 `run sweep` in the tick, the `--head` check with a fetch, `exec` with process-group
 cleanup on lease loss, and invariants I3, I8, I9 and I13.
 
-**Failure modes:** the token is wrong (exit 4); a writer already holds a slice (exit 3);
+**Failure modes:** the token is wrong (exit 4); a writer already holds a slice (exit 3 with its run id);
 a signal kills the `exec` child (its exit code passes through as 128+n, the beater
 stops, and the run stays open until `end` or the lease); the beater outlives the parent
 (it beats only while the child pid lives, checked by pid and start time as
@@ -1229,6 +1314,10 @@ not on the devbox (stored unverified, exit 0).
 
 - `test_start_prints_id_and_token`, `test_start_refuses_kind_phase_mismatch`,
   `test_start_refuses_second_writer`, `test_start_many_slices`
+- `test_start_slice_runner_in_verify_and_gate` replays scrubbed runner slices
+  24p--E2 in VERIFY and DATE-SHIFT-TYPED in GATE. Check the six-hour deadline,
+  the writer slot and a refusal naming the silent holder. Move the slice into REVIEW
+  during the run and check that the runner can still log and end.
 - `test_beat_extends_lease`, `test_wrong_token_exit_4`, `test_abandoned_run_beat_exit_4`
 - `test_silent_shows_without_sweep` (lease passes, no tick: `run list` shows silent)
 - `test_sweep_logs_silent_and_opens_problem`, `test_late_beat_revives_and_closes_problem`
@@ -1252,7 +1341,7 @@ the text type on `--summary`.
 
 **Behavior:**
 
-- The block in 5.4 goes into `skills/dev-loop/brief-template.md` and the decoy
+- The block in 5.4 goes into `skills/dev-loop/runner-header.md`, `skills/dev-loop/brief-template.md` and the decoy
   `LOCAL-BUILDER-BRIEF.md`.
 - `dev-loop-ui/SKILL.md` gets a "Runs" section: start before you spawn, use `exec` for
   Codex and tests, declare waits, run `run show` when a completion notice arrives, and
@@ -1272,8 +1361,7 @@ read: the existing dash `ctx.bad` path shows "Runs unreadable".
 - `test_status_lists_silent_runs`
 - `test_dash_live_card_from_run_row`
 - `test_dash_renders_without_db`
-- `test_brief_template_carries_run_block` (the template renders with a run id and a
-  token)
+- `test_brief_template_carries_run_block` (both brief paths include the run id, token and reporting commands)
 - `test_skill_mentions_every_runner_command` (guard: every `run` subcommand that an agent
   uses appears in SKILL.md and in the brief)
 - One live slice end to end before S5 starts: start, log, exec, wait, end, recorded in
@@ -1306,7 +1394,9 @@ import is completed by a rerun, because each source is one transaction.
   are equal; the fixture includes every event shape in the real 2,606 events)
 - `test_import_is_idempotent`
 - `test_unparsed_event_kept_raw`
-- `test_new_write_cannot_set_legacy`
+- `test_new_write_cannot_set_legacy` covers insertion and 0 to 1 updates.
+- `test_legacy_plan_repair` edits next_action on a flagged plan in VERIFY, checks it
+  stays flagged, then moves to PLAN and checks that the flag and reason clear together.
 - `test_constraints_refuse_plan_in_develop`, `test_trigger_refuses_illegal_move`,
   `test_fk_refuses_unknown_repo`, `test_unique_pr_refuses_second_open_slice`
 - `test_append_only_triggers`
@@ -1317,31 +1407,32 @@ import is completed by a rerun, because each source is one transaction.
 - `test_question_copy_follows_page` (8.3)
 
 **Mutations:** make the importer skip rows that break a rule; remove the plan-kind CHECK;
-make the reconcile compare counts only; let `db.write` accept `legacy=1`.
+make the reconcile compare counts only; permit a normal 0 to 1 update; refuse the legal repair move.
 
 #### S6. Flip to SQLite, write-through mirror (R2)
 
-**Behavior:** `project.json "store": "sqlite"` switches the four read seams and every
+**Behavior:** `project.json "store": "sqlite"` switches the migrated state readers and every migrated
 writer. For 7 days every write command also writes its JSON mirror and appends
 `events.jsonl` (8.5). `slice move` runs an `UPDATE` under the trigger. `slice set` gets
 `--waiting-kind` and `--waiting-ref`.
 
-**Failure modes:** the database is unavailable after the flip (exit 5; the tick reports
-it; rollback is a flag change, and the mirror is current). A mirror write fails after the
-database commit (problem `db-mirror:<file>`; the next write of that file repairs it, and
-the reconcile reports it). A writer still writes JSON only (guard: an AST walk finds no
+**Failure modes:** the database is unavailable after the flip (use the command-specific exit code in 8.4). A mirror write failure leaves the durable dirty marker for recovery in 8.5. A writer still writes JSON only (guard: an AST walk finds no
 `write_json` to a state path outside `state/export.py` and the mirror function).
 
 **Acceptance tests:**
 
 - `test_cli_parity_both_backends` (every state CLI test, parametrized by backend,
-  including `append_event(once=...)`)
+  including `append_event(once=...)` against an imported or ordinary prior event)
 - `test_dashboard_parity_both_backends` (the dash view built from the fixture is equal,
   field by field, on both backends)
 - `test_mirror_written_per_command` (one `slice set` on sqlite; the JSON file and the
   event line exist before the command returns)
 - `test_flip_back_with_corrupt_db` (corrupt the database file, flip to json; the JSON has
   every write)
+- `test_mirror_commit_order_and_recovery` interleaves two writers, kills one after
+  its SQL commit and retries. Check slice contents and event order exactly once.
+  Refuse rollback from a dirty mirror when the database cannot be read.
+- `test_post_archive_dispatch_and_ledger_readers` and `test_rollback_keeps_post_archive_writes`
 - `test_no_json_only_state_writes_when_sqlite`
 - `test_status_md_identical_both_backends`
 
@@ -1350,7 +1441,8 @@ the tick.
 
 #### S7. Contract (R2)
 
-**Behavior:** after 7 days with no rollback, the mirror writes stop, and exactly the
+**Behavior:** after 7 days with no rollback, take the project lock, drain writers,
+verify a clean mirror and stop mirror writes. Exactly the
 files marked "archived" in 8.2 and their lock files move to `archive-YYYYMMDD/`.
 `devloop-state check` warns when an archived file appears again.
 
@@ -1408,17 +1500,16 @@ Line citations are to the installed lib (`~/.local/share/devloop/lib/devloop/`, 
 - Slice fields: `_FIELDS` (moved to `state/fields.py`) plus `kind`, `waiting_kind`,
   `waiting_ref`, `waiting_note` and `legacy`. The other fields go to `extra` unchanged.
 - Event fields: the raw object in `fields`, with `kind`, `at`, `slice_key`, `run_id` and
-  `once_key` as columns.
+  the source line as columns.
 
 #### Output surfaces
 
 - STATUS.md, built in `status.render_status` (status.py:110) from counts, IDs and fixed
   words only, and scrubbed per line.
 - The tick's stdout (`SILENT` and `FAIL` lines): IDs, role names and minutes only.
-- The dashboard: `view.py` and `live.py` on dash-mc. Free text shown there passes
-  `scrub()`, and rows with `text_ok=0` always do.
+- The dashboard: `view.py` and `live.py` on dash-mc. New run cards use the public projection in section 9.
 - `run show --json` and `run list --json`: never print `token`.
-- `REFUSED:` messages on stderr: they name the field and rule only, never the value.
+- `REFUSED:` messages on stderr: use fixed reasons, field names and the holding run id for writer conflicts.
 - Slack: headless mode only, through `tick._alert` (tick.py:52) and its fixed words.
 
 ### 10.5 Defect classes
@@ -1428,7 +1519,7 @@ Line citations are to the installed lib (`~/.local/share/devloop/lib/devloop/`, 
 | 1 | Value-bearing output | notes, summaries, wait refs and `REFUSED:` text | `text.py` registry used by argparse and `db.write` (section 9) | guard walks the parser and the schema; marker corpus through every output surface | remove `type=text.arg` from `run end --summary` |
 | 2 | Cleanup missing on an exit path | the `run exec` beater and the child group; partial imports | `exec` owns the child group in one context manager; one transaction per import source | exit-path matrix: child exit, signal, lease loss, parent kill, store busy, double end | make `exec` skip the group kill on lease loss |
 | 3 | State machine and concurrency | run states, slice phases, many writers | written tables (`LIVE_MOVES`, run state CHECKs, `runs_now`), `BEGIN IMMEDIATE`, the fencing token | `test_every_pair_outside_table_refused`; `test_concurrent_writers_no_busy` with read-then-write | `BEGIN` instead of `BEGIN IMMEDIATE`; drop the token check |
-| 4 | Route parity and silent fallback | headless against live runs; JSON against SQLite backend; GraphQL against per-PR `gh` | the four read seams; `gh` failure reads `unchecked` | `test_cli_parity_both_backends`; `test_github_failure_reads_unchecked_not_pass` | make the GitHub error path return pass |
+| 4 | Route parity and silent fallback | headless against live runs; JSON against SQLite backend; GraphQL against per-PR `gh` | the backend read contracts; `gh` failure reads `unchecked` | `test_cli_parity_both_backends`; `test_github_failure_reads_unchecked_not_pass` | make the GitHub error path return pass |
 | 5 | Referential integrity | runs against slices (many to many); run_log against runs; slice repo; PR ownership | foreign keys with `foreign_keys=ON`; `run_slices`; the unique PR index | `test_fk_refuses_unknown_repo`; `test_unique_pr_refuses_second_open_slice` | remove `foreign_keys=ON` from `db.connect` |
 | 6 | Untrusted producer | subagent text, imported history, `gh` JSON | bounded text rules; legacy and raw rows for import; `gh` output parsed into typed fields only | hostile corpus per text kind; a malformed `gh` reply gives `unchecked` | let the importer drop rows that break a rule |
 | 7 | Check then use on a path (TOCTOU) | the beater checks a pid then beats; db file path | the beater checks pid and start time together (`runs.proc_start`); one db path from `store.state_path` | `test_no_sqlite_connect_outside_db_module`; pid reuse test with a fake start time | check the pid only, not the start time |
@@ -1466,7 +1557,7 @@ It is January and RUN-STATUS has failed. The likely reasons:
 2. **Main and the install drifted apart again.** A feature was built on a side branch, and
    the install came from that branch. Check: the branch rules in 10.1, and
    `devloop-install` records its source sha, which `devloop-state check` tests for being
-   an ancestor of `origin/main`.
+   an ancestor of freshly fetched `origin/main`, or reports `unchecked` if unavailable.
 3. **Phase 2 changed what the dashboard shows.** Check: the parity tests in S6, and the
    write-through mirror.
 4. **The invariants raised false alarms.** Before phase 2, I3 and I4 read free text, and
@@ -1496,13 +1587,14 @@ the top of this plan).
 
 Logged from Dennis round 1. These are not built in this plan.
 
-- **V2-1. `slices.py` size.** It is 1,063 lines. S2 already moves the phases, fields and
+- **V2-LOG 1. `slices.py` size.** It is 1,063 lines. S2 already moves the phases, fields and
   kind derivation out, which shrinks it. The rest of the split waits for the later
   structure review (memory "structure review later").
-- **V2-2. I5 on VERIFY.** Extend `gate-branch-lacks-main` to VERIFY, so a test run on a
+- **DESIGN follow-up.** dash/view.py already has 1,295 lines on 47ee2e4. Keep the
+  run-card code in dash/live.py and use the existing view composition point.
+- **V2-LOG 2. I5 on VERIFY.** Extend `gate-branch-lacks-main` to VERIFY, so a test run on a
   head behind main is flagged before the gate.
-- **V2-3. Golden-fixture scrub step.** S1 checks a copy of live slice text into the repo.
+- **V2-LOG 3. Golden-fixture scrub step.** S1 checks a copy of live slice text into the repo.
   The scrub step for that copy should become a script (`tests/fixtures/make_fixture.py`)
-  that runs `scrub()` and the text rule over every free-text field, so the fixture can be
-  rebuilt without a hand edit. Until then, S1 builds the fixture by hand with `scrub()`,
-  and the S1 reviewer checks it.
+  that rebuilds the fixture automatically. For S1, hand-replace free text with synthetic
+  examples and retain only the structure needed for the tests. Review before check-in.
