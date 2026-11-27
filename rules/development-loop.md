@@ -25,6 +25,46 @@ Any artifact change in remediation returns through SELF-CHECK and the applicable
 VERIFY step before re-review. GATE consumes evidence for the exact artifact; it
 does not silently repeat REVIEW.
 
+## Proportion (owner decision, 2026-11-10)
+
+The loop's cost should follow the change's risk, not its existence. These rules
+size each phase; they never remove a phase that the risk level requires.
+
+- **Plan size follows the row.** A large or risky change (R3, or R2 touching
+  data handling, security, value leaks, CI or the release path) gets the full plan
+  and the full plan review. A small, low-risk change gets a short plan of about
+  one page (behavior, failure modes, acceptance tests, placement) and one plan
+  review round.
+- **Review depth follows risk.** Low-risk slices get one independent reviewer.
+  Risky slices (the same list as above) get two independent reviewers in
+  sequence. A fix round that changes only tests or guard tests, and is small
+  (about 50 lines), is verified by the orchestrator from the diff and its tests,
+  not re-reviewed. Any source change in a fix round goes back to review.
+- **Fewer, larger slices for low-risk work.** Each slice pays a fixed cost
+  (worktree, build, review, gate, merge). For a low-risk feature, fold the
+  preparation slice (codes, registries, fixtures) into the first behavior slice
+  and the docs slice into the last one. Keep slices separate when they carry
+  different risk or must ship separately.
+- **Guard tests prove the realistic case.** A guard test must catch the
+  bypass a contributor would plausibly write. Making it catch every exotic
+  spelling is follow-up work recorded in the known-issues list, not a reason to
+  hold a merge. A guard that misses the realistic bypass still blocks.
+
+## Agent pre-checks (owner decision, 2026-11-22)
+
+Starts on 2026-12-04, after the V1 build is done. Until then, the current gates stay as they are.
+
+- Every PR diff gets `/simplify` and `/code-review` before the independent
+  reviewers (Codex, then Dennis when the risk needs two). These checks do not add a gate.
+- `/code-review` runs at `medium` by default. It runs at `high` on hot lanes:
+  atomic publish, vault, FK and masking.
+- The checks must not break the plan. A finding outside the plan's scope, or
+  below the V1 bar, is logged for QA or V2. It never becomes new slice work.
+  A finding blocks only if it is a function break, data loss or a leak.
+- The lint-debt ratchet (`gates.sh` step `lintdebt`) blocks only new debt. It
+  starts on the CLI. It goes to the engine after it holds on the CLI.
+  The engine's global `S110` and `S112` ignores are removed only once the engine ratchet is in place.
+
 ## Phases
 
 ### FRAME
@@ -56,6 +96,12 @@ Pin the guarantee. The plan states exactly what the change promises and lists
 its non-goals. A review finding outside that stated guarantee becomes a
 recorded follow-up item, not a blocker for this change. A guarantee that is
 never written down lets each review round go one layer deeper.
+
+State the size. The plan gives the expected size of the change: the files it
+touches and the public names it adds. The builder's report compares the build
+with it and applies the deletion test from
+[proportionality](proportionality.md) before review. A build well past the
+stated size stops and explains; it is not carried to review as it stands.
 
 Write design notes when the change adds structure. A plan that adds a module,
 an abstraction, or a new variant of something expected to keep growing (an
