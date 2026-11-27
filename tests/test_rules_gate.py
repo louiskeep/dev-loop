@@ -22,7 +22,9 @@ def isolated_dev_rules(tmp_path, monkeypatch):
     canonical.mkdir()
     monkeypatch.setattr(rg, "DEFAULT_DEV_RULES_DIR", str(canonical))
     monkeypatch.setitem(globals(), "RULES", str(canonical))
-    monkeypatch.setitem(CFG, "rules_dirs", [str(canonical)])
+    extra = tmp_path / "extra-rules"
+    extra.mkdir()
+    monkeypatch.setitem(CFG, "rules_dirs", [str(extra), str(canonical)])
 
 
 @pytest.fixture
@@ -463,3 +465,20 @@ def test_deny_reason_points_at_a_copy_that_has_the_file(repo, tmp_path):
     snapshot = rg.ls._plugin_root() / "rules"
     assert f"{old}/00-universal.md" in reason
     assert f"{snapshot}/profiles/local-operations.md" in reason
+
+
+def test_rules_dirs_config_alone_counts_as_read(repo, tmp_path):
+    # The canonical dir is absent; only the configured extra dir holds the reads.
+    extra = tmp_path / "only-extra"
+    extra.mkdir()
+    config = {
+        "dev_rules_dir": str(tmp_path / "missing"),
+        "rules_dirs": [str(extra)],
+    }
+    t = _transcript(tmp_path, [f"{extra}/{n}" for n in rg.REQUIRED_RULES])
+    assert rg.pre_tool_use(_event(repo / "src/a.py", t), config) is None
+    other = _transcript(tmp_path, [], name="none.jsonl")
+    out = rg.pre_tool_use(
+        _event(repo / "src/b.py", other, session_id="s2"), {**config, "rules_dirs": []}
+    )
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
