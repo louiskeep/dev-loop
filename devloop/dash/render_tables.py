@@ -6,6 +6,7 @@ name in `data-label` so the phone layout can stack a row as labelled lines.
 
 import datetime
 import hashlib
+import re
 
 from .. import status
 from . import render as r
@@ -104,7 +105,27 @@ def _who(c, workers, now):
         return '<span class="muted">Waiting for the loop to take the result</span>'
     if c["wait"] == "stuck":
         return f'<span class="muted">Nobody (stuck {r._span(c["since"], now)})</span>'
+    role = _next_action_role(c["next_action"])
+    if role:
+        return f'<span class="muted">{e(role)}</span>'
     return '<span class="muted">Waiting for the loop</span>'
+
+
+# Slice runners and other roles are subagents of the live orchestrator, so no headless
+# worker exists for them. The next step names the role before its first colon.
+_ROLE = re.compile(
+    r"^((?:slice runner|developer|qa|tech writer|tech lead|architect|planner|"
+    r"senior reviewer|outside reviewer|reviewer|po)\b[^:]{0,30}):",
+    re.IGNORECASE,
+)
+
+
+def _next_action_role(text):
+    m = _ROLE.match((text or "").strip())
+    if not m:
+        return ""
+    role = m.group(1).strip()
+    return role[:1].upper() + role[1:]
 
 
 def _slice_cell(c):
@@ -124,7 +145,13 @@ def _pr(c):
 
 
 def _stage(c, now):
-    out = e(words.stage(c["phase"], c["round"]))
+    out = e(
+        words.STAGE.get(c["phase"])
+        and words.stage(c["phase"], c["round"])
+        or c["phase"]
+    )
+    if c["since"]:
+        out += f' <span class="muted">moved {r._span(c["since"], now)} ago</span>'
     if c["stuck"]:
         out += " " + r._chip_html("bad", "⚠", f"stuck {r._span(c['since'], now)}")
     return out
@@ -137,35 +164,65 @@ def _row_cell(row):
     return f"<code>{e(row['row'])}</code>"
 
 
+# Stage sections of the work table, in page order: (title, phases, open by default).
+WORK_SECTIONS = (
+    ("Ready to merge", ("GATE",), True),
+    ("Testing and review", ("SELF_CHECK", "VERIFY", "REVIEW"), True),
+    ("Fixing", ("REMEDIATE",), True),
+    ("Building", ("DEVELOP",), True),
+    ("Planning", ("FRAME", "PLAN"), False),
+    ("Docs", ("DOCUMENT",), False),
+)
+WORK_HEADS = ("Row", "Slice", "Stage", "Who is on it now", "Next step", "PR")
+
+
+def _work_row(row, c, workers, now):
+    return (
+        f'<tr class="slice" tabindex="0" data-card-key="{e(c["key"])}" '
+        f'data-open-kind="slice" data-open-key="{e(c["key"])}">'
+        + r._cell("Row", _row_cell(row))
+        + r._cell("Slice", _slice_cell(c))
+        + r._cell("Stage", _stage(c, now))
+        + r._cell("Who is on it now", _who(c, workers, now))
+        + r._cell("Next step", e(c["next_action"] or ""), "clip")
+        + r._cell("PR", _pr(c))
+        + "</tr>"
+    )
+
+
+def _oldest_first(pairs):
+    """Sort by last phase move, oldest first; a slice with no move time goes last."""
+    return sorted(pairs, key=lambda p: (not p[1]["since"], p[1]["since"] or ""))
+
+
 def work(v, now) -> str:
     workers = {}
     for w in v["live"]:
         workers.setdefault(w["key"], w)
-    rows = []
-    for row in v["rows"]:
-        for c in row["cards"]:
-            rows.append(
-                f'<tr class="slice" tabindex="0" data-card-key="{e(c["key"])}" '
-                f'data-open-kind="slice" data-open-key="{e(c["key"])}">'
-                + r._cell("Row", _row_cell(row))
-                + r._cell("Slice", _slice_cell(c))
-                + r._cell("Stage", _stage(c, now))
-                + r._cell("Who is on it now", _who(c, workers, now))
-                + r._cell("Next step", e(c["next_action"] or ""), "clip")
-                + r._cell("PR", _pr(c))
-                + "</tr>"
-            )
-    count = len(rows)
-    body = (
-        r._table(
-            "tbl work",
-            ("Row", "Slice", "Stage", "Who is on it now", "Next step", "PR"),
-            rows,
+    pairs = [(row, c) for row in v["rows"] for c in row["cards"]]
+    count = len(pairs)
+    if not pairs:
+        body = '<p class="empty">No slices in progress.</p>'
+        return r._section("progress", "Work in progress", body, None)
+    listed = {p for _, phases, _ in WORK_SECTIONS for p in phases}
+    groups = [(t, ph, op) for t, ph, op in WORK_SECTIONS]
+    parts = []
+    for title, phases, is_open in groups + [("Other", None, True)]:
+        mine = [
+            p
+            for p in pairs
+            if (p[1]["phase"] in phases if phases else p[1]["phase"] not in listed)
+        ]
+        if not mine:
+            continue
+        rows = [_work_row(row, c, workers, now) for row, c in _oldest_first(mine)]
+        sid = "work-" + title.lower().replace(" ", "-")
+        parts.append(
+            f'<details class="work-group" id="{sid}"{" open" if is_open else ""}>'
+            f'<summary><h3>{e(title)} <span class="count">({len(rows)})</span></h3>'
+            f"</summary>{r._table('tbl work', WORK_HEADS, rows)}</details>"
         )
-        if rows
-        else '<p class="empty">No slices in progress.</p>'
-    )
-    return r._section("progress", "Work in progress", body, count or None)
+    return r._section("progress", "Work in progress", "".join(parts), count)
 
 
 # --- known problems ------------------------------------------------------------------

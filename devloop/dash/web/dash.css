@@ -276,3 +276,7 @@ tr.grp th { white-space: normal; }
   transform: translateY(-50%); color: var(--muted); font-size: 14px; }
 .loop-steps .step-name { font-weight: 600; color: var(--text); }
 .loop-steps .step-desc { display: block; color: var(--muted); margin-top: 2px; }
+
+/* Work in progress: one collapsible group per stage */
+details.work-group { margin: 0 0 0.8rem; }
+details.work-group > summary h3 { display: inline; margin: 0; }
