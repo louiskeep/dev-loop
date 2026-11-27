@@ -189,6 +189,8 @@ def test_stuck_shows_while_a_finished_run_awaits_apply(proj, dash):
     s = slices.load(proj, dash["develop"])
     s["last_moved_at"] = ago(hours=4)
     slices._save(proj, s)
+    old = (datetime.datetime.now() - datetime.timedelta(hours=4)).timestamp()
+    os.utime(slices.slice_path(proj, dash["develop"]), (old, old))  # file idle too
     for rd, req in runs.iter_runs(proj):  # its run also started long ago
         if req.get("key") == dash["develop"]:
             store.write_json(rd / "request.json", {**req, "started_at": ago(hours=4)})
