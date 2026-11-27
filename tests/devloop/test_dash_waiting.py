@@ -40,7 +40,7 @@ def test_qa_wait_shows_in_work_in_progress_not_the_bottom(proj):
     assert cards[k]["phase"] == "VERIFY" and cards[k]["wait"] == "slot"
     page = render.render_page(v)
     row = re.search(rf'<tr class="slice"[^>]*data-card-key="{k}".*?</tr>', page, re.S)
-    assert "Waiting for a QA slot" in row.group(0)
+    assert "A free QA slot" in row.group(0)
     assert "QA1" not in section(page, "parked")
 
 

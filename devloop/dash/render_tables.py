@@ -90,27 +90,6 @@ def _model_words(w):
     return f" ({name} {family.title()})" if family else f" ({name})"
 
 
-def _who(c, workers, now):
-    w = workers.get(c["key"])
-    if w:
-        return (
-            f"{render_live.role_icon(w['icon'])} {e(w['role'])}{e(_model_words(w))} "
-            f"for {r._span(w['started_at'], now)}"
-        )
-    if c["wait"] == "slot":
-        return f'<span class="muted">Waiting for a {e(c["wait_for"])} slot</span>'
-    if c["wait"] == "owner":
-        return '<span class="muted">Waiting on you</span>'
-    if c["wait"] == "apply":
-        return '<span class="muted">Waiting for the loop to take the result</span>'
-    if c["wait"] == "stuck":
-        return f'<span class="muted">Nobody (stuck {r._span(c["since"], now)})</span>'
-    role = _next_action_role(c["next_action"])
-    if role:
-        return f'<span class="muted">{e(role)}</span>'
-    return '<span class="muted">Waiting for the loop</span>'
-
-
 # Slice runners and other roles are subagents of the live orchestrator, so no headless
 # worker exists for them. The next step names the role before its first colon.
 _ROLE = re.compile(
@@ -126,6 +105,68 @@ def _next_action_role(text):
         return ""
     role = m.group(1).strip()
     return role[:1].upper() + role[1:]
+
+
+# What a slice's next step is waiting for, first match wins. Keyword rules are listed in
+# priority order; a leading slice runner or developer beats all of them because it owns
+# its own tests and reviews.
+_KEYWORDS = (
+    (re.compile(r"\b(?:gate run|gate-selfhosted|engine gate)\b", re.I), "Engine gate"),
+    (re.compile(r"\bdennis\b", re.I), "Dennis review"),
+    (re.compile(r"\bcodex\b", re.I), "Codex review"),
+    (re.compile(r"\b(?:t1|t2|tests|suite)\b", re.I), "Tests on a node"),
+    (re.compile(r"\bci\b", re.I), "GitHub CI"),
+)
+_OWN_ROLE = re.compile(r"^(?:slice runner|developer)\b", re.I)
+_MERGE_WHEN = re.compile(r"\bmerge when\b", re.I)
+_DOCUMENT_STUCK_HOURS = 2
+
+
+def _muted(text):
+    return f'<span class="muted">{e(text)}</span>'
+
+
+def _hours_since(iso, now):
+    try:
+        then = datetime.datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return 0
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=datetime.timezone.utc)
+    return (now - then).total_seconds() / 3600
+
+
+def waiting_on(c, worker, now):
+    """One short answer to "what is this slice waiting for right now?" (an HTML fragment)."""
+    if worker:
+        return (
+            f"{render_live.role_icon(worker['icon'])} {e(worker['role'])}"
+            f"{e(_model_words(worker))} for {r._span(worker['started_at'], now)}"
+        )
+    if c["wait"] == "owner":
+        return _muted("You")
+    if c["wait"] == "slot":
+        return _muted(f"A free {c['wait_for']} slot")
+    if c["wait"] == "apply":
+        return _muted("The loop to take the result")
+    if c["phase"] == "DOCUMENT":
+        out = _muted("Shipped-log entry")
+        if _hours_since(c["since"], now) > _DOCUMENT_STUCK_HOURS:
+            out += " " + r._chip_html("bad", "⚠", f"stuck {r._span(c['since'], now)}")
+        return out
+    text = (c["next_action"] or "").strip()
+    if not _OWN_ROLE.match(text):
+        for pattern, label in _KEYWORDS:
+            if pattern.search(text):
+                return _muted(label)
+    role = _next_action_role(text)
+    if role:
+        return _muted(f"{role} working")
+    if _MERGE_WHEN.search(text):
+        return _muted("Checks, then merge")
+    if c["wait"] == "stuck":
+        return _muted(f"Nobody (stuck {r._span(c['since'], now)})")
+    return _muted("Next loop tick")
 
 
 def _slice_cell(c):
@@ -173,7 +214,7 @@ WORK_SECTIONS = (
     ("Planning", ("FRAME", "PLAN"), False),
     ("Docs", ("DOCUMENT",), False),
 )
-WORK_HEADS = ("Row", "Slice", "Stage", "Who is on it now", "Next step", "PR")
+WORK_HEADS = ("Row", "Slice", "Stage", "Waiting on", "Next step", "PR")
 
 
 def _work_row(row, c, workers, now):
@@ -183,7 +224,7 @@ def _work_row(row, c, workers, now):
         + r._cell("Row", _row_cell(row))
         + r._cell("Slice", _slice_cell(c))
         + r._cell("Stage", _stage(c, now))
-        + r._cell("Who is on it now", _who(c, workers, now))
+        + r._cell("Waiting on", waiting_on(c, workers.get(c["key"]), now))
         + r._cell("Next step", e(c["next_action"] or ""), "clip")
         + r._cell("PR", _pr(c))
         + "</tr>"

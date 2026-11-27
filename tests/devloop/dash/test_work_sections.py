@@ -119,30 +119,82 @@ def test_unknown_phase_goes_to_other_last():
     assert 'data-card-key="w"' in found["Other"][2]
 
 
-def test_who_from_next_action_role():
+def _wo(phase="DEVELOP", worker=None, hours=1, **kw):
+    return render_tables.waiting_on(card("a", phase, hours, **kw), worker, NOW)
+
+
+def test_waiting_on_column_header_and_cell():
     c = card("a", "DEVELOP", next_action="slice runner (subagent): build the plan")
-    body = sections(render_tables.work(view(c), NOW))["Building"][2]
+    html = render_tables.work(view(c), NOW)
+    assert "Who is on it now" not in html
+    body = sections(html)["Building"][2]
     assert (
-        "Slice runner (subagent)"
-        in body.split('data-label="Who is on it now">')[1].split("</td>")[0]
+        "Slice runner (subagent) working"
+        in body.split('data-label="Waiting on">')[1].split("</td>")[0]
     )
-    for text, role in (
-        ("Developer (subagent): fix", "Developer (subagent)"),
-        ("QA: run tests", "QA"),
-        ("Tech writer (subagent): docs", "Tech writer (subagent)"),
-    ):
-        got = render_tables._who(card("a", "DEVELOP", next_action=text), {}, NOW)
-        assert role in got and "Waiting for the loop" not in got
 
 
-def test_who_keeps_other_cases_before_the_role():
-    ra = "slice runner (subagent): go"
-    assert "Waiting on you" in render_tables._who(
-        card("a", "PLAN", wait="owner", next_action=ra), {}, NOW
+def test_waiting_on_live_worker_first():
+    w = {
+        "icon": "build",
+        "role": "Developer",
+        "harness": "script",
+        "model": "",
+        "started_at": _iso(1),
+    }
+    got = _wo(worker=w, wait="owner")
+    assert "Developer" in got and "You" not in got
+
+
+def test_waiting_on_owner_slot_apply():
+    assert ">You<" in _wo(wait="owner")
+    assert "A free x slot" in _wo(wait="slot", wait_for="x")
+    assert "The loop to take the result" in _wo(wait="apply")
+
+
+def test_waiting_on_document():
+    assert "Shipped-log entry" in _wo("DOCUMENT", hours=1)
+    assert "stuck" not in _wo("DOCUMENT", hours=1)
+    assert "stuck" in _wo("DOCUMENT", hours=3)
+
+
+def test_waiting_on_keywords():
+    cases = {
+        "Merge when gate run 5 is green": "Engine gate",
+        "wait for gate-selfhosted": "Engine gate",
+        "Dennis to review": "Dennis review",
+        "Codex GO pending": "Codex review",
+        "t1 on mac": "Tests on a node",
+        "t2 running": "Tests on a node",
+        "full suite": "Tests on a node",
+        "run the tests": "Tests on a node",
+        "CI is red": "GitHub CI",
+        "QA: run it": "QA working",
+        "Merge when green": "Checks, then merge",
+    }
+    for text, want in cases.items():
+        assert want in _wo(next_action=text), text
+    assert "Next loop tick" in _wo(next_action="Merge PR 5: now")
+    assert "Next loop tick" in _wo(next_action="decide it")  # "ci" only as a whole word
+
+
+def test_waiting_on_precedence():
+    ra = "Slice runner: build, then Codex and t1"
+    assert "Slice runner working" in _wo(next_action=ra)
+    assert "Developer working" in _wo(next_action="Developer: fix, engine gate later")
+    assert "Engine gate" in _wo(
+        next_action="Codex GO on x; merge when engine gate 123 is green"
     )
-    assert "Waiting for a x slot" in render_tables._who(
-        card("a", "PLAN", wait="slot", wait_for="x", next_action=ra), {}, NOW
-    )
-    assert "Waiting for the loop" in render_tables._who(
-        card("a", "PLAN", next_action="Merge PR 5: now"), {}, NOW
-    )
+    assert "Dennis review" in _wo(next_action="codex then dennis")
+
+
+def test_waiting_on_cases_beat_keywords_in_order():
+    ra = "Codex review soon"
+    assert ">You<" in _wo("PLAN", wait="owner", next_action=ra)
+    assert "Shipped-log entry" in _wo("DOCUMENT", next_action=ra)
+    assert "Codex review" in _wo(wait="loop", next_action=ra)
+
+
+def test_waiting_on_stuck_and_default():
+    assert "Nobody (stuck" in _wo(wait="stuck")
+    assert "Next loop tick" in _wo()
