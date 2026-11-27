@@ -159,7 +159,9 @@ def test_main_end_to_end_denies_via_stdin(repo, tmp_path, monkeypatch, capsys):
 
 
 def test_local_operations_profile_is_required(repo, tmp_path):
-    core = [f"{RULES}/{n}" for n in ("README.md", "00-universal.md", "development-loop.md")]
+    core = [
+        f"{RULES}/{n}" for n in ("README.md", "00-universal.md", "development-loop.md")
+    ]
     out = rg.pre_tool_use(_event(repo / "src/a.py", _transcript(tmp_path, core)), {})
     reason = out["hookSpecificOutput"]["permissionDecisionReason"]
     assert "profiles/local-operations.md" in reason.split("Not yet read")[1]
@@ -170,7 +172,11 @@ def test_new_source_file_requires_architecture(repo, tmp_path):
     out = rg.pre_tool_use(_event(repo / "src/new_mod.py", t), {})
     decision = out["hookSpecificOutput"]
     assert decision["permissionDecision"] == "deny"
-    missing = decision["permissionDecisionReason"].split("Not yet read")[1].split("Read them")[0]
+    missing = (
+        decision["permissionDecisionReason"]
+        .split("Not yet read")[1]
+        .split("Read them")[0]
+    )
     assert "architecture.md" in missing
     assert "development-loop.md" not in missing
 
@@ -195,7 +201,12 @@ def test_new_source_allowed_after_architecture_read_and_cached(repo, tmp_path):
 def test_core_marker_does_not_cover_a_new_file(repo, tmp_path):
     # A session that passed the core check earlier still needs architecture.md
     # before it creates a file, and only architecture.md is asked for.
-    assert rg.pre_tool_use(_event(repo / "src/a.py", _transcript(tmp_path, _all_rules())), {}) is None
+    assert (
+        rg.pre_tool_use(
+            _event(repo / "src/a.py", _transcript(tmp_path, _all_rules())), {}
+        )
+        is None
+    )
     empty = _transcript(tmp_path, [], name="empty.jsonl")
     assert rg.pre_tool_use(_event(repo / "src/b.py", empty), {}) is None
     out = rg.pre_tool_use(_event(repo / "src/new_mod.py", empty), {})

@@ -12,6 +12,7 @@ def _isolate_repo_root(tmp_path):
     # config and the audit log resolve there, as they would in a real repo cwd.
     (tmp_path / ".git").mkdir(exist_ok=True)
 
+
 # --- detect_weakening: the pure directional detector -------------------------
 
 
@@ -20,7 +21,9 @@ def test_removing_check_metadata_fires():
     new = "assert a.schema.equals(b.schema)"
     signals = tg.detect_weakening(old, new)
     assert "removed check_metadata=True" in signals
-    assert "removed a .equals(...) parity assertion" not in signals  # .equals still present
+    assert (
+        "removed a .equals(...) parity assertion" not in signals
+    )  # .equals still present
 
 
 def test_removing_equals_assertion_fires():
@@ -54,7 +57,9 @@ def test_adding_xfail_marker_fires():
 def test_adding_skipif_marker_fires():
     # `skipif` was previously missed because `skip\b` does not match `skipif`.
     old = "def test_parity():\n    assert a == b\n"
-    new = "@pytest.mark.skipif(True, reason='x')\ndef test_parity():\n    assert a == b\n"
+    new = (
+        "@pytest.mark.skipif(True, reason='x')\ndef test_parity():\n    assert a == b\n"
+    )
     assert "added a skip/xfail suppressor" in tg.detect_weakening(old, new)
 
 
@@ -80,7 +85,9 @@ def test_soft_assert_churn_does_not_fire():
 
 def test_protected_test_path_matching():
     fg, td = tg._DEFAULT_FILE_GLOBS, tg._DEFAULT_TEST_DIRS
-    assert tg._is_protected_test("/repo/tests/physical/test_shadow_group_key.py", fg, td)
+    assert tg._is_protected_test(
+        "/repo/tests/physical/test_shadow_group_key.py", fg, td
+    )
     assert tg._is_protected_test("/repo/pkg/foo_test.py", fg, td)
     assert tg._is_protected_test("/repo/tests/unit/helpers.py", fg, td)  # under tests/
     assert not tg._is_protected_test("/repo/src/pkg/module.py", fg, td)
@@ -179,7 +186,9 @@ def test_additive_test_edit_is_silent(tmp_path, capsys):
 
 
 def test_non_edit_tool_ignored(capsys):
-    assert tg.main_from_event({"tool_name": "Bash", "tool_input": {"command": "ls"}}) == 0
+    assert (
+        tg.main_from_event({"tool_name": "Bash", "tool_input": {"command": "ls"}}) == 0
+    )
     assert capsys.readouterr().out.strip() == ""
 
 
@@ -219,7 +228,10 @@ def test_write_over_existing_test_detects_drop(tmp_path, capsys):
     fp.write_text("assert a.schema.equals(b.schema, check_metadata=True)\n")
     ev = {
         "tool_name": "Write",
-        "tool_input": {"file_path": str(fp), "content": "assert a.schema.equals(b.schema)\n"},
+        "tool_input": {
+            "file_path": str(fp),
+            "content": "assert a.schema.equals(b.schema)\n",
+        },
         "cwd": str(tmp_path),
     }
     assert tg.main_from_event(ev) == 0
@@ -282,7 +294,9 @@ def test_malformed_non_utf8_config_falls_back_to_defaults(tmp_path, capsys):
 
 def test_main_fails_open_on_internal_error(monkeypatch, capsys):
     # An advisory guard must never crash the edit: an internal error -> exit 0.
-    monkeypatch.setattr(tg, "main_from_event", lambda event: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        tg, "main_from_event", lambda event: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO('{"tool_name": "Edit"}'))
     assert tg.main() == 0
     assert "not enforcing" in capsys.readouterr().err

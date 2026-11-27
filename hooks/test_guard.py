@@ -94,7 +94,12 @@ def _pairs_from_event(tool_name: str, tool_input: dict) -> list[tuple[str, str]]
     """(old, new) text pairs for the edit. Write has no old_string, so the
     on-disk file is its `old` (a Write replaces the whole file)."""
     if tool_name == "Edit":
-        return [(tool_input.get("old_string", "") or "", tool_input.get("new_string", "") or "")]
+        return [
+            (
+                tool_input.get("old_string", "") or "",
+                tool_input.get("new_string", "") or "",
+            )
+        ]
     if tool_name == "MultiEdit":
         return [
             (e.get("old_string", "") or "", e.get("new_string", "") or "")
@@ -115,7 +120,9 @@ def _pairs_from_event(tool_name: str, tool_input: dict) -> list[tuple[str, str]]
     return []
 
 
-def _is_protected_test(file_path: str, file_globs: list[str], test_dirs: list[str]) -> bool:
+def _is_protected_test(
+    file_path: str, file_globs: list[str], test_dirs: list[str]
+) -> bool:
     if not file_path:
         return False
     p = Path(file_path)
@@ -169,14 +176,16 @@ def _as_list(value: object, default: list[str]) -> list[str]:
     return default
 
 
-def _audit(event: dict, root: Path, file_path: str, signals: list[str], mode: str) -> bool:
+def _audit(
+    event: dict, root: Path, file_path: str, signals: list[str], mode: str
+) -> bool:
     """Append one JSON line to the audit log at the repo root (fallback: the
     plugin dir). Returns whether a line was written, so the caller can fall back
     to stderr when neither path is writable (a real install may make the plugin
     dir read-only, so this is best-effort, not guaranteed)."""
     line = json.dumps(
         {
-            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "ts": datetime.datetime.now(datetime.UTC).isoformat(),
             "agent_id": event.get("agent_id") or None,
             "agent_type": event.get("agent_type") or None,
             "session_id": event.get("session_id"),
@@ -277,7 +286,10 @@ def main() -> int:
         # An advisory guard must never crash the user's edit. Fail OPEN (allow the
         # edit) rather than closed, and leave a breadcrumb on stderr; a guard bug
         # is not a reason to block legitimate work.
-        print(f"dev-loop test-guard: internal error, not enforcing: {exc}", file=sys.stderr)
+        print(
+            f"dev-loop test-guard: internal error, not enforcing: {exc}",
+            file=sys.stderr,
+        )
         return 0
 
 
