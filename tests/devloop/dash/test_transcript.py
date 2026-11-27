@@ -357,7 +357,7 @@ def test_codex_huge_token_count_is_ignored():
 
 # --- bounded reader and cache -------------------------------------------------------
 
-import os  # noqa: E402
+import os
 
 LABEL = ("Builder", "ROW--S1")
 
@@ -435,7 +435,7 @@ def test_aligned_tail_start_keeps_first_record(cache, tmp_path, monkeypatch):
     p = tmp_path / "log"
     p.write_bytes(bash_line("old") * 5 + padded(400, "keep"))
     st = read(cache, p)
-    assert [c.call_id for c in st.calls][0] == "keep"
+    assert next(c.call_id for c in st.calls) == "keep"
 
 
 def test_unaligned_tail_start_drops_the_cut_record(cache, tmp_path, monkeypatch):
@@ -571,8 +571,7 @@ def test_unmatched_calls_keep_state_bounded(cache, tmp_path):
     clock = cache.clock
     for poll in range(50):
         with open(p, "ab") as fh:
-            for i in range(20):
-                fh.write(bash_line(f"c{poll}-{i}"))
+            fh.writelines(bash_line(f"c{poll}-{i}") for i in range(20))
         clock.t += 7
         st = read(cache, p)
     assert st.tools == 1000
@@ -589,8 +588,7 @@ def test_rate_is_exact_across_a_minute_boundary(tmp_path):
     p.write_bytes(b"")
     for sec in range(60):
         with open(p, "ab") as fh:
-            for i in range(2 if sec < 20 else 1):
-                fh.write(bash_line(f"s{sec}-{i}"))
+            fh.writelines(bash_line(f"s{sec}-{i}") for i in range(2 if sec < 20 else 1))
         st = read(cache, p)
         clock.t += 1
     assert st.tools == 80
@@ -675,7 +673,7 @@ def test_feed_log_keeps_facts_after_eviction(cache, tmp_path):
     p.write_bytes(bash_line("a", "git x"))
     read(cache, p)
     assert len(cache.feed_log) == 1
-    at, tag, target, role, key = cache.feed_log[0]
+    _at, tag, target, role, key = cache.feed_log[0]
     assert (tag, target, role, key) == ("SHELL", "git", "Builder", "ROW--S1")
     cache.collect(set())
     assert p not in cache.entries and len(cache.feed_log) == 1

@@ -64,10 +64,61 @@ TOOL_KINDS = {
 
 # The only command names a page may show. Anything else is data until proven otherwise.
 PUBLIC_COMMANDS = frozenset(
-    """git gh python python3 uv uvx pip pytest ruff mypy node npm npx pnpm make cargo go
-    rustc docker jq rg grep find fd ls cat sed head tail nl wc diff sort uniq mkdir cp mv
-    rm touch chmod echo printf sleep curl tar bash sh codex claude devloop-state
-    devloop-dash devloop-tick devloop-dispatch""".split()
+    [
+        "git",
+        "gh",
+        "python",
+        "python3",
+        "uv",
+        "uvx",
+        "pip",
+        "pytest",
+        "ruff",
+        "mypy",
+        "node",
+        "npm",
+        "npx",
+        "pnpm",
+        "make",
+        "cargo",
+        "go",
+        "rustc",
+        "docker",
+        "jq",
+        "rg",
+        "grep",
+        "find",
+        "fd",
+        "ls",
+        "cat",
+        "sed",
+        "head",
+        "tail",
+        "nl",
+        "wc",
+        "diff",
+        "sort",
+        "uniq",
+        "mkdir",
+        "cp",
+        "mv",
+        "rm",
+        "touch",
+        "chmod",
+        "echo",
+        "printf",
+        "sleep",
+        "curl",
+        "tar",
+        "bash",
+        "sh",
+        "codex",
+        "claude",
+        "devloop-state",
+        "devloop-dash",
+        "devloop-tick",
+        "devloop-dispatch",
+    ]
 )
 
 Call = collections.namedtuple("Call", "tag target at call_id")
@@ -424,7 +475,7 @@ def transcript_path(rd, req: dict) -> Path | None:
 
 
 def _iso(t: float) -> str:
-    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).isoformat(
+    return datetime.datetime.fromtimestamp(t, datetime.UTC).isoformat(
         timespec="seconds"
     )
 

@@ -255,9 +255,13 @@ def drawers(ctx, states, keys) -> list:
             st = states.get(r["ref"])
             for c in list(st.calls) if st else []:
                 calls.append({"at": c.at, "tag": c.tag, "target": c.target})
-                if spec.harness == "claude" and c.tag in ("EDIT", "WRITE"):
-                    if c.target and c.target != "?":
-                        files[c.target] = files.get(c.target, 0) + 1
+                if (
+                    spec.harness == "claude"
+                    and c.tag in ("EDIT", "WRITE")
+                    and c.target
+                    and c.target != "?"
+                ):
+                    files[c.target] = files.get(c.target, 0) + 1
         calls.sort(key=lambda c: c["at"] or "", reverse=True)
         out.append(
             {

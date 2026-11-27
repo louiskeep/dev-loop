@@ -55,7 +55,9 @@ def test_unknown_row_has_no_description(proj, cfg_edit, tmp_path):
     assert rows["NOPE"]["desc"] is None
     assert rows["24zj"]["desc"].startswith("Make the report faster")
     page = render.render_page(v)
-    assert "?" not in re.search(r'<div id="ds-NOPE--S1".*?</div>', page, re.S).group(0)
+    assert "?" not in re.search(
+        r'<div id="ds-NOPE--S1".*?</div>', page, re.DOTALL
+    ).group(0)
 
 
 PLAN = """# 9z KEY-ONE: stop the dashboard from hiding stuck slices
@@ -182,7 +184,7 @@ def test_drawer_leads_with_descriptions_above_the_gate_list(proj, tmp_path):
     v["rows"][0]["desc"] = "Row text here."
     v["rows"][0]["title"] = "Row name"
     page = render.render_page(v)
-    d = re.search(r'<div id="ds-R1--A".*?Work history', page, re.S).group(0)
+    d = re.search(r'<div id="ds-R1--A".*?Work history', page, re.DOTALL).group(0)
     order = [
         d.index("Row: Row name"),
         d.index("Row text here."),
@@ -209,8 +211,8 @@ def test_work_history_entries_are_separate_items(proj):
     }
     v["drawers"] = [{"key": k, "runs": [run, run, run], "calls": [], "files": []}]
     page = render.render_page(v)
-    d = re.search(r'<div id="ds-R1--A".*?</div>', page, re.S).group(0)
-    hist = re.search(r'<ul class="list history">(.*?)</ul>', d, re.S).group(1)
+    d = re.search(r'<div id="ds-R1--A".*?</div>', page, re.DOTALL).group(0)
+    hist = re.search(r'<ul class="list history">(.*?)</ul>', d, re.DOTALL).group(1)
     assert hist.count("<li>") == 3
     css = (Path(view.__file__).parent / "web" / "dash.css").read_text()
     assert ".history li" in css

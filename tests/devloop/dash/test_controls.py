@@ -15,10 +15,10 @@ import urllib.parse
 from pathlib import Path
 
 import pytest
+from dash_fixture import call
 
 from devloop import notes, slices, state_cli, store, tick, wrap
 from devloop.dash import lifecycle, server
-from dash_fixture import call
 
 STATE_BIN = str(Path(__file__).resolve().parents[3] / "bin" / "devloop-state")
 
@@ -31,7 +31,7 @@ def events(home):
 
 
 def ask(proj, key="q1", **kw):
-    args = dict(question="Pick", options=["A", "B"], recommended="A")
+    args = {"question": "Pick", "options": ["A", "B"], "recommended": "A"}
     args.update(kw)
     return notes.ask(proj, key, **args)
 
@@ -45,6 +45,7 @@ def cli(home, *args):
         text=True,
         env=env,
         cwd="/",
+        check=False,
     )
 
 
@@ -755,25 +756,27 @@ def test_post_body_contract(proj, dash, srv, monkeypatch, home):
     enc = urllib.parse.urlencode
     t = srv.token
     cases = {
-        "negative length": dict(fields=good, length=-5),
-        "non-numeric length": dict(fields=good, headers={"Content-Length": "abc"}),
-        "missing length": dict(fields=good, drop=("Content-Length",)),
-        "too long": dict(raw=b"x=" + b"a" * 9000),
-        "bare percent": dict(raw=enc({**good, "t": t}) + "&z=%"),
-        "truncated percent": dict(raw=enc({**good, "t": t}) + "&z=%4"),
-        "bad percent": dict(raw=enc({**good, "t": t}) + "&z=%zz"),
-        "invalid raw utf8": dict(raw=b"t=" + t.encode() + b"&key=\xff"),
-        "invalid escaped utf8": dict(
-            raw=enc({**good, "t": t, "choice": "x"}).replace("choice=x", "other=caf%E9")
-        ),
-        "duplicate choice": dict(raw=enc({**good, "t": t}) + "&choice=b"),
-        "both modes": dict(raw=enc({**good, "t": t}) + "&other="),
-        "neither mode": dict(fields={k: v for k, v in good.items() if k != "choice"}),
-        "unknown field": dict(fields={**good, "extra": "1"}),
-        "missing version": dict(
-            fields={k: v for k, v in good.items() if k != "version"}
-        ),
-        "no equals": dict(raw="garbage"),
+        "negative length": {"fields": good, "length": -5},
+        "non-numeric length": {"fields": good, "headers": {"Content-Length": "abc"}},
+        "missing length": {"fields": good, "drop": ("Content-Length",)},
+        "too long": {"raw": b"x=" + b"a" * 9000},
+        "bare percent": {"raw": enc({**good, "t": t}) + "&z=%"},
+        "truncated percent": {"raw": enc({**good, "t": t}) + "&z=%4"},
+        "bad percent": {"raw": enc({**good, "t": t}) + "&z=%zz"},
+        "invalid raw utf8": {"raw": b"t=" + t.encode() + b"&key=\xff"},
+        "invalid escaped utf8": {
+            "raw": enc({**good, "t": t, "choice": "x"}).replace(
+                "choice=x", "other=caf%E9"
+            )
+        },
+        "duplicate choice": {"raw": enc({**good, "t": t}) + "&choice=b"},
+        "both modes": {"raw": enc({**good, "t": t}) + "&other="},
+        "neither mode": {"fields": {k: v for k, v in good.items() if k != "choice"}},
+        "unknown field": {"fields": {**good, "extra": "1"}},
+        "missing version": {
+            "fields": {k: v for k, v in good.items() if k != "version"}
+        },
+        "no equals": {"raw": "garbage"},
     }
     for name, kw in cases.items():
         s, _, b = post(srv, "/act/answer", **kw)
@@ -1096,7 +1099,7 @@ def submit(srv, form, **override):
 
 
 def test_decisions_drawer_has_actions(proj, dash):
-    v, page = render_page(proj, "tok123", "/x/questions.md")
+    _v, page = render_page(proj, "tok123", "/x/questions.md")
     src = source_forms(page, ANSWER_KEY)
     labels = [f["label"] for f in src.forms]
     assert labels[:3] == ["Go with recommended: a", "b", "Save"]

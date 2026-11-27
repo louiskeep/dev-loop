@@ -236,11 +236,11 @@ def goal(cfg):
 
 # --- slice plans ---------------------------------------------------------------------
 
-_GOAL = re.compile(r"^\W*(?:goal|summary)\W*:\s*(.+)$", re.I)
-_WHY = re.compile(r"^\W*(?:why|intent|motivation)\W*:\s*(.+)$", re.I)
+_GOAL = re.compile(r"^\W*(?:goal|summary)\W*:\s*(.+)$", re.IGNORECASE)
+_WHY = re.compile(r"^\W*(?:why|intent|motivation)\W*:\s*(.+)$", re.IGNORECASE)
 _HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
-_PROBLEM = re.compile(r"\bproblem\b", re.I)
-_SKIP_SECTION = re.compile(r"revision|changes|review record|deviations", re.I)
+_PROBLEM = re.compile(r"\bproblem\b", re.IGNORECASE)
+_SKIP_SECTION = re.compile(r"revision|changes|review record|deviations", re.IGNORECASE)
 _SKIP_LINE = ("Code head", "Status:", "Revision")
 _KEYISH = re.compile(r"[0-9][0-9A-Za-z.-]*|[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+|\([^)]*\)")
 

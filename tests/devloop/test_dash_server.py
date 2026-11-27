@@ -5,9 +5,8 @@ import pathlib
 import re
 import sys
 
-
 sys.path.insert(0, str(pathlib.Path(__file__).parent / "dash"))
-import transcript_fixture as tf  # noqa: E402
+import transcript_fixture as tf
 from dash_fixture import AGENT_NAMES, call, dash, put_slice, srv  # noqa: F401
 
 from devloop import notes, slices
@@ -249,7 +248,7 @@ def test_html_routes_serve_200_and_schema_2(srv):
     from devloop.dash import render
 
     for path in ("/", "/fragment"):
-        status, headers, body = call(srv, path)
+        status, _headers, body = call(srv, path)
         assert status == 200, path
         text = body.decode()
         for sid in render.SECTION_IDS:

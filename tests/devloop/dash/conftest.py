@@ -5,4 +5,4 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from dash_fixture import dash, srv  # noqa: E402,F401
+from dash_fixture import dash, srv  # noqa: F401

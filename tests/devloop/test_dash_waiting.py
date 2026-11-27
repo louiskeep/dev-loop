@@ -13,7 +13,7 @@ def build(proj):
 
 
 def section(page, name):
-    return re.search(rf'<section id="{name}".*?</section>', page, re.S).group(0)
+    return re.search(rf'<section id="{name}".*?</section>', page, re.DOTALL).group(0)
 
 
 def test_is_qa_wait_checks_phase_and_slot_wording():
@@ -39,7 +39,9 @@ def test_qa_wait_shows_in_work_in_progress_not_the_bottom(proj):
     cards = {c["key"]: c for r in v["rows"] for c in r["cards"]}
     assert cards[k]["phase"] == "VERIFY" and cards[k]["wait"] == "slot"
     page = render.render_page(v)
-    row = re.search(rf'<tr class="slice"[^>]*data-card-key="{k}".*?</tr>', page, re.S)
+    row = re.search(
+        rf'<tr class="slice"[^>]*data-card-key="{k}".*?</tr>', page, re.DOTALL
+    )
     assert "A free QA slot" in row.group(0)
     assert "QA1" not in section(page, "parked")
 

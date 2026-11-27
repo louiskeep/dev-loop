@@ -93,7 +93,5 @@ def codex_patch(*lines):
 
 
 def codex_text(blocks) -> bytes:
-    parts = []
-    for b in blocks:
-        parts.append(b)
+    parts = list(blocks)
     return "".join(parts).encode()

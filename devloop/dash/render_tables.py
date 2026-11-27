@@ -111,20 +111,25 @@ def _next_action_role(text):
 # priority order; a leading slice runner or developer beats all of them because it owns
 # its own tests and reviews.
 _KEYWORDS = (
-    (re.compile(r"\b(?:gate run|gate-selfhosted|engine gate)\b", re.I), "Engine gate"),
-    (re.compile(r"\bdennis\b", re.I), "Dennis review"),
-    (re.compile(r"\bcodex\b", re.I), "Codex review"),
-    (re.compile(r"\b(?:t1|t2|tests|suite)\b", re.I), "Tests on a node"),
-    (re.compile(r"\bci\b", re.I), "GitHub CI"),
+    (
+        re.compile(r"\b(?:gate run|gate-selfhosted|engine gate)\b", re.IGNORECASE),
+        "Engine gate",
+    ),
+    (re.compile(r"\bdennis\b", re.IGNORECASE), "Dennis review"),
+    (re.compile(r"\bcodex\b", re.IGNORECASE), "Codex review"),
+    (re.compile(r"\b(?:t1|t2|tests|suite)\b", re.IGNORECASE), "Tests on a node"),
+    (re.compile(r"\bci\b", re.IGNORECASE), "GitHub CI"),
 )
-_WHEN_CLAUSE = re.compile(r"\b(?:merge when|when|waiting on)\b(.*)$", re.I | re.S)
+_WHEN_CLAUSE = re.compile(
+    r"\b(?:merge when|when|waiting on)\b(.*)$", re.IGNORECASE | re.DOTALL
+)
 # A keyword followed by one of these (after an optional round tag) names a step that is
 # finished, unless "pending" follows ("Codex GO pending" is still waiting on Codex).
 _STEP_DONE = re.compile(
-    r"\s*(?:r\d+\s+)?(?:go|green|passed|done)\b(?!\s+pending)", re.I
+    r"\s*(?:r\d+\s+)?(?:go|green|passed|done)\b(?!\s+pending)", re.IGNORECASE
 )
-_OWN_ROLE = re.compile(r"^(?:slice runner|developer)\b", re.I)
-_MERGE_WHEN = re.compile(r"\bmerge when\b", re.I)
+_OWN_ROLE = re.compile(r"^(?:slice runner|developer)\b", re.IGNORECASE)
+_MERGE_WHEN = re.compile(r"\bmerge when\b", re.IGNORECASE)
 _DOCUMENT_STUCK_HOURS = 2
 
 
@@ -138,7 +143,7 @@ def _hours_since(iso, now):
     except (TypeError, ValueError):
         return 0
     if then.tzinfo is None:
-        then = then.replace(tzinfo=datetime.timezone.utc)
+        then = then.replace(tzinfo=datetime.UTC)
     return (now - then).total_seconds() / 3600
 
 
@@ -351,7 +356,7 @@ def _day(iso):
     except (TypeError, ValueError):
         return ""
     if t.tzinfo is None:
-        t = t.replace(tzinfo=datetime.timezone.utc)
+        t = t.replace(tzinfo=datetime.UTC)
     return t.astimezone(status.CHICAGO).date().isoformat()
 
 

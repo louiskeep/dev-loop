@@ -232,12 +232,13 @@ def _validate(cfg: dict, project: str) -> dict:
         for k in ("host", "label"):
             if k in spec and not isinstance(spec[k], str):
                 _fail(f"tests.{level}.{k}", "must be str")
-    if _dict(cfg, "shipped_doc") is not None:
-        if not _need(cfg, "shipped_doc", str).strip():
-            _fail("shipped_doc", "must not be empty")
-    if _opt(cfg, "board", dict) is not None:
-        if not _str_list(cfg["board"].get("cmd")):
-            _fail("board.cmd", "must be a list of str")
+    if (
+        _dict(cfg, "shipped_doc") is not None
+        and not _need(cfg, "shipped_doc", str).strip()
+    ):
+        _fail("shipped_doc", "must not be empty")
+    if _opt(cfg, "board", dict) is not None and not _str_list(cfg["board"].get("cmd")):
+        _fail("board.cmd", "must be a list of str")
         pm = cfg["board"].get("phase_map", {})
         if not isinstance(pm, dict) or not all(
             isinstance(k, str) and isinstance(v, str) for k, v in pm.items()

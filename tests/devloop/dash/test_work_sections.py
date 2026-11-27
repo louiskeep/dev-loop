@@ -5,7 +5,7 @@ import re
 
 from devloop.dash import render_tables
 
-NOW = datetime.datetime(2026, 11, 27, 12, 0, tzinfo=datetime.timezone.utc)
+NOW = datetime.datetime(2026, 11, 27, 12, 0, tzinfo=datetime.UTC)
 
 
 def _iso(hours):
@@ -44,7 +44,7 @@ def sections(html):
         r'<details class="work-group" id="[^"]+"( open)?><summary><h3>(.*?) <span '
         r'class="count">\((\d+)\)</span></h3></summary>(.*?)</details>',
         html,
-        re.S,
+        re.DOTALL,
     ):
         out[m.group(2)] = (bool(m.group(1)), int(m.group(3)), m.group(4))
     return out

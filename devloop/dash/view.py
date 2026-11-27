@@ -561,9 +561,7 @@ def _last_activity(ctx, s):
     ]
     try:
         mtime = slices.slice_path(ctx.project, s["key"]).stat().st_mtime
-        times.append(
-            datetime.datetime.fromtimestamp(mtime, datetime.timezone.utc).isoformat()
-        )
+        times.append(datetime.datetime.fromtimestamp(mtime, datetime.UTC).isoformat())
     except OSError:
         pass
     parsed = [(_when(t), t) for t in times if t and _when(t)]

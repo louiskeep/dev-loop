@@ -9,6 +9,7 @@ import pytest
 from dash_fixture import AGENT_NAMES, ago, dash, put_run, put_slice  # noqa: F401
 
 from devloop import notes, runs, slices, store
+from devloop import project as projmod
 from devloop.dash import render, view
 
 PLANTED = ("password hunter2", "user:pw@host", "/etc/shadow", "ghp_PLANTEDSECRET1")
@@ -519,7 +520,7 @@ def test_view_build_creates_no_directories(proj, home, dash):
     before = tree()
     build(proj)
     assert tree() == before
-    with pytest.raises(Exception):
+    with pytest.raises(projmod.ConfigError):
         build("no-such-project")
     assert tree() == before
     assert not (home / "no-such-project").exists()

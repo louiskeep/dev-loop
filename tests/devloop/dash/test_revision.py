@@ -263,7 +263,9 @@ def test_drawer_source_wording(proj, dash):
     )
     page = page_of(proj)
     m = re.search(
-        rf'<div id="ds-{dash["gate"]}".*?</div>(?=<div id="ds-|</section>)', page, re.S
+        rf'<div id="ds-{dash["gate"]}".*?</div>(?=<div id="ds-|</section>)',
+        page,
+        re.DOTALL,
     )
     drawer = m.group(0)
     assert "QA ran the tests, failed (2 failing tests), 10m" in drawer

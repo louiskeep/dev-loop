@@ -10,7 +10,6 @@ import html
 
 from . import words
 
-
 # Words people read for each fixed code in the view. A code with no entry is a bug, and a
 # test walks every code the evidence module can emit. Stage words live in `words.STAGE`.
 # Each gate item as a statement; the page adds "yes" or "not yet".
@@ -275,4 +274,4 @@ def render_page(view, now=None, token="", copy_path="") -> str:
 
 # The other renderers format with this module's helpers and this module composes their
 # output, so the import sits last: every helper above exists by the time they load.
-from . import render_control, render_live, render_tables  # noqa: E402
+from . import render_control, render_live, render_tables
