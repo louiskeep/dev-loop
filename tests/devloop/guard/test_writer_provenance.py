@@ -71,7 +71,7 @@ def test_head_moved_without_a_writer_run_fails_closed(proj, ready, brief):
 
 
 def test_legacy_string_without_a_run_is_an_unmet_item(proj, ready):
-    key, _, head = ready("REVIEW", risk="R1", head_writer="codex-builder")
+    key, _, _head = ready("REVIEW", risk="R1", head_writer="codex-builder")
     assert "an applied builder run wrote this head" in unmet(proj, key)
     assert code_labels(proj, key)[0] == "code review dennis GO on head"
 
@@ -143,7 +143,7 @@ def test_dual_kind_codex_go_does_not_satisfy_the_senior_seat(proj, ready, dual, 
 def test_dual_kind_senior_may_run_codex_review_on_a_claude_head(
     proj, ready, brief, dual
 ):
-    key, _, head = ready("REVIEW", risk="R2")
+    key, _, _head = ready("REVIEW", risk="R2")
     assert go(proj, brief, "codex-review", key, reviewer="dennis")
 
 
@@ -244,8 +244,9 @@ def test_senior_seat_skips_a_dennis_kind_reviewer_that_cannot_run_dennis(
 def test_push_confirmation_and_provenance_read_one_writer_registry(
     proj, tmp_path, monkeypatch
 ):
-    from devloop import push, wrap
     from test_wrap import mk
+
+    from devloop import push, wrap
 
     assert not hasattr(push, "WRITER_KINDS")
     assert all(runs.KINDS[k].writes_worktree for k in slices.WRITER_KINDS)

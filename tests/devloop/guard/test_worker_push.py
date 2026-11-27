@@ -2,9 +2,10 @@
 
 import subprocess
 
-from devloop import store, wrap
 from test_push import commit, git, remote_head, repo  # noqa: F401
 from test_wrap import mk
+
+from devloop import store, wrap
 
 
 def run_payload(proj, tmp_path, wt, script):
@@ -69,6 +70,7 @@ def test_guard_leaves_the_repo_config_alone(proj, tmp_path, repo):
         ["git", "-C", str(wt), "config", "--get", "core.hooksPath"],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert r.returncode != 0
 
@@ -96,7 +98,8 @@ def test_hooks_of_the_repository_running_git_are_the_ones_that_run(
     run_payload(proj, tmp_path, a, script)
     assert marker.read_text().split() == ["index-B", "index-B", "B"]
     assert subprocess.run(
-        ["git", "-C", str(b), "rev-parse", "-q", "--verify", "HEAD"]
+        ["git", "-C", str(b), "rev-parse", "-q", "--verify", "HEAD"],
+        check=False,
     ).returncode
 
 
@@ -111,7 +114,12 @@ def test_pre_push_rejects_when_it_cannot_copy_its_input(proj, tmp_path, repo):
     env = {"PATH": f"{bad}:/usr/bin:/bin", "DEVLOOP_BASE_BRANCHES": "main"}
     line = "refs/heads/x 1 refs/heads/main 2\n"
     r = subprocess.run(
-        [str(hook), "origin", "u"], input=line, text=True, env=env, cwd=wt
+        [str(hook), "origin", "u"],
+        input=line,
+        text=True,
+        env=env,
+        cwd=wt,
+        check=False,
     )
     assert r.returncode != 0
 

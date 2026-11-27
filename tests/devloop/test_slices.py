@@ -542,17 +542,17 @@ def test_import_refused_headless_and_capped_at_review(
 ):
     plan = tmp_path / "plan.md"
     plan.write_text("Rules consulted: x\n")
-    kw = dict(
-        repo="main",
-        risk="R2",
-        rulebooks=["a.md"],
-        worktree=str(tmp_path / "wt"),
-        branch="feat/x",
-        pr=7,
-        head="a" * 40,
-        plan_path=str(plan),
-        purpose="p",
-    )
+    kw = {
+        "repo": "main",
+        "risk": "R2",
+        "rulebooks": ["a.md"],
+        "worktree": str(tmp_path / "wt"),
+        "branch": "feat/x",
+        "pr": 7,
+        "head": "a" * 40,
+        "plan_path": str(plan),
+        "purpose": "p",
+    }
     monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
     with pytest.raises(store.HeadlessRefused):
         slices.import_slice(proj, "I1", "S1", phase="GATE", **kw)
@@ -688,6 +688,7 @@ def run_cli(home, *args, headless=False):
         text=True,
         env=env,
         cwd="/",
+        check=False,
     )
 
 
@@ -699,7 +700,10 @@ def test_cli_slice_lifecycle(proj, home, cfg_edit, tmp_path):
     subprocess.run([*git_ok, "init", "-q"], check=True)
     subprocess.run([*git_ok, "commit", "-q", "--allow-empty", "-m", "c"], check=True)
     sha = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
     ).stdout.strip()
     cfg_edit(lambda c: c["repos"][0].update(path=str(repo)))
     r = run_cli(home, "p", "slice", "new", "C1", "S1", "--repo", "main", "--risk", "R1")

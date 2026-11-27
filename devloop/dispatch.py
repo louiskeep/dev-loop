@@ -1,18 +1,17 @@
 """Dispatch: admission, argv, the frozen request, launch and the worker brief."""
 
 import hashlib
-import shutil
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import time
 from pathlib import Path
 
-from . import project as projmod
 from . import batch as batchmod
 from . import evidence, notes, runs, slices, store
-
+from . import project as projmod
 
 # --- admission ----------------------------------------------------------------
 

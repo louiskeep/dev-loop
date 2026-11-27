@@ -120,7 +120,7 @@ def test_stuck_flag_after_stale_secs(proj, dash):
 def test_cards_sorted_stuck_then_oldest(proj, dash):
     v = build(proj)
     row1 = next(r for r in v["rows"] if r["row"] == "ROW1")
-    assert [c["slice"] for c in row1["cards"]][0] == "PLANNED"  # stuck first
+    assert next(c["slice"] for c in row1["cards"]) == "PLANNED"  # stuck first
     assert v["rows"][0]["row"] == "ROW1" and v["rows"][0]["stuck"] is True
     rest = [c["since"] for c in row1["cards"][1:]]
     assert rest == sorted(rest)
@@ -455,7 +455,7 @@ def test_option_length_boundaries_seal(proj, n):
 def test_a_null_ledger_entry_marks_only_that_ledger_unreadable(proj):
     from devloop import status
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     got = status.counts_from({"a": {"at": now.isoformat()}}, {"x": None}, now)
     assert got["rows_closed"] is None and got["merged_total"] == 1
 
@@ -463,7 +463,7 @@ def test_a_null_ledger_entry_marks_only_that_ledger_unreadable(proj):
 def test_a_naive_merge_timestamp_counts_as_utc(proj):
     from devloop import status
 
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     naive = now.replace(tzinfo=None).isoformat()
     got = status.counts_from({"a": {"at": naive}}, {}, now)
     assert got["merged_week"] == 1

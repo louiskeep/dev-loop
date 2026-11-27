@@ -11,8 +11,8 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import project as projmod
 from . import board, evidence, notes, store
+from . import project as projmod
 
 SCHEMA_VERSION = 1
 PHASES = (
@@ -557,9 +557,12 @@ def set_fields(project: str, key: str, **fields) -> dict:
             and s["plan_frozen"]
         ):
             raise SliceError("plan_path is frozen once a plan run exists")
-        if "full_suite_required" in fields and s["full_suite_required"]:
-            if fields["full_suite_required"] is not True:
-                raise SliceError("full_suite_required can only go from False to True")
+        if (
+            "full_suite_required" in fields
+            and s["full_suite_required"]
+            and fields["full_suite_required"] is not True
+        ):
+            raise SliceError("full_suite_required can only go from False to True")
         s.update(fields)
         carried = _carry_evidence(s, carry)
     if carried:

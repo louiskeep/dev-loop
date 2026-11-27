@@ -4,8 +4,8 @@ import argparse
 import json
 import sys
 
-from . import project as projmod
 from . import check, merge, notes, runs, slices, store
+from . import project as projmod
 
 REFUSALS = (
     slices.SliceError,

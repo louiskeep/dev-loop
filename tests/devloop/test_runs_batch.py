@@ -3,7 +3,8 @@
 import os
 
 import pytest
-from gitfix import Fix, git as fgit
+from gitfix import Fix
+from gitfix import git as fgit
 from runs_support import (  # noqa: F401
     brief,
     config,

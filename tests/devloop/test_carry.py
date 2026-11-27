@@ -169,7 +169,7 @@ def test_a_second_hop_keeps_the_original_run_binding(proj, slice_on, fx):
 
 
 def test_a_carried_entry_still_needs_its_run_to_match(proj, slice_on, fx):
-    k, old = slice_on
+    k, _old = slice_on
     fx.advance_main("notes.md")
     new = fx.merge_main()
     slices.set_fields(proj, k, head=new)
@@ -298,7 +298,7 @@ def test_code_head_still_needs_t1(proj, mk_slice, cfg_edit, fx):
     k = mk_slice(proj, phase="SELF_CHECK", risk="R1", head=head)
     slices.selfcheck(proj, k, "GO", head=head)
     slices.move(proj, k, "VERIFY", reason="code")
-    with pytest.raises(Exception):
+    with pytest.raises(slices.SliceError):
         slices.move(proj, k, "REVIEW", reason="no t1")
     assert any("t1" in m for m in _gate_missing(proj, k))
 

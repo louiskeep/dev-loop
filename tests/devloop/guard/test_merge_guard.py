@@ -10,8 +10,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from hooks import headless_merge_guard  # noqa: E402
-
+from hooks import headless_merge_guard
 
 DENIED = [
     "gh pr merge 5 --squash",
@@ -126,6 +125,7 @@ def run_guard(command, headless=False, run=False, agent_id=None, raw=None, cwd=N
         capture_output=True,
         text=True,
         env=env,
+        check=False,
     )
 
 

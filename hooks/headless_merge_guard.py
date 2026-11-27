@@ -466,7 +466,7 @@ def main() -> int:
     try:
         event = json.load(sys.stdin)
         if not isinstance(event, dict):
-            raise ValueError("event is not an object")
+            raise TypeError("event is not an object")
     except Exception:  # noqa: BLE001 - only a worker fails closed on a bad event
         return _deny(WORKER_REASON) if in_run else 0
     worker = in_run or bool(event.get("agent_id"))

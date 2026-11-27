@@ -118,7 +118,7 @@ def _receipt_ok(cwd, receipt):
             text = (Path(git_dir) / receipt).read_text(encoding="utf-8")
         except FileNotFoundError:
             pass  # no receipt yet; any other read error propagates and fails closed
-    receipt = text[:-1] if text.endswith("\n") else text
+    receipt = text.removesuffix("\n")
     from devloop import githooks  # the one object-id validator; see _configured
 
     if githooks.is_object_id(head) and receipt == head:

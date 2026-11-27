@@ -70,8 +70,8 @@ def cap_active(project: str, now=None) -> bool:
     except ValueError:
         return True
     if until.tzinfo is None:
-        until = until.replace(tzinfo=datetime.timezone.utc)
-    return until > (now or datetime.datetime.now(datetime.timezone.utc))
+        until = until.replace(tzinfo=datetime.UTC)
+    return until > (now or datetime.datetime.now(datetime.UTC))
 
 
 def run_dir(project: str, run_id: str) -> Path:
@@ -81,9 +81,7 @@ def run_dir(project: str, run_id: str) -> Path:
 
 
 def now_iso() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat(
-        timespec="microseconds"
-    )
+    return datetime.datetime.now(datetime.UTC).isoformat(timespec="microseconds")
 
 
 def is_headless() -> bool:
@@ -214,11 +212,10 @@ def append_event(project: str, kind: str, **fields) -> None:
         raise StoreError("bad event kind")
     line = json.dumps({**fields, "at": now_iso(), "kind": kind}, sort_keys=True)
     path = state_dir(project) / "events.jsonl"
-    with locked(path):
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
+    with locked(path), open(path, "a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
 
 
 def out_dir(rd) -> Path:

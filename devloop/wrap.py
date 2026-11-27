@@ -13,9 +13,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import githooks
+from . import githooks, push, runs, slices, store
 from . import project as projmod
-from . import push, runs, slices, store
 from .caps import TAIL_CHARS, detect_cap, detect_cap_text
 
 VERDICT = re.compile(r"VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
@@ -99,8 +98,7 @@ _MARKUP = " \t`*_"
 def _plain_line(line):
     """The line without the markdown a model wraps around it: backticks, * and _, one final ."""
     line = line.strip(_MARKUP)
-    if line.endswith("."):
-        line = line[:-1]
+    line = line.removesuffix(".")
     return line.strip(_MARKUP)
 
 
@@ -186,7 +184,7 @@ def _push_writer(rd, req):
         return
     try:
         pushed, why = push.push_slice_branch(req)
-    except Exception as exc:  # any failure to confirm must not leave a DONE result
+    except Exception as exc:  # noqa: BLE001 - any failure to confirm must not leave a DONE result
         pushed, why = None, f"push confirmation failed: {type(exc).__name__}"
     if why is None:
         # Always rewrite: it also drops a stale or duplicate head the worker wrote.

@@ -98,7 +98,7 @@ def test_skip_unchanged_snapshot_until_two_hours(proj, tmp_path, home):
     tick.tick(proj)
     assert len(claude_calls(tmp_path)) == 1
     state = json.loads((home / "p" / "tick-state.json").read_text())
-    old = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=3)
+    old = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=3)
     state["last_model_at"] = old.isoformat()
     (home / "p" / "tick-state.json").write_text(json.dumps(state))
     tick.tick(proj)
@@ -177,7 +177,7 @@ def test_detect_cap_shapes():
             {"type": "result", "is_error": True, "result": "You hit your usage limit"}
         ),
     )
-    assert soon > datetime.datetime.now(datetime.timezone.utc)
+    assert soon > datetime.datetime.now(datetime.UTC)
     assert (
         caps.detect_cap(0, json.dumps({"type": "result", "result": "usage limit docs"}))
         is None
@@ -280,6 +280,7 @@ def test_tick_launcher_runs(proj, home, tmp_path, fakebin):
             "DEVLOOP_HOME": str(home),
             "DEVLOOP_BIN_DIR": str(ROOT / "bin"),
         },
+        check=False,
     )
     assert out.returncode == 0, out.stderr
 

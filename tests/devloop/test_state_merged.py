@@ -24,6 +24,7 @@ def merged(proj, mk_slice, fakebin, home, tmp_path, monkeypatch):
             capture_output=True,
             text=True,
             env={**os.environ, "DEVLOOP_HOME": str(home)},
+            check=False,
         )
 
     run.key = key

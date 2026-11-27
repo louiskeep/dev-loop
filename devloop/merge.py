@@ -216,10 +216,10 @@ def _verify_cmd(project, cfg, repo_cfg, rules, base, head):
 
 def _iso(text):
     try:
-        at = datetime.datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+        at = datetime.datetime.fromisoformat(str(text))
     except ValueError:
         return None
-    return at if at.tzinfo else at.replace(tzinfo=datetime.timezone.utc)
+    return at if at.tzinfo else at.replace(tzinfo=datetime.UTC)
 
 
 def _workflow_matches(repo_cfg, wf, run_id, run):

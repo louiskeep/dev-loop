@@ -6,7 +6,6 @@ import hashlib
 from . import project as projmod
 from . import runs, slices, store
 
-
 # One checklist entry. `code` and `reason` come from fixed tables (CODES, REASONS), so a
 # reader can show them without any run id, reviewer name or free text; `reviewer` is the
 # configured reviewer name, which readers turn into a role label.

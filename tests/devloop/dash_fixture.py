@@ -12,7 +12,7 @@ import pytest
 
 from devloop import notes, runs, slices, store
 
-NOW = datetime.datetime.now(datetime.timezone.utc)
+NOW = datetime.datetime.now(datetime.UTC)
 AGENT_NAMES = ("zed-agent", "qux-agent")
 
 

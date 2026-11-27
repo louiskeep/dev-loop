@@ -8,7 +8,7 @@ import pytest
 from devloop import project as projmod
 from devloop import runs, scrub, slices, status, store
 
-UTC = datetime.timezone.utc
+UTC = datetime.UTC
 
 
 # --- store.cap_active ----------------------------------------------------------

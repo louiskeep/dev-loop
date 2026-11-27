@@ -6,9 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from . import evidence
+from . import evidence, slices
 from . import project as projmod
-from . import slices
 from .dash.lifecycle import dash_status
 
 

@@ -140,7 +140,7 @@ def test_snapshot_next_command_follows_the_ladder(proj, mk_slice):
 def test_redesign_needs_fresh_plan_reviews_even_after_an_in_place_rewrite(
     proj, ready, brief
 ):
-    key, wt, _ = ready("PLAN", risk="R2")
+    key, _wt, _ = ready("PLAN", risk="R2")
     for name in ("dennis", "codex"):
         r = go(
             proj,

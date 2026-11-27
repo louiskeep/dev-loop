@@ -7,15 +7,15 @@ import pytest
 from runs_support import (  # noqa: F401
     brief,
     config,
+    dead_run,
     env,
     finish,
     git,
     go,
     make_repo,
     ready,
-    res,
-    dead_run,
     repair,
+    res,
     train,
 )
 
@@ -95,7 +95,7 @@ def test_lost_test_holds_slot(proj, ready, brief):
 
 
 def test_review_runs_on_the_private_checkout_of_a_dirty_worktree(proj, ready, brief):
-    key, wt, head = ready("REVIEW", risk="R1")
+    key, wt, _head = ready("REVIEW", risk="R1")
     (wt / "f.txt").write_text("edited\n")
     (wt / "stray.txt").write_text("uncommitted\n")
     r = go(proj, brief, "codex-review", key, reviewer="codex")
@@ -304,7 +304,7 @@ def test_repair_installs_and_credits_the_installed_bytes(proj, ready, brief):
 
 
 def test_repair_replay_after_install(proj, ready, brief):
-    key, wt, r = repair(proj, ready, brief)
+    key, _wt, r = repair(proj, ready, brief)
     finish(proj, r, result=res("DONE", "GO"))
     runs.apply_run(proj, r)
     (store.run_dir(proj, r) / "applied").unlink()
@@ -336,7 +336,7 @@ def test_pinned_run_ignores_uncommitted_files(proj, ready, brief):
 
 
 def test_train_member_must_be_ancestor(proj, ready, brief):
-    key, h1, top, h2 = train(proj, ready, brief)
+    key, h1, top, _h2 = train(proj, ready, brief)
     r = go(proj, brief, "test", top, level="full", covers=[key])
     assert runs.read_request(proj, r)["covers"] == {key: h1}
     with pytest.raises(runs.Refused, match="ancestor"):
@@ -377,11 +377,12 @@ def run_state(home, *args):
         capture_output=True,
         text=True,
         env={**os.environ, "DEVLOOP_HOME": str(home)},
+        check=False,
     )
 
 
 def test_state_cli_applied_release_and_list(proj, ready, brief, home):
-    key, _, head = ready("REVIEW")
+    key, _, _head = ready("REVIEW")
     r = go(proj, brief, "codex-review", key, reviewer="codex")
     live = run_state(home, "list", "--live")
     assert r in live.stdout and live.returncode == 0

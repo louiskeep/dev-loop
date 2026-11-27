@@ -74,6 +74,7 @@ def run_hook(command, cwd, env, hook=HOOK, raw=None):
         env=env,
         capture_output=True,
         text=True,
+        check=False,
     )
 
 
@@ -329,6 +330,7 @@ def run_settings(command, cwd, env):
         env=env,
         capture_output=True,
         text=True,
+        check=False,
     )
 
 
@@ -385,7 +387,12 @@ def test_characterization_a_search_for_the_command_text_is_denied(world):
 
 def _gate_pass(repo, env):
     return subprocess.run(
-        ["python3", str(GATE_PASS)], cwd=repo, env=env, capture_output=True, text=True
+        ["python3", str(GATE_PASS)],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
 

@@ -107,7 +107,7 @@ def _rel(iso, now):
     except (TypeError, ValueError):
         return ""
     if then.tzinfo is None:
-        then = then.replace(tzinfo=datetime.timezone.utc)
+        then = then.replace(tzinfo=datetime.UTC)
     secs = int((now - then).total_seconds())
     if secs < 60:
         return "just now"
@@ -483,7 +483,7 @@ def _details(sid, title, n, body):
 
 
 def render_fragment(view, now=None) -> str:
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = now or datetime.datetime.now(datetime.UTC)
     parts = (
         _strip(view, now),
         _needs(view, now),

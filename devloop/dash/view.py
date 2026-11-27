@@ -261,7 +261,7 @@ def _when(value):
         t = datetime.datetime.fromisoformat(value)
     except (TypeError, ValueError):
         return None
-    return t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)
+    return t if t.tzinfo else t.replace(tzinfo=datetime.UTC)
 
 
 def _age(value, now) -> float:
@@ -641,9 +641,7 @@ def _tick_facts(ctx):
     d = store.state_path(ctx.project)
     try:
         mtime = (d / "STATUS.md").stat().st_mtime
-        last_pass = datetime.datetime.fromtimestamp(
-            mtime, datetime.timezone.utc
-        ).isoformat()
+        last_pass = datetime.datetime.fromtimestamp(mtime, datetime.UTC).isoformat()
     except OSError:
         last_pass = None
     state = _try(
@@ -674,7 +672,7 @@ def _memory(ctx):
 
 def build_view(project, proc="/proc", now=None) -> dict:
     """The sealed view for one project. Raises ViewError when it breaks its schema."""
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = now or datetime.datetime.now(datetime.UTC)
     cfg = projmod.load_project(project)
     ctx = _Ctx(project, cfg, now, proc)
     unread = object()  # a failed read, as opposed to a file holding JSON null

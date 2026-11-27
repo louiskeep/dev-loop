@@ -1,13 +1,12 @@
 """Collect, parse and apply finished runs; reject the ones that cannot apply."""
 
 import json
-import shutil
 import os
+import shutil
 from pathlib import Path
 
-from . import project as projmod
 from . import notes, runs, slices, store
-
+from . import project as projmod
 
 # --- collect ------------------------------------------------------------------
 

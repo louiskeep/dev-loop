@@ -279,7 +279,7 @@ def _frozen_requests(name):
 
 def _utc(moment):
     if moment.tzinfo is None:
-        return moment.replace(tzinfo=datetime.timezone.utc)
+        return moment.replace(tzinfo=datetime.UTC)
     return moment
 
 
@@ -292,7 +292,7 @@ def reserved_mb(now=None) -> int:
     frozen into the run at dispatch; a run from before that field uses its own project's
     estimate, never the caller's. Times without an offset are read as UTC.
     """
-    now = _utc(now or datetime.datetime.now(datetime.timezone.utc))
+    now = _utc(now or datetime.datetime.now(datetime.UTC))
     cutoff = now - datetime.timedelta(seconds=RESERVE_WINDOW_S)
     total = 0
     for name in projmod.project_names():

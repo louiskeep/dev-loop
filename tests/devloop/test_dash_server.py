@@ -63,7 +63,7 @@ def test_head_has_headers_and_no_body(srv):
 
 def test_etag_304_on_unchanged_poll(srv):
     _, h, _ = call(srv, "/fragment")
-    status, h2, body = call(srv, "/fragment", headers={"If-None-Match": h["ETag"]})
+    status, _h2, body = call(srv, "/fragment", headers={"If-None-Match": h["ETag"]})
     assert status == 304 and body == b""
     status, h3, _ = call(srv, "/api/state")
     assert h3["ETag"] == h["ETag"]  # one version for the page, the fragment and the API

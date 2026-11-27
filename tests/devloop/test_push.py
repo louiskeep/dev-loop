@@ -1,9 +1,9 @@
 import subprocess
 
 import pytest
+from test_wrap import mk, result
 
 from devloop import push, runs, store, wrap
-from test_wrap import mk, result
 
 GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
 
@@ -44,6 +44,7 @@ def remote_head(remote, branch="feat/s"):
         ["git", "-C", str(remote), "rev-parse", f"refs/heads/{branch}"],
         capture_output=True,
         text=True,
+        check=False,
     )
     return r.stdout.strip() if r.returncode == 0 else None
 
@@ -94,7 +95,7 @@ def test_codex_builder_commit_is_pushed(proj, tmp_path, repo):
 
 
 def test_already_pushed_head_makes_no_push_call(proj, tmp_path, repo, monkeypatch):
-    wt, remote = repo
+    wt, _remote = repo
     sha = commit(wt)
     git(wt, "push", "-q", "origin", "HEAD:refs/heads/feat/s")
     calls = []
@@ -170,7 +171,7 @@ def test_amended_head_is_pushed_and_reported(proj, tmp_path, repo):
 
 
 def test_confirm_failure_makes_the_result_failed(proj, tmp_path, repo, monkeypatch):
-    wt, remote = repo
+    wt, _remote = repo
     sha = commit(wt)
 
     def boom(req):

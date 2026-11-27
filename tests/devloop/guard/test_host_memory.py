@@ -22,7 +22,7 @@ def two(home, proj, write_project, minimal_project, cfg_edit):
 def plant(project, run_id, *, started=None, kind="builder", **extra):
     rd = store.run_dir(project, run_id)
     rd.mkdir(parents=True)
-    started = started or datetime.datetime.now(datetime.timezone.utc).isoformat()
+    started = started or datetime.datetime.now(datetime.UTC).isoformat()
     store.write_json(
         rd / "request.json",
         {"id": run_id, "kind": kind, "started_at": started, **extra},
@@ -53,7 +53,7 @@ def test_damaged_process_record_in_another_project_keeps_its_reservation(two):
 
 def test_naive_start_time_is_read_as_utc(two):
     p, _ = two
-    naive = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    naive = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
     plant(p, "naive.1", started=naive.isoformat(), memory_mb=300)
     assert runs.reserved_mb() == 300
     old = naive - datetime.timedelta(seconds=runs.RESERVE_WINDOW_S + 60)
@@ -64,7 +64,7 @@ def test_naive_start_time_is_read_as_utc(two):
 def test_a_naive_clock_argument_is_read_as_utc(two):
     p, _ = two
     plant(p, "new.1", memory_mb=100)
-    naive_now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+    naive_now = datetime.datetime.now(datetime.UTC).replace(tzinfo=None)
     assert runs.reserved_mb(naive_now) == 100
 
 
@@ -76,7 +76,7 @@ def test_an_ended_run_holds_nothing(two):
 
 
 def test_a_project_whose_config_cannot_load_still_counts_a_legacy_run(two, home):
-    p, q = two
+    _p, q = two
     plant(q, "legacy.1")
     (home / "q" / "project.json").write_text("{bad")
     assert runs.reserved_mb() > 0

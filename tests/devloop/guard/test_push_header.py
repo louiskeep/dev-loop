@@ -1,10 +1,10 @@
 """The pushed SHA reaches the result header however the worker wrote it."""
 
 import pytest
-
-from devloop import runs, store, wrap
 from test_push import commit, remote_head, repo  # noqa: F401
 from test_wrap import mk
+
+from devloop import runs, store, wrap
 
 
 def run_with_header(proj, tmp_path, wt, header_lines, sep="---"):
@@ -70,7 +70,7 @@ def test_a_stale_head_before_the_correct_one_leaves_exactly_one(proj, tmp_path, 
 def test_result_publication_failure_sets_a_failed_exit(
     proj, tmp_path, repo, monkeypatch
 ):
-    wt, remote = repo
+    wt, _remote = repo
     sha = commit(wt)
     real = store.write_text
 

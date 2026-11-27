@@ -14,8 +14,9 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from devloop import githooks  # noqa: E402
-from test_push import commit, git, remote_head, repo  # noqa: E402,F401
+from test_push import commit, git, remote_head, repo  # noqa: F401
+
+from devloop import githooks
 
 ZERO = "0" * 40
 OID = "a" * 40
@@ -41,6 +42,7 @@ def push(wt, *args, env):
         env=env,
         capture_output=True,
         text=True,
+        check=False,
     )
 
 
@@ -149,13 +151,16 @@ def test_a_worker_cannot_push_a_tag(guarded, lib_home, args):
     assert r.returncode != 0
     assert refusal("refs/tags/v1", "not a branch") in r.stderr
     tags = subprocess.run(
-        ["git", "-C", str(remote), "tag", "-l"], capture_output=True, text=True
+        ["git", "-C", str(remote), "tag", "-l"],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     assert tags.stdout.strip() == ""
 
 
 def test_a_new_tag_is_allowed_for_an_interactive_session_only(guarded, lib_home):
-    wt, remote = guarded
+    wt, _remote = guarded
     env = _env(lib_home)
     git(wt, "tag", "-a", "v9", "-m", "x")
     assert push(wt, "origin", "refs/tags/v9:refs/tags/v9", env=env).returncode == 0
@@ -502,6 +507,7 @@ def test_the_policy_file_decides_alone(repo, tmp_path):
             env=_env(tmp_path),
             capture_output=True,
             text=True,
+            check=False,
         )
 
     ok = run(f"refs/heads/x {sha} refs/heads/x {ZERO}\n")
@@ -549,7 +555,7 @@ def test_devloop_install_writes_shims_and_the_pr_gate(
     h = tmp_path / "h"
     env = {**_env(h), "DEVLOOP_HOME": str(home)}
     cmd = [sys.executable, str(ROOT / "bin" / "devloop-install"), str(tmp_path / "bin")]
-    run = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    run = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
     assert run.returncode == 0, run.stderr
     assert "installed" in run.stdout
     shim = repo_dir / ".git" / "hooks" / "pre-push"
@@ -559,7 +565,7 @@ def test_devloop_install_writes_shims_and_the_pr_gate(
     assert (tmp_path / "bin" / "devloop-gate-pass").is_file()
     # a foreign hook is refused and reported, with a nonzero exit and no path in the line
     shim.write_text("#!/bin/sh\nexit 0\n")
-    again = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    again = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
     assert again.returncode != 0
     out = again.stdout + again.stderr
     assert "refused" in out and str(repo_dir) not in out
