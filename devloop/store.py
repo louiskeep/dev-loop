@@ -7,6 +7,7 @@ wrapper, an operator shell) never lose each other's update.
 import contextlib
 import datetime
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -78,6 +79,12 @@ def run_dir(project: str, run_id: str) -> Path:
     if not isinstance(run_id, str) or TOKEN.fullmatch(run_id) is None:
         raise StoreError("bad run id")
     return state_dir(project) / "runs" / run_id
+
+
+def canonical_digest(obj) -> str:
+    """16 hex of sha256 over sorted, compact JSON: one version rule for every record."""
+    text = json.dumps(obj, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 def now_iso() -> str:
@@ -192,9 +199,20 @@ def read_result(path, *, errors="replace"):
     return split_result(text)
 
 
-def read_header(path) -> dict:
-    """The `key: value` header of a result file; {} when the file is missing."""
-    return read_result(path)[0]
+def read_header(path, limit=None) -> dict:
+    """The `key: value` header of a result file; {} when the file is missing.
+
+    `limit` reads only that many leading bytes (undecodable bytes become replacement
+    characters), for readers that must not trust the size or content of the file.
+    """
+    if limit is None:
+        return read_result(path)[0]
+    try:
+        with open(path, "rb") as fh:
+            text = fh.read(limit).decode("utf-8", "replace")
+    except FileNotFoundError:
+        return {}
+    return split_result(text)[0]
 
 
 def rewrite_header(path, **fields) -> None:
@@ -207,15 +225,45 @@ def rewrite_header(path, **fields) -> None:
     write_text(path, f"{lines}---\n{body}")
 
 
-def append_event(project: str, kind: str, **fields) -> None:
+def _has_event(path, kind, field, value) -> bool:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    for raw in text.splitlines():
+        try:
+            ev = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(ev, dict) and ev.get("kind") == kind and ev.get(field) == value:
+            return True
+    return False
+
+
+def append_event(project: str, kind: str, *, once=None, at=None, **fields) -> None:
+    """Append one event. `once=(field, value)` skips it when that event is already there,
+    checked under the same lock as the append, so a replayed step adds nothing."""
     if TOKEN.fullmatch(kind) is None:
         raise StoreError("bad event kind")
-    line = json.dumps({**fields, "at": now_iso(), "kind": kind}, sort_keys=True)
+    line = json.dumps({**fields, "at": at or now_iso(), "kind": kind}, sort_keys=True)
     path = state_dir(project) / "events.jsonl"
-    with locked(path), open(path, "a", encoding="utf-8") as fh:
-        fh.write(line + "\n")
-        fh.flush()
-        os.fsync(fh.fileno())
+    with locked(path):
+        if once is not None and _has_event(path, kind, *once):
+            return
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+
+
+def set_paused(project: str, on: bool, via: str) -> None:
+    """Pause or resume the loop: the one place the PAUSE flag changes, with its event."""
+    flag = state_dir(project) / "PAUSE"
+    if on:
+        flag.touch()
+    else:
+        flag.unlink(missing_ok=True)
+    append_event(project, "loop-paused" if on else "loop-resumed", via=via)
 
 
 def out_dir(rd) -> Path:

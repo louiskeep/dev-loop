@@ -1,12 +1,13 @@
 """Routes: what is served, what is refused, and what must never appear in a response."""
 
-import http.client
-import io
 import json
-import threading
+import pathlib
+import re
+import sys
 
-import pytest
-from dash_fixture import AGENT_NAMES, dash, put_slice  # noqa: F401
+sys.path.insert(0, str(pathlib.Path(__file__).parent / "dash"))
+import transcript_fixture as tf
+from dash_fixture import AGENT_NAMES, call, dash, put_slice, srv  # noqa: F401
 
 from devloop import notes, slices
 from devloop.dash import server, view
@@ -20,28 +21,6 @@ HEADER_NAMES = (
 )
 
 
-@pytest.fixture
-def srv(proj, dash):
-    log = io.StringIO()
-    s = server.make_server(proj, "127.0.0.1", 0, proc="/nonexistent-proc", log=log)
-    s.log_text = log
-    t = threading.Thread(target=s.serve_forever, daemon=True)
-    t.start()
-    yield s
-    s.shutdown()
-    s.server_close()
-
-
-def call(srv, path, method="GET", headers=None):
-    conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
-    try:
-        conn.request(method, path, headers=headers or {})
-        r = conn.getresponse()
-        return r.status, dict(r.getheaders()), r.read()
-    finally:
-        conn.close()
-
-
 def test_the_five_routes_answer(srv):
     for path, ctype in (
         ("/", "text/html"),
@@ -53,30 +32,33 @@ def test_the_five_routes_answer(srv):
         status, headers, body = call(srv, path)
         assert status == 200 and headers["Content-Type"].startswith(ctype), path
         assert body
-    assert json.loads(call(srv, "/api/state")[2])["schema"] == 1
+    assert json.loads(call(srv, "/api/state")[2])["schema"] == 2
 
 
 def test_head_has_headers_and_no_body(srv):
-    status, headers, body = call(srv, "/fragment", "HEAD")
+    status, headers, body = call(srv, "/api/state", "HEAD")
     assert status == 200 and body == b"" and headers["ETag"]
+    status, headers, body = call(srv, "/fragment", "HEAD")
+    assert status == 200 and body == b"" and "ETag" not in headers
 
 
 def test_etag_304_on_unchanged_poll(srv):
-    _, h, _ = call(srv, "/fragment")
-    status, _h2, body = call(srv, "/fragment", headers={"If-None-Match": h["ETag"]})
+    _, h, _ = call(srv, "/api/state")
+    status, _, body = call(srv, "/api/state", headers={"If-None-Match": h["ETag"]})
     assert status == 304 and body == b""
-    status, h3, _ = call(srv, "/api/state")
-    assert h3["ETag"] == h["ETag"]  # one version for the page, the fragment and the API
-    assert call(srv, "/api/state", headers={"If-None-Match": h["ETag"]})[0] == 304
+    # The pages carry the write token, so they are never revalidated.
+    for path in ("/", "/fragment"):
+        status, h2, _ = call(srv, path, headers={"If-None-Match": h["ETag"]})
+        assert status == 200 and "ETag" not in h2 and h2["Cache-Control"] == "no-store"
 
 
 def test_etag_changes_after_slice_move(proj, dash, srv):
-    _, h, _ = call(srv, "/fragment")
+    _, h, _ = call(srv, "/api/state")
     s = slices.load(proj, dash["frame"])
     s["phase"] = "PLAN"
     slices._save(proj, s)
     srv.cache._value = None  # the two second cache would hide the change
-    status, h2, _ = call(srv, "/fragment", headers={"If-None-Match": h["ETag"]})
+    status, h2, _ = call(srv, "/api/state", headers={"If-None-Match": h["ETag"]})
     assert status == 200 and h2["ETag"] != h["ETag"]
 
 
@@ -95,9 +77,10 @@ def test_the_view_is_cached_between_polls(srv, monkeypatch):
 def test_only_known_routes_and_methods(srv):
     for path in ("/nope", "/fragment/", "/api", "/static/", "/static/other.js"):
         assert call(srv, path)[:1] == (404,), path
-    for method in ("POST", "PUT", "DELETE", "PATCH", "OPTIONS"):
+    for method in ("PUT", "DELETE", "PATCH", "OPTIONS"):
         status, _, body = call(srv, "/api/state", method)
         assert status == 501 and body == b"not supported", method
+    assert call(srv, "/api/state", "POST")[:1] == (405,)
     assert call(srv, "/fragment?x=1&y=<script>")[0] == 200  # the query is ignored
 
 
@@ -122,11 +105,11 @@ def test_every_response_sends_security_headers(srv):
         call(srv, "/", "POST"),
         call(
             srv,
-            "/fragment",
-            headers={"If-None-Match": call(srv, "/fragment")[1]["ETag"]},
+            "/api/state",
+            headers={"If-None-Match": call(srv, "/api/state")[1]["ETag"]},
         ),
     ]
-    assert {c[0] for c in cases} == {200, 404, 501, 304}
+    assert {c[0] for c in cases} == {200, 404, 405, 304}
     for status, headers, _ in cases:
         for name in HEADER_NAMES:
             assert name in headers, (status, name)
@@ -155,15 +138,19 @@ def test_log_has_method_path_and_status_only(srv):
 
 def _plant(proj, dash):
     planted = "password hunter2 https://user:pw@host/x /etc/passwd ghp_PLANTEDSECRET1"
+    # Purpose, next action and problem text are shown to the owner (scrubbed), so they
+    # carry only secret-shaped text. Words such as "hunter2" stay in fields no page reads (waiting_on is read now).
+    shaped = "https://user:pw@host/x /etc/passwd ghp_PLANTEDSECRET1"
     for key in dash.values():
         try:
             slices.set_fields(
-                proj, key, purpose=planted, next_action=planted, waiting_on=planted
+                proj, key, purpose=shaped, next_action=shaped, waiting_on=shaped
             )
         except slices.SliceError:
             pass
     notes.ticklog(proj, planted)
-    notes.problem(proj, "leaky", impact=planted, fix=planted, detail=planted)
+    notes.problem(proj, "leaky", impact=shaped, fix=shaped, detail=shaped)
+    notes.problem(proj, "leaky-words", impact="x", fix="y", detail="z")
     return planted
 
 
@@ -171,13 +158,14 @@ def test_routes_leak_nothing_planted(proj, dash, srv, tmp_path):
     _plant(proj, dash)
     for path in ROUTES:
         text = call(srv, path)[2].decode()
+        # The questions file path appears only in the "Copy for Claude" text (owner request).
+        text = re.sub(r'data-copy="[^"]*"', "", text)
         for needle in (
             "hunter2",
             "user:pw",
             "/etc/passwd",
             "PLANTEDSECRET",
             str(tmp_path),
-            "space is short",
         ):
             assert needle not in text, (path, needle)
         assert not [
@@ -253,3 +241,121 @@ def test_make_server_installs_no_signal_handlers(proj, dash, monkeypatch):
     monkeypatch.setattr(signal, "signal", refuse)
     s = server.make_server(proj)
     s.server_close()
+
+
+def test_html_routes_serve_200_and_schema_2(srv):
+    """Every commit of the mission-control slice keeps both HTML routes serving."""
+    from devloop.dash import render
+
+    for path in ("/", "/fragment"):
+        status, _headers, body = call(srv, path)
+        assert status == 200, path
+        text = body.decode()
+        for sid in render.SECTION_IDS:
+            assert f'id="{sid}"' in text, (path, sid)
+    assert json.loads(call(srv, "/api/state")[2])["schema"] == 2
+
+
+# --- transcript facts are the only thing a transcript contributes ------------------
+
+PLANTED_TRANSCRIPT = (
+    "ghp_DEMOTOKEN1234567",
+    "AKIAABCDEFGH1234",
+    "hunter2",
+    "user:pw@host",
+    "/home/someone/private-dir",
+    "0123456789abcdef0123456789abcdef01234567",
+    "customer42",
+)
+
+
+def _plant_claude(proj, run_id, key, alive):
+    from dash_fixture import put_run
+
+    from devloop import store
+
+    secret = " ".join(PLANTED_TRANSCRIPT)
+    items = [
+        tf.init("claude-opus-5-5", cwd="/home/someone/private-dir"),
+        tf.assistant(
+            "m1",
+            tf.text(secret),
+            tf.thinking(secret),
+            tf.tool_use("a", "Bash", command="git status"),
+            tf.tool_use("b", "Bash", command="customer42 --x ghp_DEMOTOKEN1234567"),
+            tf.tool_use("c", "Bash", command="password hunter2 && AKIAABCDEFGH1234"),
+            tf.tool_use(
+                "d",
+                "Edit",
+                file_path="/home/someone/private-dir/view.py",
+                old_string=secret,
+                new_string=secret,
+            ),
+            tf.tool_use("e", "Write", file_path="/x/.env", content=secret),
+            tf.tool_use("f", "Grep", pattern=secret, path="/home/someone/private-dir/"),
+            tf.tool_use("g", "WebFetch", url="https://user:pw@host/x", prompt=secret),
+            tf.tool_use("h", "Agent", prompt=secret, subagent_type="customer42"),
+        ),
+        tf.user(
+            tf.tool_result("a", False, secret),
+            tf.tool_result("b", True, secret),
+        ),
+        tf.result(secret),
+    ]
+    rd = put_run(proj, run_id, kind="builder", key=key, alive=alive)
+    (store.out_dir(rd) / "log").write_bytes(tf.claude_events(items))
+    return rd
+
+
+def _plant_codex(proj, run_id, key):
+    from dash_fixture import put_run
+
+    from devloop import store
+
+    secret = " ".join(PLANTED_TRANSCRIPT)
+    text = (
+        tf.codex_header("gpt-6.2-astra")
+        + f"user\n{secret}\ncodex\n{secret}\n"
+        + tf.codex_exec("git diff", output=f"{secret}\n")
+        + tf.codex_exec(
+            "customer42 --x ghp_DEMOTOKEN1234567", code=1, output=secret + "\n"
+        )
+        + tf.codex_patch(
+            "Success. Updated the following files:", "M /home/someone/private-dir/x.py"
+        )
+    )
+    rd = put_run(proj, run_id, kind="codex-review", key=key, alive=True)
+    (store.out_dir(rd) / "codex.out").write_bytes(text.encode())
+
+
+def test_transcript_secrets_reach_no_route(proj, dash, srv):
+    from devloop import store
+
+    _plant_claude(proj, "builder.leak", dash["plan"], alive=True)
+    finished = _plant_claude(proj, "builder.fin", dash["gate"], alive=False)
+    store.write_json(
+        finished / "exit",
+        {"code": 0, "reason": "exit", "ended_at": "2026-11-25T00:00:00+00:00"},
+    )
+    (finished / "applied").write_text("")
+    _plant_codex(proj, "codex-review.leak", dash["review"])
+    bodies = {}
+    for path in ROUTES:
+        status, _, body = call(srv, path)
+        assert status == 200, path
+        bodies[path] = body.decode()
+    state = json.loads(bodies["/api/state"])
+    # Positive facts: the page does show tool kinds, allowlisted names and counts.
+    plan = next(c for c in state["live"] if c["key"] == dash["plan"])
+    assert plan["tools"] == 8 and plan["model"] == "claude-opus-5-5"
+    feed = [(f["tag"], f["target"]) for f in state["feed"] if f["role"]]
+    assert ("SHELL", "git") in feed and ("EDIT", "view.py") in feed
+    assert ("SHELL", "?") in feed
+    codex = next(c for c in state["live"] if c["harness"] == "codex")
+    assert codex["model"] == "gpt-6.2-astra" and codex["tools"] == 3
+    gate = next(d for d in state["drawers"] if d["key"] == dash["gate"])
+    assert {"name": "view.py", "edits": 1} in gate["files"]
+    assert "SHELL" not in bodies["/"] and "view.py" not in bodies["/fragment"]
+    for path, text in bodies.items():
+        for value in PLANTED_TRANSCRIPT:
+            assert value not in text, (path, value)

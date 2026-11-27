@@ -13,14 +13,14 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import githooks, push, runs, slices, store
+from . import githooks, push, runs, slices, store, tick
 from . import project as projmod
 from .caps import TAIL_CHARS, detect_cap, detect_cap_text
 
 VERDICT = re.compile(r"VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
 SELF_VERDICT = re.compile(r"SELF-VERDICT:\s*(GO-WITH-FIXES|NO-GO|GO)")
 VERDICT_READERS = ("claude-verdict", "verdict", "selfverdict")
-CODEX_KINDS = ("codex-review", "codex-fix", "codex-builder")
+CODEX_KINDS = tuple(k for k, s in runs.KINDS.items() if s.harness == "codex")
 FAILING_BLOCK = "FAILING TEST IDS"
 MAX_FAILING = 200
 
@@ -241,23 +241,6 @@ def write_repair(rd, req):
         )
 
 
-def _wake_tick(project):
-    tick = store.bin_dir() / "devloop-tick"
-    env = dict(os.environ, DEVLOOP_HEADLESS="1", DEVLOOP_LIB=str(store.package_root()))
-    try:
-        subprocess.Popen(
-            [str(tick), project],
-            start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            env=env,
-        )
-    except OSError:
-        pass  # the next cron tick collects the run anyway
-
-
 def run(project, run_id) -> int:
     rd = store.run_dir(project, run_id)
     req = runs.read_request(project, run_id)
@@ -348,4 +331,7 @@ def finish(project, rd, req, code, reason):
     finally:
         runs.create_exit(rd, code=code, reason=reason)
         runs.remove_tree(project, rd.name, req)
-        _wake_tick(project)
+        try:
+            tick.spawn_detached(project, "wrapper")
+        except OSError:
+            pass  # the next cron tick collects the run anyway

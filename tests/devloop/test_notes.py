@@ -119,12 +119,12 @@ def test_ask_applies_default(proj, home, cfg_edit, tmp_path):
         question="Use A or B?",
         options=["A", "B"],
         recommended="A",
-        wait=False,
+        klass="tech",
     )
     assert q["applied"] == "A" and q["answer"] is None
     page = (home / "p" / "questions.md").read_text()
     assert "### q1" in page and "Use A or B?" in page
-    assert events(home)[-1]["kind"] == "question-defaulted"
+    assert events(home)[-1]["kind"] == "question-decided"
     sent = json.loads(log.read_text().splitlines()[-1])
     assert len(sent) == 1 and "q1" in sent[0]
 
@@ -146,12 +146,19 @@ def test_ask_wait_blocks_slice(proj, mk_slice, home):
 
 def test_ask_validates_its_input(proj):
     with pytest.raises(notes.NotesError):
-        notes.ask(proj, "q1", question="x", options=["A"], recommended="B", wait=False)
+        notes.ask(
+            proj, "q1", question="x", options=["A"], recommended="B", klass="tech"
+        )
     with pytest.raises(notes.NotesError):
-        notes.ask(proj, "q1", question="x", options=[], recommended="A", wait=False)
+        notes.ask(proj, "q1", question="x", options=[], recommended="A", klass="tech")
     with pytest.raises(notes.NotesError):
         notes.ask(
-            proj, "q1", question="x", options=["a | b"], recommended="a | b", wait=False
+            proj,
+            "q1",
+            question="x",
+            options=["a | b"],
+            recommended="a | b",
+            klass="tech",
         )
 
 
@@ -162,7 +169,7 @@ def test_questions_block_keeps_text_outside_markers(proj, home, cfg_edit, tmp_pa
     )
     cfg_edit(lambda c: c.update(questions={"path": str(page)}))
     notes.ask(
-        proj, "q1", question="Pick", options=["A", "B"], recommended="A", wait=False
+        proj, "q1", question="Pick", options=["A", "B"], recommended="A", klass="tech"
     )
     notes.ask(
         proj,
@@ -170,7 +177,7 @@ def test_questions_block_keeps_text_outside_markers(proj, home, cfg_edit, tmp_pa
         question="Pick again",
         options=["A", "B"],
         recommended="B",
-        wait=False,
+        klass="tech",
     )
     text = page.read_text()
     assert text.startswith("# My page\nnotes above\n") and text.endswith(
@@ -184,7 +191,7 @@ def test_questions_page_without_markers_gets_a_block_appended(proj, cfg_edit, tm
     page = tmp_path / "owner-page.md"
     page.write_text("only owner text\n")
     cfg_edit(lambda c: c.update(questions={"path": str(page)}))
-    notes.ask(proj, "q1", question="Pick", options=["A"], recommended="A", wait=False)
+    notes.ask(proj, "q1", question="Pick", options=["A"], recommended="A", klass="tech")
     assert page.read_text().startswith("only owner text\n")
     assert "### q1" in page.read_text()
 
@@ -195,14 +202,14 @@ def test_unbalanced_markers_are_refused_without_damage(proj, cfg_edit, tmp_path)
     cfg_edit(lambda c: c.update(questions={"path": str(page)}))
     with pytest.raises(store.StoreError):
         notes.ask(
-            proj, "q1", question="Pick", options=["A"], recommended="A", wait=False
+            proj, "q1", question="Pick", options=["A"], recommended="A", klass="tech"
         )
     assert page.read_text() == "text\n<!-- devloop:questions -->\nunfinished\n"
 
 
 def test_answer_changes_the_applied_option(proj, home):
     notes.ask(
-        proj, "q1", question="Pick", options=["A", "B"], recommended="A", wait=False
+        proj, "q1", question="Pick", options=["A", "B"], recommended="A", klass="tech"
     )
     notes.answer(proj, "q1", "B")
     text = (home / "p" / "questions.md").read_text()
@@ -211,7 +218,12 @@ def test_answer_changes_the_applied_option(proj, home):
         notes.answer(proj, "q1", "C")
     with pytest.raises(notes.NotesError, match="answered"):
         notes.ask(
-            proj, "q1", question="Pick", options=["A", "B"], recommended="A", wait=False
+            proj,
+            "q1",
+            question="Pick",
+            options=["A", "B"],
+            recommended="A",
+            klass="tech",
         )
 
 
@@ -254,7 +266,7 @@ def test_owner_edit_of_the_answer_line_is_read_back(proj, mk_slice, home, monkey
 
 def test_owner_edit_with_an_unknown_option_becomes_a_problem(proj, home):
     notes.ask(
-        proj, "q1", question="Pick", options=["A", "B"], recommended="A", wait=False
+        proj, "q1", question="Pick", options=["A", "B"], recommended="A", klass="tech"
     )
     page = home / "p" / "questions.md"
     page.write_text(page.read_text().replace("- Answer:", "- Answer: Z"))
@@ -402,7 +414,7 @@ def test_ask_refuses_reserved_hold_keys(proj, mk_slice, monkeypatch):
                 question="x",
                 options=["approve"],
                 recommended="approve",
-                wait=False,
+                klass="tech",
             )
 
 
@@ -413,7 +425,7 @@ def test_headless_ask_refused_for_a_held_slice(proj, mk_slice, monkeypatch):
     monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
     with pytest.raises(notes.NotesError, match="owner"):
         notes.ask(
-            proj, k, question="Spend?", options=["yes"], recommended="yes", wait=False
+            proj, k, question="Spend?", options=["yes"], recommended="yes", klass="tech"
         )
 
 
@@ -482,10 +494,15 @@ def test_ask_with_wait_posts_the_question_and_how_to_answer(
 def test_ask_without_wait_says_what_it_is_doing(proj, home, cfg_edit, tmp_path):
     posts = _json_notify(tmp_path, cfg_edit)
     notes.ask(
-        proj, "q3", question="A or B?", options=["A", "B"], recommended="B", wait=False
+        proj,
+        "q3",
+        question="A or B?",
+        options=["A", "B"],
+        recommended="B",
+        klass="tech",
     )
     text = posts()[-1]
-    assert "Going with B now; answer to change it." in text
+    assert "Tech lead decided q3: B. Override on the dashboard." in text
     assert "Waiting on you" not in text
 
 
@@ -497,7 +514,7 @@ def test_question_post_is_scrubbed(proj, home, cfg_edit, tmp_path):
         question="Use key ghp_abcdefghijklmnop1234567 in /home/x/secret/file?",
         options=["yes", "no"],
         recommended="no",
-        wait=False,
+        klass="tech",
     )
     text = posts()[-1]
     assert "ghp_" not in text and "/home/x/secret" not in text

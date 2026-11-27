@@ -3,18 +3,23 @@
 # a failure. A mutation whose tests still pass is a survivor. Usage: tests/devloop/mutations.sh
 # The edits are exact-text replacements (a stale edit fails the script, so none can rot).
 set -uo pipefail
+# A same-size edit within one second would otherwise leave a stale mutated .pyc behind.
+export PYTHONDONTWRITEBYTECODE=1
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PY="${PYTHON:-$ROOT/.venv/bin/python}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 cp -r "$ROOT/devloop" "$ROOT/hooks" "$ROOT/bin" "$ROOT/skills" "$ROOT/tests" "$ROOT/conftest.py" "$ROOT/pyproject.toml" "$WORK/"
 find "$WORK" -name __pycache__ -prune -exec rm -rf {} +
-killed=0; survived=0; stale=0
+killed=0; survived=0; stale=0; redbase=0
 declare -a SURVIVORS
 
 # mutate NAME FILE OLD NEW TESTS...
 mutate() {
   local name="$1" file="$2" old="$3" new="$4"; shift 4
+  if ! (cd "$WORK" && "$PY" -m pytest -q -x -p no:cacheprovider "$@" >/dev/null 2>&1); then
+    echo "RED-BASE $name (tests fail before the edit)"; redbase=$((redbase+1)); return
+  fi
   cp "$WORK/$file" "$WORK/$file.orig"
   if ! OLD="$old" NEW="$new" F="$WORK/$file" "$PY" - <<'PYEOF'
 import os, sys
@@ -26,10 +31,14 @@ PYEOF
   then
     echo "STALE   $name (text not found in $file)"; stale=$((stale+1)); mv "$WORK/$file.orig" "$WORK/$file"; return
   fi
-  if (cd "$WORK" && "$PY" -m pytest -q -x -p no:cacheprovider "$@" >/dev/null 2>&1); then
-    echo "SURVIVED $name"; survived=$((survived+1)); SURVIVORS+=("$name")
-  else
+  # A kill is pytest exit 1 (a failed assertion). Exit 2 to 5 is a collection, usage or
+  # setup error, which proves nothing about the tests.
+  (cd "$WORK" && "$PY" -m pytest -q -x -p no:cacheprovider "$@" >/dev/null 2>&1)
+  rc=$?
+  if [ "$rc" -eq 1 ]; then
     echo "killed   $name"; killed=$((killed+1))
+  else
+    echo "SURVIVED $name (pytest exit $rc)"; survived=$((survived+1)); SURVIVORS+=("$name")
   fi
   mv "$WORK/$file.orig" "$WORK/$file"
 }
@@ -50,7 +59,7 @@ mutate "processed run id is never recorded" devloop/slices.py \
   '        s["processed_run_ids"] = (s["processed_run_ids"] + [run_id])[-500:]' '        pass' \
   $T/test_runs_apply.py::test_apply_replay_counts_once
 mutate "KINDS loses the test entry" devloop/runs.py \
-  '    "test": Kind("tester", 7200, 1200, "testexit", False, True),' '' \
+  '    "test": Kind("tester", 7200, 1200, "testexit", False, True, "script", "none"),' '' \
   $T/test_runs_dispatch.py::test_every_kind_has_reader_and_slot
 mutate "evidence key from the slice phase at apply time" devloop/apply.py \
   "ev_kind = f\"{req['purpose']}:{req['reviewer']}\"" \
@@ -259,7 +268,7 @@ mutate "cron read error counts as empty" devloop/cron.py \
             return ""' \
   $T/test_cron.py::test_cron_read_error_is_not_empty
 mutate "hex runs are not scrubbed" devloop/scrub.py \
-  '        (_HEX, "[ref]"),' '' \
+  '    for rx in (_PATH, _HEX):' '    for rx in (_PATH,):' \
   $T/test_snapshot_status.py::test_scrub_removes_sha_and_path
 mutate "snapshot hash includes digits" devloop/snapshot.py \
   '"outputs": [(n, DIGITS.sub("", t)) for n, t, _ok in outputs],' '"outputs": [(n, t) for n, t, _ok in outputs],' \
@@ -378,6 +387,114 @@ mutate "the reservation amount is not frozen at dispatch" devloop/dispatch.py \
   '        req["memory_mb"] = projmod.memory_mb(cfg, kind)' '        pass' \
   $T/test_runs_limits.py::test_dispatch_freezes_the_reservation_amount
 
+mutate "transcript cache keeps paths nobody needs" devloop/dash/transcript.py \
+  '        for path in [p for p in self.entries if p not in keep]:
+            del self.entries[path]' '        pass' \
+  $T/dash/test_transcript.py::test_cache_evicts_a_previously_cached_path
+mutate "reader cursor jumps to the fstat size" devloop/dash/transcript.py \
+  '        entry.offset = start + len(data)' '        entry.offset = end' \
+  $T/dash/test_transcript.py::test_truncate_between_fstat_and_read_then_regrow
+mutate "one bad transcript line stops the reader" devloop/dash/transcript.py \
+  '        except _LINE_ERRORS:
+            return' '        except ZeroDivisionError:
+            return' \
+  $T/dash/test_transcript.py::test_parser_error_on_one_line_keeps_the_next
+mutate "reader trusts the stat identity, not the open file" devloop/dash/transcript.py \
+  '        ident, end = (fs.st_dev, fs.st_ino), fs.st_size' '        ident, end = (entry.ident or (fs.st_dev, fs.st_ino)), fs.st_size' \
+  $T/dash/test_transcript.py::test_path_replaced_between_stat_and_open_reads_new_file_only
+mutate "the first read ignores the tail limit" devloop/dash/transcript.py \
+  '        if (first and end > TAIL_BYTES) or end - entry.offset > STEP_BYTES:' '        if end - entry.offset > STEP_BYTES:' \
+  $T/dash/test_transcript.py::test_first_read_is_bounded_by_tail_bytes
+
+mutate "a shell command word reaches the page without the allowlist" devloop/dash/transcript.py \
+  '        return word if word in PUBLIC_COMMANDS else "?"' '        return word' \
+  $T/test_dash_server.py::test_transcript_secrets_reach_no_route $T/dash/test_transcript.py::test_shell_word_cases
+mutate "drawer run history is filed under the wrong key" devloop/dash/view.py \
+  '                    self.history.setdefault(rec["key"], []).append(rec)' \
+  '                    self.history.setdefault(rec["role"], []).append(rec)' \
+  $T/dash/test_live.py::test_drawer_keeps_finished_run_history
+mutate "the wrapper keeps its own list of Codex kinds" devloop/wrap.py \
+  'CODEX_KINDS = tuple(k for k, s in runs.KINDS.items() if s.harness == "codex")' \
+  'CODEX_KINDS = ("codex-review", "codex-fix")' \
+  $T/dash/test_transcript.py::test_codex_kinds_derived_from_registry
+mutate "an event kind carries a tag outside the frozen set" devloop/status.py \
+  '{e.get('"'"'key'"'"')}", "DROPPED"' '{e.get('"'"'key'"'"')}", "DROP"' \
+  $T/test_dash_view.py::test_every_event_kind_has_a_tag
+mutate "the view schema number stays at 1" devloop/dash/view.py \
+  'SCHEMA = 2' 'SCHEMA = 1' \
+  $T/test_dash_view.py::test_schema_is_two
+mutate "a live card key is renamed in the model only" devloop/dash/live.py \
+  '                "tools": st.tools if st else 0,' '                "tool_count": st.tools if st else 0,' \
+  $T/test_dash_view.py::test_view_keys_match_schema $T/dash/test_live.py::test_live_card_fields
+
+mutate "a held slice shows twice in Needs you" devloop/dash/view.py \
+  '    held_keys = {s["key"] for s in ctx.slices if _is_hold(s)}' \
+  '    held_keys = {s["key"] for s in ctx.slices if s["phase"] == "HELD"}' \
+  $T/test_dash_view.py::test_each_held_or_parked_slice_shows_once
+mutate "the tick probe creates its lock file" devloop/tick.py \
+  '        st = os.stat(store.state_path(project) / "tick.lock")' \
+  '        (store.state_dir(project) / "tick.lock").touch()
+        st = os.stat(store.state_path(project) / "tick.lock")' \
+  $T/dash/test_controls.py::test_get_routes_write_nothing
+mutate "an answer is marked done before its effects and event" devloop/notes.py \
+  '        _effects(project, q["key"], receipt["choice"])
+' \
+  '        q["decision"] = {**receipt, "status": DONE}
+        q["applied"] = receipt["choice"]
+        _save_questions(path, before, qs, after, had)
+        _effects(project, q["key"], receipt["choice"])
+' \
+  $T/dash/test_controls.py::test_answer_event_once_across_append_failure
+mutate "a replayed answer appends its event again" devloop/notes.py \
+  '            once=("decision", receipt["id"]),' '            once=None,' \
+  $T/dash/test_controls.py::test_answer_event_once_across_append_failure
+mutate "a POST is not checked for its token" devloop/dash/actions.py \
+  '    if not hmac.compare_digest(token.encode(), handler.server.token.encode()):' \
+  '    if False:' \
+  $T/dash/test_controls.py::test_every_post_route_refuses_bad_token_or_origin
+mutate "a POST is not checked for its origin" devloop/dash/actions.py \
+  '    if not _origin_ok(handler):' '    if False:' \
+  $T/dash/test_controls.py::test_every_post_route_refuses_bad_token_or_origin
+mutate "the answer key is sealed as a plain id" devloop/dash/view.py \
+  '            "answer_key": "qkey?",' '            "answer_key": "id?",' \
+  $T/dash/test_controls.py::test_hold_form_key_survives_a_hex_looking_slice_name
+mutate "a blank form field is dropped from a POST" devloop/dash/actions.py \
+  '            keep_blank_values=True,' '            keep_blank_values=False,' \
+  $T/dash/test_controls.py::test_post_body_contract
+mutate "the version is compared before the questions lock" devloop/notes.py \
+  '    return _apply_answer(project, key, choice, via=via, version=expect_version)' \
+  '    pre = load_questions(questions_path(project))[1].get(key)
+    if (
+        expect_version is not None
+        and pre is not None
+        and expect_version != question_version(pre)
+    ):
+        raise AnswerStale(MSG_STALE)
+    return _apply_answer(project, key, choice, via=via, version=None)' \
+  $T/dash/test_controls.py::test_reask_between_check_and_lock_is_refused
+mutate "the command line pauses without the shared path" devloop/state_cli.py \
+  '            store.set_paused(args.project, args.cmd == "pause", "cli")' \
+  '            flag = store.state_dir(args.project) / "PAUSE"
+            flag.touch() if args.cmd == "pause" else flag.unlink(missing_ok=True)' \
+  $T/dash/test_controls.py::test_cli_and_dashboard_pause_share_one_path
+mutate "a second digest rule for question versions" devloop/notes.py \
+  '    return store.canonical_digest(q)' \
+  '    return __import__("hashlib").sha256(repr(sorted(q.items())).encode()).hexdigest()[:16]' \
+  $T/dash/test_controls.py::test_version_digest_fixtures
+mutate "a page without a Class line reads as product" devloop/notes.py \
+  '            klass = "tech" if raw.get("wait") == "no" else "product"' \
+  '            klass = "product"' \
+  $T/dash/test_controls.py::test_old_questions_page_class_from_wait
+mutate "the tick acknowledges decisions it did not carry" devloop/tick.py \
+  '        state[snapshot.ACKED] = {**(state.get(snapshot.ACKED) or {}), **snap.decisions}' \
+  '        state[snapshot.ACKED] = {**(state.get(snapshot.ACKED) or {}), **snapshot.build(project).decisions}' \
+  $T/test_tick.py::test_override_during_model_call_reaches_next_prompt
+mutate "an unacknowledged decision does not wake a fresh tick" devloop/tick.py \
+  '        and not snap.decisions' '        and True' \
+  $T/test_tick.py::test_override_during_model_call_reaches_next_prompt
+mutate "overlapping tick posts both spawn" devloop/dash/actions.py \
+  '    with srv.tick_lock:' '    with __import__("contextlib").nullcontext():' \
+  $T/dash/test_controls.py::test_overlapping_tick_posts_spawn_once
 G=$T/guard
 mutate "the push SHA header keeps duplicate or spaced head lines" devloop/store.py \
   '{**header, **fields}.items()' 'header.items()' \
@@ -517,7 +634,7 @@ mutate "a base side that touches a slice file still carries evidence" devloop/ca
   '    clash = sorted(own & incoming)' '    clash = []' \
   $T/test_carry.py::test_main_touching_a_slice_file_does_not_carry
 mutate "slices of one row are listed as overlapping" devloop/overlap.py \
-  'if a["row"] == b["row"] or files[a["key"]] is None' 'if files[a["key"]] is None' \
+  'if a["row"] == b["row"] or a["repo"] != b["repo"]:' 'if a["repo"] != b["repo"]:' \
   $T/test_overlap.py::test_same_row_is_not_listed
 
 # PUSH-GATE S1: the ref policy in git pre-push, the PR gate, and the merge guard split.
@@ -646,5 +763,5 @@ mutate "the installer reads project configs by its own walk" devloop/install.py 
   '    repos, unreadable = [], []' tests/devloop/test_configured_repos.py
 
 echo
-echo "killed: $killed  survived: $survived  stale: $stale"
-[ "$survived" -eq 0 ] && [ "$stale" -eq 0 ]
+echo "killed: $killed  survived: $survived  stale: $stale  red-base: $redbase"
+[ "$survived" -eq 0 ] && [ "$stale" -eq 0 ] && [ "$redbase" -eq 0 ]

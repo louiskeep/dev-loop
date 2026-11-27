@@ -12,17 +12,21 @@ _HEX = re.compile(r"\b[0-9a-f]{7,40}\b")
 _PATH = re.compile(r"(?:~|(?<![\w.:/-]))/[^\s/]+(?:/[^\s/]+)+")
 
 
+def redact_secrets(text: str) -> str:
+    """Replace only secret-shaped spans (URL credentials, known token forms, long keys).
+
+    Paths and commit ids stay, so text the owner wrote reads as written.
+    """
+    for rx in (_URL_CRED, _TOKEN, _LONG):
+        text = rx.sub("[redacted]", text)
+    return text
+
+
 def scrub(text, limit: int = 160) -> str:
     """Replace secrets, commit ids and paths, then cut to `limit` characters."""
-    out = " ".join(str(text).split())
-    for rx, repl in (
-        (_URL_CRED, "[redacted]"),
-        (_TOKEN, "[redacted]"),
-        (_LONG, "[redacted]"),
-        (_PATH, "[ref]"),
-        (_HEX, "[ref]"),
-    ):
-        out = rx.sub(repl, out)
+    out = redact_secrets(" ".join(str(text).split()))
+    for rx in (_PATH, _HEX):
+        out = rx.sub("[ref]", out)
     return out[:limit]
 
 

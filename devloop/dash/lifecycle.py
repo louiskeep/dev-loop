@@ -197,7 +197,9 @@ def _detach(project, args):
         value = getattr(args, name)
         if value is not None:
             argv += [f"--{name}", str(value)]
-    env = dict(os.environ, DEVLOOP_LIB=str(store.package_root()))
+    # The server answers questions for the owner, so it must not run as a headless session.
+    env = {k: v for k, v in os.environ.items() if k != "DEVLOOP_HEADLESS"}
+    env["DEVLOOP_LIB"] = str(store.package_root())
     with open(_files(project)["log"], "ab") as log:
         subprocess.Popen(
             argv,

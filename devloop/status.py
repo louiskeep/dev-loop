@@ -5,6 +5,7 @@ Public text is built from counts, IDs and fixed words only. Free text a model wr
 reach Slack or the vault copy; `scrub` is the second layer, not the first.
 """
 
+import collections
 import datetime
 import json
 from pathlib import Path
@@ -172,23 +173,66 @@ def write_status(project) -> None:
 
 # --- the tick line ------------------------------------------------------------
 
-_WORDS = {
-    "slice-moved": lambda e, cfg: (
-        f"moved {e.get('row')} {e.get('slice')} to {e.get('to')}"
+# One entry per event kind: its fixed wording and the tag the dashboard feed shows.
+EventDesc = collections.namedtuple("EventDesc", "words tag")
+EVENT_TAGS = (
+    "DISPATCHED",
+    "APPLIED",
+    "MOVED",
+    "MERGED",
+    "CLOSED",
+    "QUESTION",
+    "DECIDED",
+    "ANSWERED",
+    "DROPPED",
+    "PAUSED",
+    "RESUMED",
+    "TICK",
+)
+EVENTS = {
+    "slice-moved": EventDesc(
+        lambda e, cfg: f"moved {e.get('row')} {e.get('slice')} to {e.get('to')}",
+        "MOVED",
     ),
-    "merged": lambda e, cfg: f"merged {e.get('row')} {e.get('slice')}",
-    "run-dispatched": lambda e, cfg: (
-        f"started {projmod.role_label(cfg, e.get('run_kind'))} on {e.get('key')}"
+    "merged": EventDesc(
+        lambda e, cfg: f"merged {e.get('row')} {e.get('slice')}", "MERGED"
     ),
-    "run-applied": lambda e, cfg: f"applied a run on {e.get('key')}",
-    "question-defaulted": lambda e, cfg: (
-        f"used the default for question {e.get('key')}"
+    "run-dispatched": EventDesc(
+        lambda e, cfg: (
+            f"started {projmod.role_label(cfg, e.get('run_kind'))} on {e.get('key')}"
+        ),
+        "DISPATCHED",
     ),
-    "question-waiting": lambda e, cfg: f"waiting on your answer to {e.get('key')}",
-    "row-closed": lambda e, cfg: f"closed row {e.get('row')}",
-    "apply-mismatch": lambda e, cfg: f"dropped a stale result on {e.get('key')}",
+    "run-applied": EventDesc(
+        lambda e, cfg: f"applied a run on {e.get('key')}", "APPLIED"
+    ),
+    "question-defaulted": EventDesc(
+        lambda e, cfg: f"used the default for question {e.get('key')}", "DECIDED"
+    ),
+    "question-decided": EventDesc(
+        lambda e, cfg: f"Tech lead decided question {e.get('key')}", "DECIDED"
+    ),
+    "question-answered": EventDesc(
+        lambda e, cfg: f"you answered question {e.get('key')}", "ANSWERED"
+    ),
+    "loop-paused": EventDesc(lambda e, cfg: "loop paused", "PAUSED"),
+    "loop-resumed": EventDesc(lambda e, cfg: "loop resumed", "RESUMED"),
+    "tick-requested": EventDesc(lambda e, cfg: "a tick was requested", "TICK"),
+    "question-waiting": EventDesc(
+        lambda e, cfg: f"waiting on your answer to {e.get('key')}", "QUESTION"
+    ),
+    "row-closed": EventDesc(lambda e, cfg: f"closed row {e.get('row')}", "CLOSED"),
+    "apply-mismatch": EventDesc(
+        lambda e, cfg: f"dropped a stale result on {e.get('key')}", "DROPPED"
+    ),
 }
-EVENT_KINDS = tuple(_WORDS)
+EVENT_KINDS = tuple(EVENTS)
+
+
+def event_tag(kind):
+    """The feed tag for an event kind, or None for a kind with no wording."""
+    desc = EVENTS.get(kind)
+    return desc.tag if desc else None
 
 
 def event_words(ev, cfg):
@@ -197,12 +241,12 @@ def event_words(ev, cfg):
     Event values come from `devloop-state event` too, so only plain IDs pass. The run
     kind is looked up in the role table, never printed.
     """
-    make = _WORDS.get(ev.get("kind"))
-    if make is None:
+    desc = EVENTS.get(ev.get("kind"))
+    if desc is None:
         return None
     safe = {k: plain(v) for k, v in ev.items() if k != "run_kind"}
     safe["run_kind"] = ev.get("run_kind")
-    return make(safe, cfg)
+    return desc.words(safe, cfg)
 
 
 def summarize(project, since: str, limit=6) -> str:

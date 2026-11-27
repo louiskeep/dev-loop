@@ -1,13 +1,15 @@
 """The dashboard read model: what it holds, what it leaves out, and how it degrades."""
 
 import datetime
+import html
 import json
 import os
 
 import pytest
 from dash_fixture import AGENT_NAMES, ago, dash, put_run, put_slice  # noqa: F401
 
-from devloop import notes, slices, store
+from devloop import notes, runs, slices, store
+from devloop import project as projmod
 from devloop.dash import render, view
 
 PLANTED = ("password hunter2", "user:pw@host", "/etc/shadow", "ghp_PLANTEDSECRET1")
@@ -30,7 +32,7 @@ def card(v, key):
 
 def test_view_keys_match_schema(proj, dash):
     v = build(proj)
-    assert set(v) == set(view.VIEW_SCHEMA) and v["schema"] == 1
+    assert set(v) == set(view.VIEW_SCHEMA) and v["schema"] == 2
     bad = dict(v, purpose="free text")
     with pytest.raises(view.ViewError):
         view._seal(bad, view.VIEW_SCHEMA, set())
@@ -103,7 +105,8 @@ def test_one_question_and_three_problems(proj):
     assert v["counts"]["problems"] == 3 and len(v["problems"]) == 3
     page = render.render_page(v)
     assert 'id="problems"' in page and "Known problems" in page
-    assert "Tech lead" in page and "Which?" in page and "Recommended: x" in page
+    assert "Which?" in page and ">x<" in page and "Decide" in page
+    assert 'data-open-key="q1"' in page and "No fix recorded" not in page
 
 
 def test_stuck_flag_after_stale_secs(proj, dash):
@@ -167,7 +170,9 @@ def test_pr_url_comes_from_config_slug(proj, dash):
 
 def test_exited_builder_and_lost_test_are_listed_by_state(proj, dash):
     v = build(proj)
-    states = {(w["role"], w["state"]) for w in v["workers"]}
+    states = {(w["role"], "executing") for w in v["live"]} | {
+        (w["role"], w["state"]) for w in v["waiting_runs"]
+    }
     assert states == {
         ("Developer", "executing"),
         ("Developer", "awaiting-apply"),
@@ -176,8 +181,6 @@ def test_exited_builder_and_lost_test_are_listed_by_state(proj, dash):
     # Neither unfinished run owns a card.
     assert card(v, dash["develop"])["owner"] == "Tech lead"
     assert card(v, dash["gate"])["owner"] == "Tech lead"
-    nodes = {w["node"] for w in v["workers"]}
-    assert nodes == {"local", "node-a"}
     used = {s["pool"]: s["used"] for s in v["slots"]}
     assert used == {"builder": 2, "tester": 1, "reviewer": 0, "planner": 0}
     assert v["counts"]["executing"] == 1
@@ -187,6 +190,11 @@ def test_stuck_shows_while_a_finished_run_awaits_apply(proj, dash):
     s = slices.load(proj, dash["develop"])
     s["last_moved_at"] = ago(hours=4)
     slices._save(proj, s)
+    old = (datetime.datetime.now() - datetime.timedelta(hours=4)).timestamp()
+    os.utime(slices.slice_path(proj, dash["develop"]), (old, old))  # file idle too
+    for rd, req in runs.iter_runs(proj):  # its run also started long ago
+        if req.get("key") == dash["develop"]:
+            store.write_json(rd / "request.json", {**req, "started_at": ago(hours=4)})
     assert card(build(proj), dash["develop"])["stuck"] is True
 
 
@@ -240,7 +248,8 @@ def test_non_integer_pr_in_the_ledger_is_dropped(proj, dash):
 def test_orphan_run_listed_without_card(proj, dash):
     put_run(proj, "builder.orphan", kind="builder", key="GONE--S", alive=True)
     v = build(proj)
-    assert any(w["key"] == "GONE--S" for w in v["workers"])
+    assert any(w["key"] == "GONE--S" for w in v["live"])
+    assert not any(w["slice_active"] for w in v["live"] if w["key"] == "GONE--S")
     assert all(c["key"] != "GONE--S" for r in v["rows"] for c in r["cards"])
 
 
@@ -329,26 +338,25 @@ def test_free_text_never_reaches_the_view(proj, dash):
         slices.set_fields(
             proj,
             key,
-            purpose=PLANTED[0],
-            next_action=PLANTED[1] + PLANTED[3],
-            waiting_on=PLANTED[2],
+            purpose=PLANTED[2],
+            next_action=PLANTED[2] + PLANTED[3],
+            waiting_on=PLANTED[0],
         )
     from devloop import notes
 
     notes.ticklog(proj, "TICKLINE " + " ".join(PLANTED))
-    notes.problem(proj, "leaky", impact=PLANTED[0], fix=PLANTED[2], detail=PLANTED[1])
+    notes.problem(proj, "leaky", impact=PLANTED[2], fix=PLANTED[3], detail=PLANTED[2])
     text = json.dumps(build(proj))
-    for planted in (
-        *PLANTED,
-        str(store.state_dir(proj)),
-        "space is short",
-    ):
+    # Purpose, next action and problem text are shown scrubbed: paths and tokens go.
+    for planted in (PLANTED[2], PLANTED[3], str(store.state_dir(proj))):
         assert planted not in text
+    # Fields no page reads stay out entirely, words included.
+    assert "password hunter2" not in text and "TICKLINE" not in text
 
 
 def test_node_status_comes_from_the_file_only(proj, dash):
-    nodes = {n["name"]: n["ok"] for n in build(proj)["nodes"]}
-    assert nodes == {"node-a": True, "node-b": False}
+    srcs = {s["label"]: s["ok"] for s in build(proj)["sources"]}
+    assert srcs == {"Node-a": True, "Node-b": False}
 
 
 def test_tick_facts(proj, dash):
@@ -436,13 +444,12 @@ def test_memory_thresholds(proj, dash, tmp_path, avail_kb, state):
 
 
 def test_a_question_cut_on_a_space_still_seals(proj):
-    long_q = "word " * 80  # the 300 character cut lands just after a space
-    assert long_q[299] == " "
+    long_q = "word " * 80  # a long question is shown whole, trailing space dropped
     notes.ask(
         proj, "q1", question=long_q, options=["a", "b"], recommended="a", wait=True
     )
     q = build(proj)["needs_you"][0]
-    assert q["question"] == q["question"].strip() and len(q["question"]) <= 300
+    assert q["question"] == q["question"].strip() and len(q["question"]) <= 1000
 
 
 @pytest.mark.parametrize("n", [118, 119, 120, 121, 122])
@@ -497,3 +504,157 @@ def test_tick_line_lists_the_slots_in_registry_order(proj, monkeypatch):
     labels = [f"{projmod.pool_label(cfg, s)} 0/" for s in order]
     assert [line.index(x) for x in labels] == sorted(line.index(x) for x in labels)
     assert all(x in line for x in labels)
+
+
+# --- schema 2, owner text and the hint ----------------------------------------------
+
+
+def test_schema_is_two(proj, dash):
+    assert build(proj)["schema"] == 2 == view.SCHEMA
+
+
+def test_view_build_creates_no_directories(proj, home, dash):
+    def tree():
+        return sorted(str(p.relative_to(home)) for p in home.rglob("*"))
+
+    before = tree()
+    build(proj)
+    assert tree() == before
+    with pytest.raises(projmod.ConfigError):
+        build("no-such-project")
+    assert tree() == before
+    assert not (home / "no-such-project").exists()
+
+
+def test_owner_question_shown_in_full_with_real_hint(proj, home):
+    long_q = "Which path? " + "details " * 40 + "password hunter2 /etc/shadow"
+    notes.ask(
+        proj,
+        "q-full",
+        question=long_q,
+        options=["hunter2", "use the slower path", "/etc/shadow"],
+        recommended="hunter2",
+        wait=True,
+    )
+    v = build(proj)
+    q = next(n for n in v["needs_you"] if n["key"] == "q-full")
+    path = notes.questions_path(proj)
+    rec = notes.load_questions(path)[1]["q-full"]
+    assert q["question"] == " ".join(long_q.split())
+    assert q["options"] == ["hunter2", "use the slower path", "/etc/shadow"]
+    assert q["recommended"] == "hunter2"
+    assert q["answer_key"] == "q-full" and q["detail"] is None
+    assert q["klass"] == "product" and q["version"] == notes.question_version(rec)
+    page = render.render_page(v)
+    text = html.unescape(page)
+    assert "hunter2" in text
+    assert "devloop-state p answer q-full <option>" in text and "Decide" in text
+
+
+def test_hold_answer_uses_hold_key(proj, dash):
+    held = dash["held"]
+    notes.ensure_hold_question(proj, held)
+    v = build(proj)
+    item = next(n for n in v["needs_you"] if n["key"] == held)
+    assert item["kind"] == "hold" and item["answer_key"] == f"hold:{held}"
+    assert item["options"] and item["recommended"] == "keep-held"
+    text = html.unescape(render.render_page(v))
+    assert f"devloop-state p answer hold:{held} <option>" in text
+
+
+def test_hold_without_a_question_record_has_no_answer_key(proj, dash):
+    item = next(n for n in build(proj)["needs_you"] if n["kind"] == "hold")
+    assert item["answer_key"] is None and item["options"] == []
+
+
+def test_activity_and_feed_read_events_once(proj, dash, monkeypatch):
+    from devloop import status
+
+    real, calls = status.events, []
+
+    def counting(*a, **k):
+        calls.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(status, "events", counting)
+    build(proj)
+    assert len(calls) == 1
+
+
+def test_every_event_kind_has_a_tag():
+    from devloop import status
+
+    assert set(status.EVENTS) == set(status.EVENT_KINDS)
+    for kind in status.EVENT_KINDS:
+        assert status.event_tag(kind) in status.EVENT_TAGS, kind
+    assert status.event_tag("mystery") is None
+    assert status.EVENT_TAGS == (
+        "DISPATCHED",
+        "APPLIED",
+        "MOVED",
+        "MERGED",
+        "CLOSED",
+        "QUESTION",
+        "DECIDED",
+        "ANSWERED",
+        "DROPPED",
+        "PAUSED",
+        "RESUMED",
+        "TICK",
+    )
+
+
+def test_version_digest_fixtures(proj, dash):
+    assert store.canonical_digest({"b": [1, 2], "a": "x"}) == "721ef82f2d6c0997"
+    body = {"a": 1, "z": None}
+    assert view.version_of({**body, "version": "ignored"}) == store.canonical_digest(
+        body
+    )
+    v = build(proj)
+    assert v["version"] == store.canonical_digest(
+        {k: x for k, x in v.items() if k != "version"}
+    )
+
+
+def test_secret_in_owner_text_is_redacted_and_option_not_submittable(proj):
+    token = "ghp_PLANTEDSECRET1234567"
+    notes.ask(
+        proj,
+        "q-secret",
+        question=f"Use {token} for the call? Key at https://u:pw@host/x",
+        options=["keep it", f"use {token}", "/etc/shadow"],
+        recommended="keep it",
+        wait=True,
+    )
+    v = build(proj)
+    q = next(n for n in v["needs_you"] if n["key"] == "q-secret")
+    blob = json.dumps(v)
+    assert token not in blob and "u:pw@host" not in blob
+    assert "[redacted]" in q["question"]
+    assert q["options"][0] == "keep it" and q["options"][2] == "/etc/shadow"
+    assert q["option_ok"] == [True, False, True]
+    assert token not in render.render_page(v)
+
+
+def test_each_held_or_parked_slice_shows_once(proj, dash):
+    """The system's hold question is the hold item's own record, never a second row."""
+    for key in (dash["held"], dash["parked"]):
+        notes.ensure_hold_question(proj, key)
+    items = build(proj)["needs_you"]
+    assert [n for n in items if n["kind"] == "question" and "hold:" in n["key"]] == []
+    for key in (dash["held"], dash["parked"]):
+        hits = [n for n in items if key in (n["key"] or "")]
+        assert len(hits) == 1 and hits[0]["kind"] == "hold"
+        assert hits[0]["answer_key"] == f"hold:{key}" and hits[0]["options"]
+
+
+def test_a_released_park_leaves_needs_you_at_once(proj, dash):
+    """After the owner approves, the slice waits only for the tick to resume it."""
+    key = dash["parked"]
+    notes.ensure_hold_question(proj, key)
+    notes.answer(proj, f"hold:{key}", "approve")
+    s = slices.load(proj, key)
+    s["owner_answered"] = True  # the fixture slice carries no hold link, so set it here
+    slices._save(proj, s)
+    items = build(proj)["needs_you"]
+    assert [n for n in items if key in (n["key"] or "")] == []

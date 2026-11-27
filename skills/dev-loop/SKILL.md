@@ -64,8 +64,10 @@ page. Answer in plain language:
 ## answer
 
 When the user overrules a default or answers a held question, run
-`devloop-state PROJECT answer KEY CHOICE`. Held slices and owner parks need the `approve`
-choice on the question named `hold:KEY`. The command is refused inside a headless session.
+`devloop-state PROJECT answer KEY CHOICE`. The owner can also answer on the dashboard
+(Needs you, Decided for you), which does the same thing. Held slices and owner parks need the `approve`
+choice on the question named `hold:KEY`. The command is refused inside a headless session,
+which is the point.
 
 ## Headless mode (optional, off)
 

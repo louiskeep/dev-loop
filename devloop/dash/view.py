@@ -8,24 +8,26 @@ healthy cards still render.
 """
 
 import datetime
-import hashlib
-import json
 import re
 
-from .. import evidence, notes, runs, slices, snapshot, status, store
+from .. import evidence, notes, runs, slices, snapshot, status, store, tick
 from .. import project as projmod
-from ..scrub import plain, scrub
-from . import memory
+from ..scrub import plain, redact_secrets, scrub
+from . import live, memory, roadmap, transcript, words
 
-SCHEMA = 1
+SCHEMA = 2
+OWNER_TEXT_LIMIT = 1000
 SHIPPED_LIMIT = 20
+DECIDED_LIMIT = 20
 ACTIVITY_LIMIT = 20
 CHIPS = slices.PHASES[:10]
-NEEDS = ("question", "hold")
+NEEDS = ("question", "hold", "stuck")
 PROBLEMS = ("stuck", "problem", "unreadable")
 RUN_STATES = ("executing", "awaiting-apply", "awaiting-release")
 SHIPPED_KINDS = ("merge", "row-close")
 MEMORY_STATES = ("ok", "tight", "low")
+CLASSES = ("tech", "product")
+TRANSCRIPT_STATES = ("live", "starting", "outside", "none", "unreadable")
 
 # The fixed wording table: every `word` value in a view must be one of these.
 WORDS = frozenset(
@@ -37,6 +39,10 @@ WORDS = frozenset(
         *RUN_STATES,
         *SHIPPED_KINDS,
         *MEMORY_STATES,
+        *CLASSES,
+        *TRANSCRIPT_STATES,
+        *runs.STATUSES,
+        *slices.VERDICTS,
         *evidence.CODES,
         *evidence.REASON_WORDS,
         *status.EVENT_KINDS,
@@ -50,6 +56,11 @@ _CARD = {
     "phase": "word",
     "phase_index": "int",
     "held": "bool",
+    "hold": "bool",
+    "row_title": "owner_text?",
+    "released": "bool",
+    "waiting_text": "line?",
+    "waiting_key": "id?",
     "risk": "word?",
     "pr": "int?",
     "url": "url?",
@@ -57,6 +68,11 @@ _CARD = {
     "since": "at?",
     "owner": "label",
     "stuck": "bool",
+    "purpose": "line?",
+    "slice_desc": "line?",
+    "next_action": "line?",
+    "wait": "wait?",
+    "wait_for": "label?",
     "checklist": {
         "available": "bool",
         "met": "int",
@@ -112,12 +128,20 @@ VIEW_SCHEMA = {
         {
             "kind": "word",
             "key": "id?",
+            "row": "id?",
+            "slice": "id?",
+            "title": "owner_text?",
             "owner": "label",
             "count": "int?",
             "since": "at?",
-            "question": "line?",
-            "options": ["line"],
-            "recommended": "line?",
+            "answer_key": "qkey?",
+            "question": "owner_text?",
+            "detail": "owner_text?",
+            "options": ["owner_text"],
+            "option_ok": ["bool"],
+            "recommended": "owner_text?",
+            "klass": "word",
+            "version": "version?",
             "answer_at": "line?",
         }
     ],
@@ -130,19 +154,116 @@ VIEW_SCHEMA = {
             "since": "at?",
         }
     ],
-    "rows": [
-        {"row": "id", "oldest_at": "at?", "stuck": "bool", "cards": [_CARD]},
-    ],
-    "workers": [
+    "decided": [
         {
-            "role": "label",
-            "key": "id",
-            "node": "id",
-            "state": "word",
-            "started_at": "at?",
+            "key": "qkey",
+            "question": "owner_text?",
+            "detail": "owner_text?",
+            "options": ["owner_text"],
+            "option_ok": ["bool"],
+            "recommended": "owner_text?",
+            "applied": "owner_text?",
+            "answer": "owner_text?",
+            "at": "at?",
+            "version": "version",
         }
     ],
-    "nodes": [{"name": "id", "ok": "bool", "at": "at?"}],
+    "controls": {"paused": "bool", "tick_running": "bool"},
+    "known_problems": [
+        {
+            "key": "id",
+            "impact": "line?",
+            "detail": "line?",
+            "fix": "line?",
+            "open": "bool",
+            "closed_at": "at?",
+            "count": "int?",
+            "last_seen": "at?",
+        }
+    ],
+    "rows": [
+        {
+            "row": "id",
+            "title": "owner_text?",
+            "desc": "line?",
+            "done": "int",
+            "total": "int",
+            "oldest_at": "at?",
+            "stuck": "bool",
+            "cards": [_CARD],
+        },
+    ],
+    "kpi": {
+        "running": "int",
+        "slots": "int",
+        "needs_you": "int",
+        "merged_today": "int?",
+        "goal_title": "line?",
+        "goal_left": "int?",
+        "goal_total": "int?",
+        "tools_per_min": "int",
+        "free_mb": "int?",
+        "memory_state": "word?",
+        "last_pass_at": "at?",
+    },
+    "live": [
+        {
+            "ref": "id",
+            "role": "label",
+            "icon": "icon",
+            "key": "id",
+            "slice_active": "bool",
+            "phase": "word?",
+            "harness": "harness",
+            "model": "model?",
+            "started_at": "at?",
+            "state": "word",
+            "doing": (
+                "null",
+                {"tag": "tag", "target": "target?", "at": "at?", "running": "bool"},
+            ),
+            "tools": "int",
+            "partial": "bool",
+            "errors": "int",
+            "tokens_out": "int?",
+            "context": "int?",
+            "spark": ["int"],
+        }
+    ],
+    "waiting_runs": [
+        {"role": "label", "key": "id", "state": "word", "started_at": "at?"}
+    ],
+    "feed": [
+        {
+            "at": "at",
+            "tag": "tag",
+            "target": "target?",
+            "role": "label?",
+            "key": "id?",
+            "words": "line?",
+        }
+    ],
+    "drawers": [
+        {
+            "key": "id",
+            "runs": [
+                {
+                    "ref": "id",
+                    "role": "label",
+                    "icon": "icon",
+                    "harness": "harness",
+                    "started_at": "at?",
+                    "ended_at": "at?",
+                    "status": "word?",
+                    "verdict": "word?",
+                    "summary": "line?",
+                }
+            ],
+            "calls": [{"at": "at?", "tag": "tag", "target": "target?"}],
+            "files": [{"name": "target", "edits": "int"}],
+        }
+    ],
+    "sources": [{"label": "line", "ok": "bool", "why": "line?", "at": "at?"}],
     "slots": [{"pool": "id", "label": "label", "cap": "int", "used": "int"}],
     "memory": ("null", _MEMORY),
     "shipped": [
@@ -155,6 +276,7 @@ VIEW_SCHEMA = {
             "at": "at",
         }
     ],
+    "recent": [{"date": "line", "title": "owner_text", "bullets": ["owner_text"]}],
     "activity": [{"at": "at", "kind": "word", "words": "line"}],
     "parked": [_CARD],
 }
@@ -206,6 +328,47 @@ def _scalar(kind, value, labels, where):
         if not isinstance(value, str) or _VERSION.fullmatch(value) is None:
             raise ViewError(f"{where}: bad version")
         return value
+    if kind == "tag":
+        if value not in transcript.TOOL_TAGS and value not in status.EVENT_TAGS:
+            raise ViewError(f"{where}: tag not in the fixed table")
+        return value
+    if kind == "target":
+        if transcript.safe_target(value) != value:
+            raise ViewError(f"{where}: target is not a plain name")
+        return value
+    if kind == "model":
+        if transcript.safe_model(value) != value:
+            raise ViewError(f"{where}: model is not a plain name")
+        return value
+    if kind == "wait":
+        if value not in words.WAIT:
+            raise ViewError(f"{where}: wait not in the fixed table")
+        return value
+    if kind == "icon":
+        if value not in live.ICON_IDS:
+            raise ViewError(f"{where}: unknown icon")
+        return value
+    if kind == "harness":
+        if value not in runs.HARNESSES:
+            raise ViewError(f"{where}: unknown harness")
+        return value
+    if kind == "owner_text":
+        # The owner reads their own questions as written; only the page markers and
+        # line breaks are refused, because they would break the questions file.
+        if (
+            not isinstance(value, str)
+            or "\n" in value
+            or len(value) > OWNER_TEXT_LIMIT
+            or notes.BLOCK_START in value
+            or notes.BLOCK_END in value
+        ):
+            raise ViewError(f"{where}: owner text is not one plain line")
+        return value
+    if kind == "qkey":
+        try:
+            return notes._key(value)
+        except notes.NotesError:
+            raise ViewError(f"{where}: bad question key") from None
     if kind == "line":
         if not isinstance(value, str) or scrub(value, len(value) + 1) != value:
             raise ViewError(f"{where}: line is not plain")
@@ -235,9 +398,7 @@ def _seal(value, spec, labels, where="view"):
 
 def version_of(view) -> str:
     """16 hex of sha256 over the canonical JSON without the version key."""
-    body = {k: v for k, v in view.items() if k != "version"}
-    text = json.dumps(body, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
+    return store.canonical_digest({k: v for k, v in view.items() if k != "version"})
 
 
 # --- helpers --------------------------------------------------------------------
@@ -301,33 +462,110 @@ class _Ctx:
         self.bad = []
         self.owner = projmod.role_label(cfg, "owner")
         self.tick = projmod.role_label(cfg, "tick")
+        self.events = status.events(project)[-200:]
         self.slices, bad_slices = slices.load_all(project)
         self.bad += bad_slices
+        self.history: dict = {}
         self.runs = self._runs()
         self.executing_by_key = {
             r["key"]: r["role"] for r in self.runs if r["state"] == "executing"
         }
+        self.apply_keys = {
+            r["key"] for r in self.runs if r["state"] == "awaiting-apply"
+        }
+        self.slot_used = _try(
+            lambda: runs.slot_usage(project), self.bad, "run-records", {}
+        )
+        self.titles = _try(lambda: roadmap.titles(cfg), self.bad, "roadmap-titles", {})
+        self.descs = _try(
+            lambda: roadmap.descriptions(cfg), self.bad, "roadmap-titles", {}
+        )
+
+    def title_of(self, row):
+        """The plain name of a roadmap row, or None; one shared owner-text rule."""
+        return _owner_text(
+            self.titles.get(row) or words.DUTY_ROWS.get(row), roadmap.TITLE_LIMIT + 4
+        )
+
+    def desc_of(self, row):
+        """What a roadmap row is and why, scrubbed like every loop-written line."""
+        text = self.descs.get(row) or words.DUTY_ROWS.get(row)
+        return live.view_line(text, roadmap.DESC_LIMIT + 3)
+
+    def slice_desc(self, s):
+        """The slice plan's goal and why; else the slice's own purpose line."""
+        try:
+            text = roadmap.plan_summary(
+                slices._plan_file(s),
+                roadmap.SLICE_DESC_LIMIT,
+                (s["row"], s["slice"]),
+            )
+        except OSError:  # a plan that cannot be read just falls back to the purpose
+            text = None
+        found = live.view_line(text, roadmap.SLICE_DESC_LIMIT + 3)
+        if found:
+            return found
+        purpose = _plain_line(s["purpose"], roadmap.SLICE_DESC_LIMIT)
+        # A purpose that only repeats the row and slice names says nothing more.
+        same = (
+            purpose
+            and purpose.replace(" ", "").lower() == (s["row"] + s["slice"]).lower()
+        )
+        return None if same else purpose
+
+    iso = staticmethod(_iso)
+    when = staticmethod(_when)
 
     def _runs(self):
+        """One walk of `runs/`: slot holders, plus each active slice's recent history.
+
+        The history is chosen before the slot filter, so a finished run stays in its
+        slice's drawer after it is applied and holds no slot.
+        """
         out = []
+        active = {s["key"] for s in self.slices if s["phase"] in slices.ACTIVE}
         for rd, req in runs.iter_runs(self.project):
             try:
-                state = runs.run_state(rd, req)
-                if state is None:
+                if req.get("kind") not in runs.KINDS:
                     continue
-                out.append(
-                    {
-                        "role": projmod.role_label(self.cfg, req.get("kind")),
-                        "key": req.get("key"),
-                        "node": req.get("host") or "local",
-                        "state": state,
-                        "started_at": _iso(req.get("started_at")),
-                        "pgid": req.get("payload_pgid"),
-                    }
-                )
+                state = runs.run_state(rd, req)
+                rec = {
+                    "role": projmod.role_label(self.cfg, req.get("kind")),
+                    "key": req.get("key"),
+                    "node": req.get("host") or "local",
+                    "state": state,
+                    "started_at": _iso(req.get("started_at")),
+                    "pgid": req.get("payload_pgid"),
+                    "rd": rd,
+                    "req": req,
+                    "ref": live.ref_of(rd),
+                }
+                if rec["key"] in active:
+                    self.history.setdefault(rec["key"], []).append(rec)
+                if state is not None:
+                    out.append(rec)
             except (store.StoreError, KeyError, TypeError, ValueError, OSError):
                 continue
+        for key, recs in self.history.items():
+            recs.sort(key=lambda r: r["started_at"] or "", reverse=True)
+            self.history[key] = recs[: live.DRAWER_RUNS]
         return out
+
+
+def _last_activity(ctx, s):
+    """The latest of the slice's last move, its newest run's start and its record file's
+    mtime. A slice whose test ran for an hour has not been idle for that hour, and
+    subagent runners leave no run, but `slice set --next-action` rewrites the file."""
+    times = [s["last_moved_at"]] + [
+        r["started_at"] for r in ctx.history.get(s["key"], [])
+    ]
+    try:
+        mtime = slices.slice_path(ctx.project, s["key"]).stat().st_mtime
+        times.append(datetime.datetime.fromtimestamp(mtime, datetime.UTC).isoformat())
+    except OSError:
+        pass
+    parsed = [(_when(t), t) for t in times if t and _when(t)]
+    return max(parsed)[1] if parsed else s["last_moved_at"]
 
 
 def _owner_of(ctx, s, held):
@@ -379,16 +617,85 @@ def _checklist(ctx, s):
     }
 
 
+def _wait(ctx, s, stuck):
+    """Who a slice with no running worker waits on: a fixed word and, for a slot, its pool."""
+    on = s["waiting_on"] or ""
+    pool = on[: -len(" slot")] if on.endswith(" slot") else None
+    if s["key"] in ctx.executing_by_key:
+        return None, None
+    if is_qa_wait(s):
+        return "slot", projmod.pool_label(ctx.cfg, "tester")
+    if _is_hold(s) or on.startswith("question "):
+        return "owner", None
+    if pool in projmod.SLOTS:
+        return "slot", projmod.pool_label(ctx.cfg, pool)
+    if s["key"] in ctx.apply_keys:
+        return "apply", None
+    full = _full_pool_for(ctx, s)
+    if full:
+        return "slot", projmod.pool_label(ctx.cfg, full)
+    return ("stuck" if stuck else "loop"), None
+
+
+# The pool a slice needs next in each phase. A slice whose pool is full is queued for
+# that slot, not stuck, even when the tick did not write `waiting_on`.
+PHASE_POOL = {
+    "FRAME": "planner",
+    "PLAN": "planner",
+    "DEVELOP": "builder",
+    "REMEDIATE": "builder",
+    "SELF_CHECK": "reviewer",
+    "VERIFY": "tester",
+    "REVIEW": "reviewer",
+    "DOCUMENT": "builder",
+}
+
+
+def _full_pool_for(ctx, s):
+    phase = (s["parked_from"] or "FRAME") if s["phase"] == "PARKED" else s["phase"]
+    pool = PHASE_POOL.get(phase)
+    if pool is None:
+        return None
+    cap = (ctx.cfg.get("capacity") or {}).get(pool)
+    if cap is None or ctx.slot_used.get(pool, 0) < cap:
+        return None
+    return pool
+
+
+def is_qa_wait(s) -> bool:
+    """A parked slice that only waits for a tester (QA) slot: still work in progress."""
+    return s["phase"] == "PARKED" and "tester slot" in (s["waiting_on"] or "")
+
+
+def _waiting_key(ctx, s, text):
+    """The open slice a waiting-on text names, as `ROW--SLICE` or `ROW SLICE`."""
+    best = None
+    for o in ctx.slices:
+        if o["key"] == s["key"] or not (o["phase"] in slices.ACTIVE or is_qa_wait(o)):
+            continue
+        spaced = o["key"].replace("--", " ")
+        if (o["key"] in text or spaced in text) and (
+            best is None or len(o["key"]) > len(best)
+        ):
+            best = o["key"]
+    return best
+
+
 def _card(ctx, s):
-    held = s["phase"] in ("HELD", "PARKED")
-    phase = (s["parked_from"] or "FRAME") if held else s["phase"]
+    held = s["phase"] in ("HELD", "PARKED") and not is_qa_wait(s)
+    parked = s["phase"] in ("HELD", "PARKED")
+    phase = (s["parked_from"] or "FRAME") if parked else s["phase"]
+    waiting = (s["waiting_on"] or "") if parked else ""
     executing = s["key"] in ctx.executing_by_key
     stuck = (
         not held
         and not executing
         and s["phase"] in slices.ACTIVE
-        and _age(s["last_moved_at"], ctx.now) > snapshot.STALE_SECS
+        and _age(_last_activity(ctx, s), ctx.now) > snapshot.STALE_SECS
     )
+    wait, wait_for = _wait(ctx, s, stuck)
+    if wait == "slot":
+        stuck = False  # queued for a full slot: waiting its turn, not stuck
     return {
         "key": s["key"],
         "row": s["row"],
@@ -396,6 +703,15 @@ def _card(ctx, s):
         "phase": phase,
         "phase_index": CHIPS.index(phase),
         "held": held,
+        "hold": _is_hold(s),
+        "row_title": ctx.title_of(s["row"]),
+        "released": s["phase"] == "PARKED"
+        and s["park_reason"] in slices.OWNER_PARKS
+        and bool(s.get("owner_answered")),
+        "waiting_text": _plain_line(waiting or s["park_reason"], 160)
+        if parked
+        else None,
+        "waiting_key": _waiting_key(ctx, s, waiting) if waiting else None,
         "risk": s["risk"],
         "pr": s["pr"],
         "url": None
@@ -409,6 +725,11 @@ def _card(ctx, s):
         "since": _iso(s["last_moved_at"]),
         "owner": _owner_of(ctx, s, held),
         "stuck": stuck,
+        "purpose": _plain_line(s["purpose"], 160),
+        "slice_desc": ctx.slice_desc(s),
+        "next_action": _plain_line(s["next_action"], 220),
+        "wait": wait,
+        "wait_for": wait_for,
         "checklist": _checklist(ctx, s),
     }
 
@@ -418,7 +739,11 @@ def _by_age(card):
 
 
 def _rows(ctx):
-    live = [s for s in ctx.slices if s["phase"] in slices.ACTIVE]
+    live = [s for s in ctx.slices if s["phase"] in slices.ACTIVE or is_qa_wait(s)]
+    total, done = {}, {}
+    for s in ctx.slices:
+        total[s["row"]] = total.get(s["row"], 0) + 1
+        done[s["row"]] = done.get(s["row"], 0) + (s["phase"] == "DONE")
     by_row = {}
     for s in live:
         by_row.setdefault(s["row"], []).append(_card(ctx, s))
@@ -428,6 +753,10 @@ def _rows(ctx):
         rows.append(
             {
                 "row": row,
+                "title": ctx.title_of(row),
+                "desc": ctx.desc_of(row),
+                "done": done[row],
+                "total": total[row],
                 "oldest_at": min(
                     (c["since"] for c in cards if c["since"]), default=None
                 ),
@@ -440,7 +769,11 @@ def _rows(ctx):
 
 
 def _parked(ctx):
-    cards = [_card(ctx, s) for s in ctx.slices if s["phase"] in ("HELD", "PARKED")]
+    cards = [
+        _card(ctx, s)
+        for s in ctx.slices
+        if s["phase"] in ("HELD", "PARKED") and not is_qa_wait(s)
+    ]
     return sorted(cards, key=_by_age)
 
 
@@ -457,22 +790,25 @@ def _need(kind, owner, key=None, count=None, since=None, **extra):
 
 def _plain_line(text, limit=300):
     """Loop-written text, scrubbed like every other public line; None when empty."""
-    if not isinstance(text, str):
-        return None
-    out = scrub(text, limit)
-    # The cut can end on a space or inside a pattern; settle on text that scrubs to itself,
-    # the form the sealed schema accepts.
-    for _ in range(4):
-        again = scrub(out, limit)
-        if again == out:
-            return out or None
-        out = again
-    return None
+    return live.view_line(text, limit)
 
 
 def _owner_item(kind, owner, key=None, since=None, **extra):
     """An item for the owner: the question fields are always present, empty for a hold."""
-    fields = {"question": None, "options": [], "recommended": None, "answer_at": None}
+    fields = {
+        "row": None,
+        "slice": None,
+        "title": None,
+        "answer_key": None,
+        "question": None,
+        "detail": None,
+        "options": [],
+        "option_ok": [],
+        "recommended": None,
+        "klass": "product",
+        "version": None,
+        "answer_at": None,
+    }
     fields.update(extra)
     return _need(kind, owner, key, since=since, **fields)
 
@@ -482,42 +818,167 @@ def _problem_item(kind, owner, key=None, count=None, since=None):
     return {"kind": kind, "key": key, "owner": owner, "count": count, "since": since}
 
 
-def _needs_you(ctx):
-    """Items that only the Product owner can answer: open questions and holds."""
+def _owner_text(text, limit=OWNER_TEXT_LIMIT):
+    """A question field as the owner wrote it: one line, cut at the limit, or None."""
+    if not isinstance(text, str):
+        return None
+    out = " ".join(text.split())[:limit].strip()
+    if notes.BLOCK_START in out or notes.BLOCK_END in out:
+        return None
+    # Full text, except spans shaped like a secret, so a pasted key never reaches a page.
+    return redact_secrets(out) or None
+
+
+def _options(raw):
+    """Shown options, each with whether the shown text is the real value to submit."""
+    shown, ok = [], []
+    for o in raw:
+        text = _owner_text(o)
+        if text:
+            shown.append(text)
+            ok.append(text == " ".join(o.split())[:OWNER_TEXT_LIMIT].strip())
+    return shown, ok
+
+
+def _question_fields(ctx, q):
+    options, option_ok = _options(q["options"])
+    return {
+        "answer_key": q["key"],
+        "question": _owner_text(q["question"]),
+        "detail": _owner_text(q["detail"]),
+        "klass": q["klass"],
+        "version": notes.question_version(q),
+        "options": options,
+        "option_ok": option_ok,
+        "recommended": _owner_text(q["recommended"]),
+        "answer_at": _plain_line(answer_file(ctx), 80),
+    }
+
+
+def _is_hold(s):
+    """A slice waiting on the owner's release: held, or parked for an owner reason.
+
+    An owner-parked slice the owner already released only waits for the tick to
+    resume it, so it no longer needs the owner.
+    """
+    return s["phase"] == "HELD" or (
+        s["phase"] == "PARKED"
+        and s["park_reason"] in slices.OWNER_PARKS
+        and not s.get("owner_answered")
+    )
+
+
+def _plain_key(key) -> bool:
+    try:
+        notes._key(key)
+    except notes.NotesError:
+        return False
+    return True
+
+
+def _question_records(ctx):
+    """The questions page, read once per view."""
+    if not hasattr(ctx, "_questions_value"):
+
+        def questions():
+            path = notes.questions_path(ctx.project)
+            found = notes.load_questions(path)[1] if path.is_file() else {}
+            # A hand-edited heading that is not a plain key could not be sealed or answered.
+            return {k: q for k, q in found.items() if _plain_key(k)}
+
+        ctx._questions_value = _try(questions, ctx.bad, "questions", {})
+    return ctx._questions_value
+
+
+def _decided(ctx):
+    """Tech questions the Tech lead decided, newest first. The owner can override each."""
     out = []
-    held_keys = {s["key"] for s in ctx.slices if s["phase"] == "HELD"}
+    for q in _question_records(ctx).values():
+        if q["klass"] != "tech" or not q["applied"]:
+            continue
+        options, option_ok = _options(q["options"])
+        out.append(
+            {
+                "key": q["key"],
+                "question": _owner_text(q["question"]),
+                "detail": _owner_text(q["detail"]),
+                "options": options,
+                "option_ok": option_ok,
+                "recommended": _owner_text(q["recommended"]),
+                "applied": _owner_text(q["applied"]),
+                "answer": _owner_text(q["answer"]),
+                "at": _iso(q["answered_at"] or q["asked_at"]),
+                "version": notes.question_version(q),
+            }
+        )
+    out.sort(key=lambda d: d["at"] or "", reverse=True)
+    return out[:DECIDED_LIMIT]
 
-    def questions():
-        path = notes.questions_path(ctx.project)
-        if not path.is_file():
-            return {}
-        return notes.load_questions(path)[1]
 
-    for q in _try(questions, ctx.bad, "questions", {}).values():
+def _work(ctx, s) -> dict:
+    """The slice an owner item is about: row, slice name and the row's plain name."""
+    return {"row": s["row"], "slice": s["slice"], "title": ctx.title_of(s["row"])}
+
+
+def _needs_you(ctx):
+    """Items that only the Product owner can answer: open questions, holds and stuck work.
+
+    A held slice and its `hold:KEY` question are one item: the hold carries the
+    question's key, text and options. Stuck work counts only when the slice waits on a
+    question; work waiting on the loop belongs to the work table, not to the owner.
+    """
+    out = []
+    held_keys = {s["key"] for s in ctx.slices if _is_hold(s)}
+    by_key = {s["key"]: s for s in ctx.slices}
+
+    records = _question_records(ctx)
+    for q in records.values():
         hold = q["key"].startswith(notes.HOLD_PREFIX)
         if hold and q["key"][len(notes.HOLD_PREFIX) :] in held_keys:
             continue  # shown once, on the hold item
         if q["wait"] and not q["answer"]:
+            about = by_key.get(q["key"][len(notes.HOLD_PREFIX) :]) if hold else None
             out.append(
                 _owner_item(
                     "question",
                     ctx.owner,
                     q["key"],
                     since=_iso(q["asked_at"]),
-                    question=_plain_line(q["question"]),
-                    options=[
-                        o for o in (_plain_line(o, 120) for o in q["options"]) if o
-                    ],
-                    recommended=_plain_line(q["recommended"], 120),
-                    answer_at=_plain_line(answer_file(ctx), 80),
+                    **(_work(ctx, about) if about else {}),
+                    **_question_fields(ctx, q),
                 )
             )
     for s in ctx.slices:
-        owner_park = s["phase"] == "PARKED" and s["park_reason"] in slices.OWNER_PARKS
-        if s["phase"] == "HELD" or owner_park or s["merge_unknown"]:
+        if _is_hold(s) or s["merge_unknown"]:
+            # A hold's question record carries the real answer key and options; without
+            # one (a merge with an unknown result) there is nothing to answer by key.
+            rec = records.get(notes.HOLD_PREFIX + s["key"])
+            extra = _question_fields(ctx, rec) if rec else {}
             out.append(
-                _owner_item("hold", ctx.owner, s["key"], since=_iso(s["last_moved_at"]))
+                _owner_item(
+                    "hold",
+                    ctx.owner,
+                    s["key"],
+                    since=_iso(s["last_moved_at"]),
+                    **_work(ctx, s),
+                    **extra,
+                )
             )
+    asked = {i["key"] for i in out}
+    for row in _rows_cache(ctx):
+        for c in row["cards"]:
+            s = by_key[c["key"]]
+            on = s["waiting_on"] or ""
+            if c["stuck"] and on.startswith("question ") and on[9:] not in asked:
+                out.append(
+                    _owner_item(
+                        "stuck",
+                        ctx.owner,
+                        c["key"],
+                        since=c["since"],
+                        **_work(ctx, s),
+                    )
+                )
     return out
 
 
@@ -555,6 +1016,48 @@ def _problems(ctx):
     return out
 
 
+FIXED_SHOWN_DAYS = 7
+KNOWN_PROBLEMS_LIMIT = 40
+
+
+def _known_problems(ctx):
+    """The problem log as the owner reads it: what goes wrong, the fix, and its status.
+
+    Open problems first (newest sighting first), then fixed ones from the last seven
+    days. Older fixed problems are left out.
+    """
+
+    def entries():
+        data = store.read_json(store.state_path(ctx.project) / "problems.json")
+        return list(data.get("problems", {}).values())
+
+    cutoff = ctx.now - datetime.timedelta(days=FIXED_SHOWN_DAYS)
+    out = []
+    for e in _try(entries, ctx.bad, "problems", []):
+        if not isinstance(e, dict) or not isinstance(e.get("key"), str):
+            continue
+        if not _plain_key(e["key"]):
+            continue
+        closed = _iso(e.get("closed_at"))
+        if not e.get("open") and not (closed and _when(closed) >= cutoff):
+            continue
+        out.append(
+            {
+                "key": e["key"],
+                "impact": _plain_line(e.get("impact"), 200),
+                "detail": _plain_line(e.get("detail"), 200),
+                "fix": _plain_line(e.get("fix"), 200),
+                "open": bool(e.get("open")),
+                "closed_at": closed,
+                "count": _int_or_none(e.get("count")),
+                "last_seen": _iso(e.get("last_seen")),
+            }
+        )
+    out.sort(key=lambda p: p["last_seen"] or "", reverse=True)
+    out.sort(key=lambda p: not p["open"])
+    return out[:KNOWN_PROBLEMS_LIMIT]
+
+
 def _rows_cache(ctx):
     if not hasattr(ctx, "_rows_value"):
         ctx._rows_value = _rows(ctx)
@@ -567,18 +1070,43 @@ def _unreadable(ctx):
     ]
 
 
-def _nodes(ctx):
+# Names `_try` records for a file it could not read; each needs a label in `words.FILES`.
+SOURCE_FILES = (
+    "merges",
+    "closures",
+    "questions",
+    "problems",
+    "tick-state",
+    "nodes",
+    "roadmap-titles",
+    "shipped-doc",
+    "roadmap-goal",
+)
+
+
+def _sources(ctx):
+    """Health of what the page reads: the loop's snapshot commands and the dashboard's
+    own files. Names come from the `words` registry, never from file text."""
     data = _try(
         lambda: store.read_json(store.state_path(ctx.project) / "node-status.json"),
         ctx.bad,
         "nodes",
         {},
     )
-    return [
-        {"name": name, "ok": v.get("ok") is True, "at": _iso(v.get("at"))}
+    out = [
+        {
+            "label": words.command_label(name),
+            "ok": v.get("ok") is True,
+            "why": None if v.get("ok") is True else "command failed",
+            "at": _iso(v.get("at")),
+        }
         for name, v in sorted(data.items())
         if isinstance(v, dict)
     ]
+    # Any other name is a damaged slice file: one line for all of them.
+    labels = dict.fromkeys(words.FILES.get(n, words.SLICE_FILES) for n in ctx.bad)
+    out += [{"label": x, "ok": False, "why": "damaged", "at": None} for x in labels]
+    return out
 
 
 def _slots(ctx):
@@ -628,9 +1156,24 @@ def _shipped(ctx, merges, closures):
     return out[:SHIPPED_LIMIT]
 
 
+def _recent(ctx):
+    """The owner's recently shipped record, newest first, as plain text only."""
+    out = []
+    for sec in _try(lambda: roadmap.shipped(ctx.cfg), ctx.bad, "shipped-doc", []):
+        title = _owner_text(sec["title"], 200)
+        if title:
+            bullets = [
+                b
+                for b in (_owner_text(b, roadmap.BULLET_LIMIT) for b in sec["bullets"])
+                if b
+            ]
+            out.append({"date": sec["date"], "title": title, "bullets": bullets})
+    return out
+
+
 def _activity(ctx):
     out = []
-    for ev in status.events(ctx.project)[-200:]:
+    for ev in ctx.events:
         words = status.event_words(ev, ctx.cfg)
         if words and _iso(ev["at"]):
             out.append({"at": ev["at"], "kind": ev["kind"], "words": words})
@@ -670,9 +1213,10 @@ def _memory(ctx):
 # --- the view ---------------------------------------------------------------------
 
 
-def build_view(project, proc="/proc", now=None) -> dict:
+def build_view(project, proc="/proc", now=None, cache=None) -> dict:
     """The sealed view for one project. Raises ViewError when it breaks its schema."""
     now = now or datetime.datetime.now(datetime.UTC)
+    cache = cache or transcript.Cache()
     cfg = projmod.load_project(project)
     ctx = _Ctx(project, cfg, now, proc)
     unread = object()  # a failed read, as opposed to a file holding JSON null
@@ -710,23 +1254,38 @@ def build_view(project, proc="/proc", now=None) -> dict:
         },
         "needs_you": needs,
         "problems": problems,
+        "decided": _decided(ctx),
         "rows": _rows_cache(ctx),
-        "workers": [
-            {k: r[k] for k in ("role", "key", "node", "state", "started_at")}
-            for r in ctx.runs
-        ],
-        "nodes": _nodes(ctx),
         "slots": slots,
         "memory": _memory(ctx),
         "shipped": _shipped(ctx, merges, closures),
+        "recent": _recent(ctx),
+        "known_problems": _known_problems(ctx),
         "activity": _activity(ctx),
         "parked": _parked(ctx),
+    }
+    view["controls"] = {
+        "paused": view["tick"]["paused"],
+        "tick_running": tick.running(project, proc=proc),
     }
     view["problems"] = problems + _unreadable(ctx)
     view["counts"]["needs_you"] = len(view["needs_you"])
     view["counts"]["problems"] = len(view["problems"])
-    for w in view["workers"]:
-        w["key"] = w["key"] if w["key"] else "?"
+    drawer_keys = [c["key"] for row in view["rows"] for c in row["cards"]]
+    states = live.read_states(ctx, cache, drawer_keys)
+    now_s = int(now.timestamp())
+    view["live"] = live.live_cards(ctx, states, now_s)
+    view["waiting_runs"] = live.waiting_runs(ctx)
+    for w in view["waiting_runs"]:
+        w["key"] = w["key"] or "?"
+    view["feed"] = live.feed(ctx, cache)
+    view["drawers"] = live.drawers(ctx, states, drawer_keys)
+    view["kpi"] = live.kpi(ctx, view, states, now_s)
+    g = _try(lambda: roadmap.goal(ctx.cfg), ctx.bad, "roadmap-goal", None) or {}
+    view["kpi"].update(
+        goal_title=g.get("title"), goal_left=g.get("left"), goal_total=g.get("total")
+    )
+    view["sources"] = _sources(ctx)  # last: every reader above may add a damaged name
     sealed = _seal(view, VIEW_SCHEMA, _labels(cfg))
     sealed["version"] = version_of(sealed)
     return sealed

@@ -182,6 +182,7 @@
   "playbook_doc": "/path/to/playbook-addendum.md",
   "process_doc": "/path/to/process.md",
   "status_copy": "/path/to/status.md",
+  "shipped_doc": "/path/to/RECENTLY-SHIPPED.md",
   "min_free_gb": 2.5,
   "brief_extra": "Commit messages: short subject, no body. Run T0 per edit and T1 per commit.",
   "max_dispatch_per_tick": 4,

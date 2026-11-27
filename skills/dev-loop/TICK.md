@@ -52,8 +52,17 @@ worker. Never do it yourself in this session.
    roadmap. The command refuses if any slice of the row is not DONE. If it answers "not
    closed", do not run it again: the close is marked ambiguous and raised as a problem.
 9. Dispatch due duties from the project's tick document.
-10. Apply the recommended default to each new question with `devloop-state PROJECT ask`.
-    Questions about R3 or product choices wait.
+10. Ask each new question with `devloop-state PROJECT ask KEY --question ... --option ...
+    --recommended ... --class tech|product --detail TEXT`. The detail is short plain
+    sentences: what is happening, why it matters, and what each option does. A product
+    question is anything a user of the product would notice or the business decides:
+    behavior, scope, defaults, naming, pricing, release, data-handling policy, roadmap
+    order. It waits for the owner. A tech question is implementation, tooling, test and
+    gate mechanics: the recommended option applies now and the owner sees it under
+    "Decided for you" with an Override. When unsure, use product. R3 actions are always
+    product and use `--wait`.
+    The snapshot lists owner decisions you have not seen yet under "Owner decisions".
+    An answer that starts with `other:` is the owner's own instruction. Follow it.
 11. Record problems with the loop (`problem`) and repeated mistakes in the work
     (`lesson`). Use stable keys so repeats raise a count.
 

@@ -122,10 +122,12 @@ def _notes(args):
             options=args.option,
             recommended=args.recommended,
             wait=args.wait,
+            detail=args.detail,
+            klass=args.klass,
         )
         _out(q)
     elif args.cmd == "answer":
-        notes.answer(p, args.key, args.choice)
+        print(notes.answer(p, args.key, args.choice))
     elif args.cmd == "answers-sync":
         for key in notes.read_answers(p):
             print(key)
@@ -213,7 +215,9 @@ def build_parser() -> argparse.ArgumentParser:
     aq.add_argument("--question", required=True)
     aq.add_argument("--option", action="append", required=True)
     aq.add_argument("--recommended", required=True)
-    aq.add_argument("--wait", action="store_true")
+    aq.add_argument("--wait", action="store_true", help="force a product question")
+    aq.add_argument("--detail", default="")
+    aq.add_argument("--class", dest="klass", choices=notes.KLASSES, default="product")
     an = sub.add_parser("answer")
     an.add_argument("key")
     an.add_argument("choice")
@@ -271,11 +275,7 @@ def main(argv=None) -> int:
         elif args.cmd == "merge-reset":
             slices.merge_reset(args.project, args.key)
         elif args.cmd in ("pause", "resume"):
-            flag = store.state_dir(args.project) / "PAUSE"
-            if args.cmd == "pause":
-                flag.touch()
-            else:
-                flag.unlink(missing_ok=True)
+            store.set_paused(args.project, args.cmd == "pause", "cli")
         elif args.cmd == "check":
             results = check.run_checks(args.project)
             for ok, msg in results:

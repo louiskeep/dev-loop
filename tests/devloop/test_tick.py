@@ -314,6 +314,79 @@ def test_finished_unapplied_run_forces_a_model_pass_whatever_the_hash(
     assert len(claude_calls(tmp_path)) == 1
 
 
+# --- owner decisions reach the model ------------------------------------------------
+
+
+def stub_model(monkeypatch, prompts, on_first_call=None, rc=0):
+    def fake(project, cfg, prompt):
+        prompts.append(prompt)
+        if on_first_call and len(prompts) == 1:
+            on_first_call()
+        final = json.dumps({"type": "result", "result": "ok\nTICKLINE: moved"})
+        return rc, final
+
+    monkeypatch.setattr(tick, "_model_call", fake)
+
+
+def override(proj, text):
+    from devloop import notes
+
+    q = notes.load_questions(notes.questions_path(proj))[1]["q1"]
+    notes.answer(
+        proj, "q1", text, expect_version=notes.question_version(q), via="dashboard"
+    )
+
+
+def tech_question(proj):
+    from devloop import notes
+
+    notes.ask(
+        proj, "q1", question="Pick", options=["A", "B"], recommended="A", klass="tech"
+    )
+
+
+def test_override_wakes_skippable_tick(proj, monkeypatch):
+    prompts = []
+    stub_model(monkeypatch, prompts)
+    tick.tick(proj)
+    tech_question(proj)
+    tick.tick(proj)
+    assert len(prompts) == 1  # a tech decision alone changes nothing
+    override(proj, "other: use the slower path")
+    tick.tick(proj)
+    assert len(prompts) == 2 and "other: use the slower path" in prompts[-1]
+    tick.tick(proj)
+    assert len(prompts) == 2  # acknowledged: the window skips again
+
+
+def test_override_during_model_call_reaches_next_prompt(proj, monkeypatch):
+    prompts = []
+    tech_question(proj)
+    stub_model(
+        monkeypatch, prompts, on_first_call=lambda: override(proj, "other: new plan")
+    )
+    tick.tick(proj)
+    assert len(prompts) == 1 and "other: new plan" not in prompts[0]
+    tick.tick(proj)  # inside the skip window, but the answer was never seen
+    assert len(prompts) == 2 and "other: new plan" in prompts[1]
+    tick.tick(proj)
+    assert len(prompts) == 2
+
+
+def test_failed_model_call_leaves_the_decision_outstanding(proj, monkeypatch):
+    prompts = []
+    tech_question(proj)
+    tick.tick(proj)
+    override(proj, "other: do it")
+    stub_model(monkeypatch, prompts, rc=1)
+    tick.tick(proj)
+    stub_model(monkeypatch, prompts)
+    tick.tick(proj)
+    assert len(prompts) == 2 and all("other: do it" in p for p in prompts)
+    tick.tick(proj)
+    assert len(prompts) == 2
+
+
 def test_a_live_project_never_starts_a_tick_session(proj, tmp_path, cfg_edit, home):
     cfg_edit(lambda c: c.update(mode="live"))
     tick.tick(proj)

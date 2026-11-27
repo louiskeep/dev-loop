@@ -21,6 +21,55 @@ ALERT_EVERY_S = 6 * 3600
 TICKLINE = re.compile(r"^TICKLINE:\s*(.+)$", re.MULTILINE)
 
 
+class TickEventError(Exception):
+    """The tick started but its `tick-requested` event could not be written."""
+
+
+def running(project, proc="/proc") -> bool:
+    """True while a tick holds `tick.lock`. Reads only: it stats the file and looks for
+    its device and inode among the FLOCK entries of `/proc/locks`. It never opens or locks
+    the file, so asking cannot create state or make an arriving tick defer."""
+    try:
+        st = os.stat(store.state_path(project) / "tick.lock")
+        text = (Path(proc) / "locks").read_text()
+    except OSError:
+        return False
+    ident = f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"
+    for line in text.splitlines():
+        fields = line.split()
+        if "FLOCK" in fields and ident in fields and "->" not in fields:
+            return True
+    return False
+
+
+def spawn_detached(project, via, *, on_started=None) -> None:
+    """Start `devloop-tick PROJECT` in its own session, its output appended to cron.log.
+
+    Raises OSError when the process cannot start. `on_started` runs right after the start,
+    before the event is written; a failed event write raises TickEventError (only for the
+    dashboard, which records `tick-requested`).
+    """
+    exe = store.bin_dir() / "devloop-tick"
+    env = dict(os.environ, DEVLOOP_HEADLESS="1", DEVLOOP_LIB=str(store.package_root()))
+    with open(store.state_dir(project) / "cron.log", "ab") as log:
+        subprocess.Popen(
+            [str(exe), project],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+            env=env,
+        )
+    if on_started is not None:
+        on_started()
+    if via == "dashboard":
+        try:
+            store.append_event(project, "tick-requested", via=via)
+        except Exception:  # noqa: BLE001  the tick is running; only its record failed
+            raise TickEventError("tick started, event not recorded") from None
+
+
 def _state_file(project):
     return store.state_dir(project) / "tick-state.json"
 
@@ -162,7 +211,8 @@ def _pass(project) -> str:
     if store.cap_active(project):
         status.write_status(project)
         return "capped"
-    md, digest = snapshot.build_snapshot(project)
+    snap = snapshot.build(project)
+    md, digest = snap.md, snap.digest
     last = state.get("last_model_at")
     fresh = (
         last is not None
@@ -171,16 +221,23 @@ def _pass(project) -> str:
     )
     # A finished run nobody applied yet holds its slot, so it always earns a model pass:
     # a worker can end during the model call and be saved in last_hash unseen.
+    # An owner decision no pass has seen also earns a model pass, even when the hash
+    # already includes it.
     if (
         digest == state.get("last_hash")
         and fresh
         and not snapshot.finished_unapplied(project)
+        and not snap.decisions
     ):
         status.write_status(project)
         return "skipped"
     outcome = _run_model(project, cfg, md)
     status.write_status(project)
     if outcome == "model":
+        # Acknowledge only what this prompt carried, and write it before the new hash is
+        # taken, so a decision made during the call is neither lost nor acknowledged.
+        state[snapshot.ACKED] = {**(state.get(snapshot.ACKED) or {}), **snap.decisions}
+        store.write_json(_state_file(project), state)
         state.update(
             last_hash=snapshot.build_snapshot(project)[1], last_model_at=store.now_iso()
         )
