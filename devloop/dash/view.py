@@ -553,11 +553,19 @@ class _Ctx:
 
 
 def _last_activity(ctx, s):
-    """The later of the slice's last move and its newest run's start: a slice whose
-    test ran for an hour and just finished has not been idle for that hour."""
+    """The latest of the slice's last move, its newest run's start and its record file's
+    mtime. A slice whose test ran for an hour has not been idle for that hour, and
+    subagent runners leave no run, but `slice set --next-action` rewrites the file."""
     times = [s["last_moved_at"]] + [
         r["started_at"] for r in ctx.history.get(s["key"], [])
     ]
+    try:
+        mtime = slices.slice_path(ctx.project, s["key"]).stat().st_mtime
+        times.append(
+            datetime.datetime.fromtimestamp(mtime, datetime.timezone.utc).isoformat()
+        )
+    except OSError:
+        pass
     parsed = [(_when(t), t) for t in times if t and _when(t)]
     return max(parsed)[1] if parsed else s["last_moved_at"]
 

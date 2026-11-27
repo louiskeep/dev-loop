@@ -45,6 +45,9 @@ def put_slice(proj, row, name, phase, **fields):
     s["phase"] = phase
     s.update(fields)
     slices._save(proj, s)
+    # The record file's mtime counts as activity, so age it with the move.
+    moved = datetime.datetime.fromisoformat(s["last_moved_at"]).timestamp()
+    os.utime(slices.slice_path(proj, s["key"]), (moved, moved))
     return s["key"]
 
 

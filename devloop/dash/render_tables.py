@@ -117,6 +117,12 @@ _KEYWORDS = (
     (re.compile(r"\b(?:t1|t2|tests|suite)\b", re.I), "Tests on a node"),
     (re.compile(r"\bci\b", re.I), "GitHub CI"),
 )
+_WHEN_CLAUSE = re.compile(r"\b(?:merge when|when|waiting on)\b(.*)$", re.I | re.S)
+# A keyword followed by one of these (after an optional round tag) names a step that is
+# finished, unless "pending" follows ("Codex GO pending" is still waiting on Codex).
+_STEP_DONE = re.compile(
+    r"\s*(?:r\d+\s+)?(?:go|green|passed|done)\b(?!\s+pending)", re.I
+)
 _OWN_ROLE = re.compile(r"^(?:slice runner|developer)\b", re.I)
 _MERGE_WHEN = re.compile(r"\bmerge when\b", re.I)
 _DOCUMENT_STUCK_HOURS = 2
@@ -134,6 +140,31 @@ def _hours_since(iso, now):
     if then.tzinfo is None:
         then = then.replace(tzinfo=datetime.timezone.utc)
     return (now - then).total_seconds() / 3600
+
+
+def _first_keyword(text):
+    hits = [
+        (m.start(), label)
+        for pattern, label in _KEYWORDS
+        for m in pattern.finditer(text)
+    ]
+    return min(hits)[1] if hits else None
+
+
+def _pending_step(text):
+    """The step the text says is still to come, or None when it names no step."""
+    when = _WHEN_CLAUSE.search(text)
+    if when:
+        label = _first_keyword(when.group(1))
+        if label:
+            return label
+    pending = [
+        (m.start(), label)
+        for pattern, label in _KEYWORDS
+        for m in pattern.finditer(text)
+        if not _STEP_DONE.match(text, m.end())
+    ]
+    return max(pending)[1] if pending else None
 
 
 def waiting_on(c, worker, now):
@@ -156,16 +187,20 @@ def waiting_on(c, worker, now):
         return out
     text = (c["next_action"] or "").strip()
     if not _OWN_ROLE.match(text):
-        for pattern, label in _KEYWORDS:
-            if pattern.search(text):
-                return _muted(label)
+        label = _pending_step(text)
+        if label:
+            return _muted(label)
     role = _next_action_role(text)
     if role:
         return _muted(f"{role} working")
     if _MERGE_WHEN.search(text):
         return _muted("Checks, then merge")
     if c["wait"] == "stuck":
-        return _muted(f"Nobody (stuck {r._span(c['since'], now)})")
+        return (
+            _muted("Nobody")
+            + " "
+            + r._chip_html("bad", "⚠", f"stuck {r._span(c['since'], now)}")
+        )
     return _muted("Next loop tick")
 
 

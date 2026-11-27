@@ -178,6 +178,22 @@ def test_waiting_on_keywords():
     assert "Next loop tick" in _wo(next_action="decide it")  # "ci" only as a whole word
 
 
+def test_waiting_on_names_the_pending_step():
+    cases = {
+        "Codex r3 GO + t1 GO (838 passed) on abc1234; merge when CI green": "GitHub CI",
+        "Dennis GO (2 MEDIUM: note added); full suite running, started 18:38 CST": (
+            "Tests on a node"
+        ),
+        "gate green on abc1234; main merged (def5678), engine gate 45917033510 "
+        "rerun; merge when green": "Engine gate",
+        "t1 GO + Codex GO; merge when engine gate is green": "Engine gate",
+        "Codex delta GO on 91df318a6; waiting on targeted t1, then engine gate, CI, "
+        "merge": "Tests on a node",
+    }
+    for text, want in cases.items():
+        assert want in _wo(next_action=text), text
+
+
 def test_waiting_on_precedence():
     ra = "Slice runner: build, then Codex and t1"
     assert "Slice runner working" in _wo(next_action=ra)
@@ -196,5 +212,7 @@ def test_waiting_on_cases_beat_keywords_in_order():
 
 
 def test_waiting_on_stuck_and_default():
-    assert "Nobody (stuck" in _wo(wait="stuck")
+    got = _wo(wait="stuck")
+    assert "Nobody" in got and "stuck" in got and "&lt;time" not in got
+    assert "<time" in got
     assert "Next loop tick" in _wo()

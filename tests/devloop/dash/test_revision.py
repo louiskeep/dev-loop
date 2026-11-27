@@ -1,6 +1,8 @@
 """UI revision 1: the owner's tables, plain words, shipped record and top bar."""
 
+import os
 import re
+import time
 from pathlib import Path
 
 from dash_fixture import ago, put_run, put_slice
@@ -81,7 +83,7 @@ def test_stuck_on_the_loop_goes_to_the_work_table(proj, dash):
     plan = next(c for r in v["rows"] for c in r["cards"] if c["key"] == dash["plan"])
     assert plan["stuck"] and plan["wait"] == "stuck"
     page = page_of(proj)
-    assert "Nobody (stuck" in page and ">Waiting<" in page
+    assert "Nobody</span>" in page and "stuck <time" in page and ">Waiting<" in page
 
 
 def test_work_table_who_is_on_it(proj, dash):
@@ -262,3 +264,17 @@ def test_drawer_source_wording(proj, dash):
 def test_no_em_dash_in_new_modules():
     for name in ("roadmap.py", "words.py", "render_tables.py"):
         assert "\u2014" not in (WEB.parent / name).read_text()
+
+
+def _stuck(proj, key):
+    v = build(proj)
+    return next(c for r in v["rows"] for c in r["cards"] if c["key"] == key)["stuck"]
+
+
+def test_a_recent_slice_file_write_is_activity_not_stuck(proj):
+    fresh = put_slice(proj, "ROWA", "WRITTEN", "DEVELOP", last_moved_at=ago(hours=3))
+    old = put_slice(proj, "ROWA", "IDLE", "DEVELOP", last_moved_at=ago(hours=3))
+    ten_min = time.time() - 600
+    os.utime(slices.slice_path(proj, fresh), (ten_min, ten_min))
+    assert not _stuck(proj, fresh)
+    assert _stuck(proj, old)
