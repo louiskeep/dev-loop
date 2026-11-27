@@ -331,7 +331,7 @@ def _escape(
         return False
     line = json.dumps(
         {
-            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "ts": datetime.datetime.now(datetime.UTC).isoformat(),
             "command": command,
             "reason": reason,
             "landing_commit": landing,

@@ -34,9 +34,11 @@ def sections(text, level):
 def test_playbook_covers_every_phase_and_kind():
     text = (SKILL / "PLAYBOOK.md").read_text()
     top = sections(text, 2)
-    done = {k for k in re.findall(r"^### (\w+)$", top["Done state per phase"], re.M)}
+    done = {
+        k for k in re.findall(r"^### (\w+)$", top["Done state per phase"], re.MULTILINE)
+    }
     assert set(slices.PHASES) <= done
-    briefs = set(re.findall(r"^### ([\w-]+)$", top["Worker briefs"], re.M))
+    briefs = set(re.findall(r"^### ([\w-]+)$", top["Worker briefs"], re.MULTILINE))
     assert set(runs.KINDS) <= briefs
     for needed in ("Scenarios", "Testing per phase and risk", "Close-out"):
         assert needed in top
@@ -124,6 +126,7 @@ def test_install_replaces_atomically(tmp_path):
             text=True,
             cwd=tmp_path,
             env=run_env(h),
+            check=False,
         )
         assert out.returncode == 0, out.stderr
     lib = h / ".local" / "share" / "devloop" / "lib"
@@ -143,6 +146,7 @@ def test_installed_skill_files_come_from_the_installed_version(tmp_path):
         text=True,
         cwd=tmp_path,
         env=run_env(h),
+        check=False,
     )
     assert out.returncode == 0, out.stderr
     lib = (h / ".local" / "share" / "devloop" / "lib").resolve()
@@ -157,6 +161,7 @@ def test_installed_skill_files_come_from_the_installed_version(tmp_path):
         text=True,
         cwd=tmp_path,
         env={**run_env(h), "PYTHONPATH": str(lib)},
+        check=False,
     )
     assert Path(where.stdout.strip()) == lib / "skills" / "dev-loop", where.stderr
     link = h / ".claude" / "skills" / "dev-loop"
@@ -173,6 +178,7 @@ def test_install_never_replaces_a_real_skill_folder(tmp_path):
         capture_output=True,
         text=True,
         env=run_env(h),
+        check=False,
     )
     assert out.returncode == 0 and (real / "mine.md").read_text() == "keep"
     assert not real.is_symlink()
@@ -200,7 +206,12 @@ def test_installed_start_stop_start(tmp_path, minimal_project):
 
     def sh(cmd, *args):
         r = subprocess.run(
-            [str(binp / cmd), *args], capture_output=True, text=True, cwd=other, env=env
+            [str(binp / cmd), *args],
+            capture_output=True,
+            text=True,
+            cwd=other,
+            env=env,
+            check=False,
         )
         assert r.returncode == 0, (cmd, args, r.stderr)
         return r.stdout
@@ -211,6 +222,7 @@ def test_installed_start_stop_start(tmp_path, minimal_project):
         text=True,
         cwd=other,
         env=env,
+        check=False,
     )
     assert inst.returncode == 0, inst.stderr
     # start
@@ -297,12 +309,20 @@ def test_check_cli_exit_code(proj, ready_cfg, home, cfg_edit):
     state = ROOT / "bin" / "devloop-state"
     env = {**os.environ, "DEVLOOP_HOME": str(home)}
     ok = subprocess.run(
-        [str(state), proj, "check"], capture_output=True, text=True, env=env
+        [str(state), proj, "check"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
     )
     assert ok.returncode == 0 and "FAIL" not in ok.stdout
     cfg_edit(lambda c: c["roadmap"].update(path="/nowhere/at/all.md"))
     bad = subprocess.run(
-        [str(state), proj, "check"], capture_output=True, text=True, env=env
+        [str(state), proj, "check"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
     )
     assert bad.returncode == 3 and "FAIL: roadmap: missing" in bad.stdout
 
@@ -338,6 +358,7 @@ def _notify_cli(home, fakebin, cfg_edit, tmp_path, monkeypatch, *args, stdin=Non
         text=True,
         input=stdin,
         env={**os.environ, "DEVLOOP_HOME": str(home), "DEVLOOP_HEADLESS": "1"},
+        check=False,
     )
     assert r.returncode == 0, r.stderr
     return log.read_text().split("\t", 1)[1].rstrip("\n")
@@ -384,6 +405,7 @@ def test_install_flag_prints_usage_and_installs_nothing(tmp_path, arg):
         text=True,
         cwd=tmp_path,
         env=run_env(h),
+        check=False,
     )
     assert out.returncode == 2 and "usage" in out.stderr
     assert not list(tmp_path.glob("--*")) and not (h / ".local").exists()

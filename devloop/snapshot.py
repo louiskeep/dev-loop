@@ -34,7 +34,7 @@ def _age(iso) -> float:
         then = datetime.datetime.fromisoformat(iso)
     except ValueError:
         return 0.0
-    return (datetime.datetime.now(datetime.timezone.utc) - then).total_seconds()
+    return (datetime.datetime.now(datetime.UTC) - then).total_seconds()
 
 
 def _run_summary(rd, req):
@@ -146,10 +146,12 @@ def _slice_block(project, s, running):
     except slices.SliceError:
         checklist = []
     lines = [
-        f"- {s['key']}: {s['phase']}, risk {s['risk']}, head {(s['head'] or '-')[:8]}, "
-        f"PR {s['pr'] or '-'}, round {s['round']}, "
-        f"{'running' if s['key'] in running else 'idle'}, "
-        f"last moved {int(_age(s['last_moved_at']) // 60)} min ago",
+        (
+            f"- {s['key']}: {s['phase']}, risk {s['risk']}, head {(s['head'] or '-')[:8]}, "
+            f"PR {s['pr'] or '-'}, round {s['round']}, "
+            f"{'running' if s['key'] in running else 'idle'}, "
+            f"last moved {int(_age(s['last_moved_at']) // 60)} min ago"
+        ),
         f"  next action: {scrub(s['next_action'] or '-')}",
         f"  next command: {next_command(project, s, checklist)}",
     ]

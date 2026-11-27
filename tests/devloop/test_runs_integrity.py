@@ -8,16 +8,16 @@ import pytest
 from runs_support import (  # noqa: F401
     brief,
     config,
+    dead_run,
     env,
+    events,
     finish,
     git,
     go,
     make_repo,
     ready,
-    res,
-    dead_run,
-    events,
     repair,
+    res,
 )
 
 from devloop import runs, slices, snapshot, store
@@ -61,7 +61,7 @@ def test_payload_that_rewrites_request_gets_no_evidence(proj, ready, brief):
 
 
 def test_preplanted_repair_json_is_replaced_by_the_wrapper(proj, ready, brief):
-    key, wt, r = repair(proj, ready, brief, plant=True)
+    _key, wt, r = repair(proj, ready, brief, plant=True)
     finish(proj, r, result=res("DONE", "GO"))
     data = store.read_json(store.run_dir(proj, r) / "repair.json")
     assert data["output_sha"] != "f" * 64
@@ -81,7 +81,7 @@ def test_missing_repair_record_is_a_failure(proj, ready, brief):
 
 
 def test_tampered_repaired_copy_is_caught_before_install(proj, ready, brief):
-    key, wt, r = repair(proj, ready, brief)
+    _key, wt, r = repair(proj, ready, brief)
     finish(proj, r, result=res("DONE", "GO"))
     (store.run_dir(proj, r) / "repaired").write_text("Rules consulted: evil\n")
     with pytest.raises(runs.RunError, match="repaired copy"):
@@ -90,7 +90,7 @@ def test_tampered_repaired_copy_is_caught_before_install(proj, ready, brief):
 
 
 def test_tampered_repaired_copy_is_caught_by_the_gate_recompute(proj, ready, brief):
-    key, wt, r = repair(proj, ready, brief)
+    key, _wt, r = repair(proj, ready, brief)
     finish(proj, r, result=res("DONE", "GO"))
     runs.apply_run(proj, r)
     assert all(ok for _, ok in slices.exit_checklist(proj, key, "DEVELOP"))
@@ -159,7 +159,7 @@ def test_repaired_hash_mismatch_rejects_the_run_and_frees_the_worktree(
 
 
 def test_discard_frees_a_stuck_run(proj, ready, brief, home, monkeypatch):
-    key, wt, _ = ready()
+    key, _wt, _ = ready()
     r = go(proj, brief, "builder", key)
     assert runs.writer_runs(proj)
     monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
@@ -186,9 +186,13 @@ def test_state_cli_discard_is_interactive_only(proj, ready, brief, home):
         capture_output=True,
         text=True,
         env={**env, "DEVLOOP_HEADLESS": "1"},
+        check=False,
     )
     assert headless.returncode == 3
-    assert subprocess.run([str(bin_), "p", "discard", r], env=env).returncode == 0
+    assert (
+        subprocess.run([str(bin_), "p", "discard", r], env=env, check=False).returncode
+        == 0
+    )
 
 
 # --- failure lineage and the no-verdict reason ------------------------------------
@@ -327,7 +331,7 @@ def test_collect_recovers_a_damaged_exit_once_the_wrapper_is_dead(proj, ready, j
 
 
 def test_plan_review_credits_and_names_the_frozen_copy(proj, ready, brief, monkeypatch):
-    key, wt, _ = ready("PLAN", risk="R2")
+    key, _wt, _ = ready("PLAN", risk="R2")
     live = slices.plan_file(slices.load(proj, key))
     original = live.read_bytes()
     # The live file changes between admission reading it and the copy being made.

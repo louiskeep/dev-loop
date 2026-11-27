@@ -1,14 +1,14 @@
 import datetime
 import json
-import re
 import os
+import re
 import sys
 
 import pytest
 
 from devloop import slices, snapshot, status, store
 
-NOW = datetime.datetime.now(datetime.timezone.utc)
+NOW = datetime.datetime.now(datetime.UTC)
 
 
 def at(**delta):
@@ -18,8 +18,9 @@ def at(**delta):
 def journal(proj, *events):
     path = store.state_dir(proj) / "events.jsonl"
     with open(path, "a") as fh:
-        for kind, when in events:
-            fh.write(json.dumps({"kind": kind, "at": when}) + "\n")
+        fh.writelines(
+            json.dumps({"kind": kind, "at": when}) + "\n" for kind, when in events
+        )
 
 
 def test_status_renders_counts_from_fixture_journal(proj):

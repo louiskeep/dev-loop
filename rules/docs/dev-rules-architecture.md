@@ -13,8 +13,14 @@ consistency checks executable without imposing a local tool or model stack.
 3. `development-loop.md` sequences FRAME through DOCUMENT and separates review
    from the evidence-consuming gate.
 4. Root rulebooks own task-specific and operational policy domains.
-5. Catalogs provide optional language or pattern detail; profiles map durable
-   roles to local implementations.
+5. Catalogs provide language or pattern detail; profiles map durable roles to
+   local implementations. Each catalog and profile record in the manifest says
+   whether it is `required` or `optional` reading. The recurring-defects catalog
+   is required: builders and reviewers check every class on every code change.
+   The local operations profile is also required: it holds the owner's dated
+   close-out rules and the local tools they use, and the development loop's
+   GATE and DOCUMENT phases point to it. Its steps are gate conditions where it
+   says so.
 
 The README is the entry point and routes every active root rulebook. It is an
 index, not a second source of normative policy.
@@ -22,7 +28,8 @@ index, not a second source of normative policy.
 ## Ownership
 
 `rules-manifest.json` records one active-document entry with an ID, path, kind,
-status, and unique policy-domain owner list. A policy domain has one canonical
+status, and unique policy-domain owner list. Catalog and profile entries also
+carry `reading`: `required` or `optional`. A policy domain has one canonical
 owner. Other documents link to that owner rather than defining competing rules.
 
 ## Enforcement
@@ -30,7 +37,9 @@ owner. Other documents link to that owner rather than defining competing rules.
 `scripts/check_rules.py` uses only the standard library. It validates manifest
 structure, paths, unique IDs and owners, local Markdown links, README routing,
 active-document discovery, historical-document placement, placeholders, and
-root-policy leakage. Its artifact hash covers only existing, non-ignored
+root-policy leakage. Leakage covers project names and the local tool names that
+belong in the local operations profile, so a dated local rule cannot drift back
+into a root rulebook. Its artifact hash covers only existing, non-ignored
 working-tree files; tracked files absent from the tree are reported as
 omissions rather than read.
 

@@ -18,6 +18,7 @@ def main(argv=None) -> int:
     ap.add_argument("--level")
     ap.add_argument("--select", nargs="*", default=[])
     ap.add_argument("--covers", nargs="*", default=[])
+    ap.add_argument("--batch", nargs="*", default=[])
     ap.add_argument("--retry-of")
     args = ap.parse_args(argv)
     try:
@@ -31,6 +32,7 @@ def main(argv=None) -> int:
             level=args.level,
             select=args.select,
             covers=args.covers,
+            batch=args.batch,
             retry_of=args.retry_of,
         )
     except (

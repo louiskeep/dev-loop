@@ -89,7 +89,7 @@ def _rel(iso, now):
     except (TypeError, ValueError):
         return ""
     if then.tzinfo is None:
-        then = then.replace(tzinfo=datetime.timezone.utc)
+        then = then.replace(tzinfo=datetime.UTC)
     secs = int((now - then).total_seconds())
     if secs < 60:
         return "just now"
@@ -238,7 +238,7 @@ def loop_steps() -> str:
 
 
 def render_fragment(view, now=None, token="", copy_path="") -> str:
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = now or datetime.datetime.now(datetime.UTC)
     parts = (
         loop_steps(),
         render_live.top_bar(view, now, token),

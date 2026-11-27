@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import store
+from . import githooks, project, store
 
 
 def share_root() -> Path:
@@ -39,6 +39,10 @@ def install_package(repo: Path) -> Path:
         version / "skills" / "dev-loop",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
+    # The PR gate runs from the installed lib, next to the policy the clone shim runs, so
+    # both always come from one version.
+    (version / "hooks").mkdir()
+    shutil.copyfile(repo / "hooks" / "pr_gate.py", version / "hooks" / "pr_gate.py")
     _swap_link(root / "lib", version)
     return version
 
@@ -53,6 +57,25 @@ def install_bins(repo: Path, bin_dir: Path) -> list:
         os.replace(tmp, bin_dir / src.name)
         done.append(src.name)
     return done
+
+
+def install_clone_hooks():
+    """Write the push-policy shim into every repo of every project.
+
+    Returns (lines, failed): one `<project>/<repo>: <status>` line each, and whether any
+    repo refused the shim or any config could not be read (a repo left unguarded).
+    """
+    repos, unreadable = project.configured_repos()
+    lines = [f"{n}: project.json cannot be loaded; no push policy" for n in unreadable]
+    failed, seen = bool(unreadable), set()
+    for repo in repos:
+        if repo.path in seen:
+            continue
+        seen.add(repo.path)
+        status = githooks.install_clone_hook(repo.path, repo.gate["override_env"])
+        failed = failed or status.startswith("refused")
+        lines.append(f"{repo.project}/{repo.name}: {status}")
+    return lines, failed
 
 
 def link_skill(version: Path) -> str:
@@ -76,4 +99,7 @@ def main(argv=None) -> int:
     version = install_package(repo)
     names = install_bins(repo, Path(args[0]))
     print(f"installed {len(names)} commands to {args[0]}; {link_skill(version)}")
-    return 0
+    lines, failed = install_clone_hooks()
+    for line in lines:
+        print(line)
+    return 1 if failed else 0

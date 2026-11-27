@@ -1,0 +1,86 @@
+import json
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from devloop import board
+
+HEAD = "a" * 40
+BIN = Path(__file__).resolve().parents[2] / "bin" / "devloop-state"
+
+
+@pytest.fixture
+def merged(proj, mk_slice, fakebin, home, tmp_path, monkeypatch):
+    gh = tmp_path / "gh.json"
+    monkeypatch.setenv("FAKE_GH_JSON", str(gh))
+    key = mk_slice(proj, phase="DOCUMENT", head=HEAD, pr=7)
+
+    def run(head=HEAD, key=key, **gh_fields):
+        gh.write_text(json.dumps(gh_fields))
+        return subprocess.run(
+            [str(BIN), proj, "merged", key, "--pr", "7", "--head", head],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "DEVLOOP_HOME": str(home)},
+            check=False,
+        )
+
+    run.key = key
+    return run
+
+
+def test_records_a_merged_pr_in_the_ledger(proj, merged):
+    r = merged(state="MERGED", headRefOid=HEAD)
+    assert r.returncode == 0, r.stderr
+    recs = board.merge_records(proj)
+    assert len(recs) == 1
+    rec = next(iter(recs.values()))
+    assert rec["key"] == merged.key and rec["pr"] == 7
+
+
+def test_recording_twice_keeps_one_entry(proj, merged):
+    merged(state="MERGED", headRefOid=HEAD)
+    merged(state="MERGED", headRefOid=HEAD)
+    assert len(board.merge_records(proj)) == 1
+
+
+def test_refuses_an_open_pr(proj, merged):
+    r = merged(state="OPEN", headRefOid=HEAD)
+    assert r.returncode == 3 and "REFUSED" in r.stderr
+    assert board.merge_records(proj) == {}
+
+
+def test_refuses_a_head_mismatch(proj, merged):
+    r = merged(head="b" * 40, state="MERGED", headRefOid=HEAD)
+    assert r.returncode == 3
+    assert board.merge_records(proj) == {}
+
+
+def test_refuses_a_key_whose_slice_is_another_pr(proj, merged, mk_slice):
+    other = mk_slice(proj, phase="DOCUMENT", head="c" * 40, pr=9)
+    r = merged(key=other, state="MERGED", headRefOid=HEAD)
+    assert r.returncode == 3
+    assert board.merge_records(proj) == {}
+
+
+def test_a_prefix_then_the_full_sha_is_one_entry(proj, merged):
+    assert merged(head=HEAD[:10], state="MERGED", headRefOid=HEAD).returncode == 0
+    assert merged(state="MERGED", headRefOid=HEAD).returncode == 0
+    keys = list(board.merge_records(proj))
+    assert len(keys) == 1 and keys[0].endswith(f"#7@{HEAD}")
+
+
+def test_refuses_two_full_shas_sharing_a_prefix(proj, merged):
+    other = HEAD[:7] + "b" * 33
+    r = merged(head=HEAD[:7], state="MERGED", headRefOid=other)
+    assert r.returncode == 3
+    assert board.merge_records(proj) == {}
+
+
+def test_refuses_a_branch_mismatch(proj, mk_slice, merged, tmp_path):
+    k = mk_slice(proj, phase="DOCUMENT", head=HEAD, pr=7, branch="feat/x")
+    r = merged(key=k, state="MERGED", headRefOid=HEAD, headRefName="feat/y")
+    assert r.returncode == 3
+    assert board.merge_records(proj) == {}

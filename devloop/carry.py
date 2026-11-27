@@ -50,13 +50,30 @@ DOC_SUFFIXES = (".md", ".rst")
 
 
 def _is_doc(name):
-    return name.endswith(DOC_SUFFIXES) or name.startswith("docs/")
+    # Suffix only: a .py, .json or .yaml file under docs/ can still be read by a test.
+    return name.endswith(DOC_SUFFIXES)
 
 
 def tests_carry(path, old, new):
     """True when the base side of the merge `new` brought in documentation only."""
     incoming = _files(path, f"{old}..{new}")
     return incoming is not None and all(_is_doc(f) for f in incoming)
+
+
+def docs_only(path, base, head):
+    """True when the slice's own diff (merge base with the fetched base to `head`) is
+    documentation only. Such a head needs no QA run: no test reads those files (owner
+    2026-11-26: docs skip QA). Any doubt (fetch or diff failed, empty diff) is False."""
+    if not head:
+        return False
+    ref = base_ref(path, base)
+    if ref is None:
+        return False
+    mb = (_git(path, "merge-base", head, ref) or "").strip()
+    if not mb:
+        return False
+    own = _files(path, f"{mb}..{head}")
+    return bool(own) and all(_is_doc(f) for f in own)
 
 
 def carry_reason(path, base, old, new):

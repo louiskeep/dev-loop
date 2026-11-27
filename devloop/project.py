@@ -5,8 +5,10 @@ A typo here would otherwise surface mid-tick, so every refusal names the key pat
 
 import json
 import re
+from pathlib import Path
+from typing import NamedTuple
 
-from . import store
+from . import githooks, store
 
 TIERS = ("R0", "R1", "R2")
 SLOTS = ("builder", "tester", "reviewer", "planner")
@@ -79,6 +81,16 @@ def role_label(cfg, kind) -> str:
 
 def pool_label(cfg, slot) -> str:
     return POOL_DEFAULTS.get(slot, "Other")
+
+
+# The names of the push gate's override variable and receipt file are the project's own
+# choice (the `push_gate` block); these are the neutral defaults. The override name is
+# the one fact githooks.py also needs, so its default lives there (stdlib-only module).
+PUSH_GATE_RECEIPT = "devloop-quality-gate"
+# The receipt is a file in the git dir, next to `index`, `HEAD` and `config`, and
+# `devloop-gate-pass` replaces it. Every accepted name ends in `-quality-gate`, which no
+# git file does, so a project's choice (`acme-quality-gate` is one) cannot hit git's own.
+RECEIPT_NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*-quality-gate")
 
 
 class ConfigError(Exception):
@@ -318,6 +330,13 @@ def _validate(cfg: dict, project: str) -> dict:
             _fail("dash.port", "must be an integer from 1024 to 65535")
         if "host" in dash and not isinstance(dash["host"], str):
             _fail("dash.host", "must be str")
+    gate = _opt(cfg, "push_gate", dict)
+    for key, value in (gate or {}).items():
+        pattern = {"override_env": githooks.ENV_NAME, "receipt": RECEIPT_NAME}.get(key)
+        if pattern is None:
+            _fail(f"push_gate.{key}", "unknown key")
+        if not isinstance(value, str) or not pattern.fullmatch(value):
+            _fail(f"push_gate.{key}", "must be a plain name")
     free = cfg.get("min_free_gb")
     if free is not None and (
         isinstance(free, bool) or not isinstance(free, (int, float))
@@ -342,6 +361,74 @@ def load_project(project: str) -> dict:
     if bad or not isinstance(cfg, dict):
         raise ConfigError("project.json: not a JSON object")
     return _validate(cfg, project)
+
+
+def project_names() -> list:
+    """Sorted names of the project directories under the state root."""
+    root = store.state_root()
+    if not root.is_dir():
+        return []
+    return sorted(
+        d.name for d in root.iterdir() if d.is_dir() and store.NAME.fullmatch(d.name)
+    )
+
+
+def load_all():
+    """([(name, cfg)] for each project with a project.json, names of unreadable ones)."""
+    loaded, unreadable = [], []
+    for name in project_names():
+        if not project_path(name).is_file():
+            continue
+        try:
+            loaded.append((name, load_project(name)))
+        except ConfigError:
+            unreadable.append(name)
+    return loaded, unreadable
+
+
+class Repo(NamedTuple):
+    """One configured repo: its project, name, resolved path and push gate names."""
+
+    project: str
+    name: str
+    path: Path
+    gate: dict
+
+
+def configured_repos(loaded=None):
+    """The one reader of which repos the project configs list, and of their gate names.
+
+    Returns (repos, unreadable): a `Repo` for each repo of each project that has a
+    project.json (its `gate` has the defaults filled), and the names of projects whose
+    config cannot be loaded. The caller picks the rule for an unreadable one: the
+    installer reports it, the PR gate denies. `loaded` is a `load_all()` result, for a
+    caller that reads once.
+    """
+    loaded, unreadable = loaded or load_all()
+    repos = [
+        Repo(name, repo["name"], Path(repo["path"]).resolve(), push_gate(cfg))
+        for name, cfg in loaded
+        for repo in cfg["repos"]
+    ]
+    return repos, unreadable
+
+
+def push_gate(cfg) -> dict:
+    """The push gate names of one project: `override_env` and `receipt`, defaults filled."""
+    block = cfg.get("push_gate") or {}
+    return {
+        "override_env": block.get("override_env", githooks.DEFAULT_OVERRIDE_ENV),
+        "receipt": block.get("receipt", PUSH_GATE_RECEIPT),
+    }
+
+
+def gate_for(repos, repo_path) -> dict:
+    """The gate names of the first listed repo at `repo_path`, or the defaults when none
+    is. No caller fills defaults itself."""
+    for repo in repos:
+        if repo.path == repo_path:
+            return repo.gate
+    return push_gate({})
 
 
 def base_branches(cfg) -> str:

@@ -11,19 +11,19 @@ import json
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import runs, slices, store
 from . import project as projmod
+from . import runs, slices, store
 from .scrub import plain, scrub
 
 CHICAGO = ZoneInfo("America/Chicago")
 LINE_LIMIT = 300
 
-__all__ = ["scrub", "render_status", "write_status", "tick_line", "summarize"]
+__all__ = ["render_status", "scrub", "summarize", "tick_line", "write_status"]
 
 
 def clock(dt=None) -> str:
     """HH:MM with the zone's own CST or CDT label."""
-    dt = dt or datetime.datetime.now(datetime.timezone.utc)
+    dt = dt or datetime.datetime.now(datetime.UTC)
     return dt.astimezone(CHICAGO).strftime("%H:%M %Z")
 
 
@@ -49,7 +49,7 @@ def _when(ev):
         t = datetime.datetime.fromisoformat(ev["at"])
     except (ValueError, TypeError, KeyError):
         return None
-    return t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)  # naive is UTC
+    return t if t.tzinfo else t.replace(tzinfo=datetime.UTC)  # naive is UTC
 
 
 def _entries_ok(ledger, entry_ok) -> bool:
@@ -76,7 +76,7 @@ def checked_ledgers(merges, closures):
 def counts_from(merges, closures, now=None) -> dict:
     """Merge and closure counts from the two ledgers; None for a ledger that is None
     or malformed (unreadable), so a damaged file reads as unknown rather than zero."""
-    now = now or datetime.datetime.now(datetime.timezone.utc)
+    now = now or datetime.datetime.now(datetime.UTC)
     today = now.astimezone(CHICAGO).date()
     week = now - datetime.timedelta(days=7)
     out = dict.fromkeys(("merged_today", "merged_week", "merged_total", "rows_closed"))

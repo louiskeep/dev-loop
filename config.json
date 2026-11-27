@@ -27,5 +27,6 @@
     "next_up_count": 6,
     "board_path": ".loop-board.json",
     "html_out": "board.html"
-  }
+  },
+  "dev_rules_dir": "/home/cam/dev-rules"
 }

@@ -97,7 +97,7 @@ def save_board(path: Path, board: dict) -> None:
 def _now() -> str:
     import datetime
 
-    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+    return datetime.datetime.now(datetime.UTC).isoformat()
 
 
 def _find(cards: list[dict], card_id: str) -> dict | None:
@@ -361,7 +361,7 @@ def refresh(board: dict, cfg: dict, project_root: Path) -> dict:
     for st in scan_loop_states([r for r in repos if r]):
         slice_name = st["slice"]
 
-        def _matches(c: dict) -> bool:
+        def _matches(c: dict, slice_name=slice_name) -> bool:
             cid, title = c.get("id", ""), c.get("title", "")
             return bool(slice_name) and (
                 slice_name == cid

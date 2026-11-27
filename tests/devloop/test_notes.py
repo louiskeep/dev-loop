@@ -305,6 +305,7 @@ def run_cli(home, *args, stdin="", headless=False):
         input=stdin,
         env=env,
         cwd="/",
+        check=False,
     )
 
 

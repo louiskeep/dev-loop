@@ -11,8 +11,8 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import project as projmod
 from . import board, evidence, notes, store
+from . import project as projmod
 
 SCHEMA_VERSION = 1
 PHASES = (
@@ -557,9 +557,12 @@ def set_fields(project: str, key: str, **fields) -> dict:
             and s["plan_frozen"]
         ):
             raise SliceError("plan_path is frozen once a plan run exists")
-        if "full_suite_required" in fields and s["full_suite_required"]:
-            if fields["full_suite_required"] is not True:
-                raise SliceError("full_suite_required can only go from False to True")
+        if (
+            "full_suite_required" in fields
+            and s["full_suite_required"]
+            and fields["full_suite_required"] is not True
+        ):
+            raise SliceError("full_suite_required can only go from False to True")
         s.update(fields)
         carried = _carry_evidence(s, carry)
     if carried:
@@ -665,6 +668,60 @@ def merge_reset(project: str, key: str) -> None:
     store.require_interactive("merge-reset")
     set_merge_state(project, key, attempt=None, unknown=False)
     store.append_event(project, "merge-reset", key=key)
+
+
+def pushed(project: str, key: str, run_id: str) -> None:
+    """The Tech lead pushed a builder's own commit after the push hook blocked it.
+
+    Credits that builder as the head's writer, but only when the run is an applied
+    builder run for this slice and plan lineage and its result names the slice's
+    current head, or a commit the head only merges the base into. A head the Tech lead
+    changed in any other way matches no run and stays unproven.
+    """
+    from . import runs
+
+    rd = store.run_dir(project, run_id)
+    req = runs.read_request(project, run_id)
+    if req.get("kind") not in WRITER_KINDS:
+        raise SliceError("only a builder run can be credited")
+    if not (rd / "applied").is_file() or not store.request_matches_ledger(
+        project, run_id
+    ):
+        raise SliceError("the run is not applied")
+    res = runs.parse_result(rd, req["kind"])
+    if res.status not in ("DONE", "BLOCKED"):
+        raise SliceError(f"the run ended {res.status}")
+    rh = (res.head or "").strip().lower()
+    # Builders sometimes write a short SHA; 7 or more hex chars is unambiguous here.
+    if not re.fullmatch(r"[0-9a-f]{7,64}", rh):
+        raise SliceError("the run names no commit SHA")
+    if req.get("head") and req["head"].startswith(rh):
+        raise SliceError("the run wrote no commit: its head is the head it started on")
+    # Ask git outside the lock: the head may be a clean merge of the base into the
+    # builder's commit, the same test that lets evidence carry across such a merge.
+    seen = load(project, key)
+    merged_onto = None
+    if seen["head"] and not seen["head"].startswith(rh):
+        from . import carry, merge
+
+        repo_cfg, _rules, base = merge.repo_settings(
+            projmod.load_project(project), seen["repo"]
+        )
+        path = seen["worktree"] or repo_cfg["path"]
+        full = (
+            carry._git(path, "rev-parse", "--verify", f"{rh}^{{commit}}") or ""
+        ).strip()
+        if full and carry.carry_reason(path, base, full, seen["head"]) is None:
+            merged_onto = seen["head"]
+    with _edit(project, key) as s:
+        if (req.get("row"), req.get("slice")) != (s["row"], s["slice"]):
+            raise SliceError("the run belongs to another slice")
+        if req.get("plan_lineage", 0) != s["plan_lineage"]:
+            raise SliceError("the run is from an earlier plan")
+        if not s["head"] or not (s["head"].startswith(rh) or s["head"] == merged_onto):
+            raise SliceError("the run's head is not the slice head")
+        s["head_writer"] = writer_record(req["kind"], s["head"], s["plan_lineage"])
+    store.append_event(project, "head-pushed", key=key, run=run_id)
 
 
 def set_run(project: str, key: str, run_id) -> None:

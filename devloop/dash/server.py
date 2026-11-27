@@ -35,8 +35,10 @@ HEADERS = (
     ("Referrer-Policy", "no-referrer"),
     (
         "Content-Security-Policy",
-        "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
-        "img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+        (
+            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+            "img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+        ),
     ),
 )
 HTML = "text/html; charset=utf-8"

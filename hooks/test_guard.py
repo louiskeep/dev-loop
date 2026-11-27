@@ -185,7 +185,7 @@ def _audit(
     dir read-only, so this is best-effort, not guaranteed)."""
     line = json.dumps(
         {
-            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "ts": datetime.datetime.now(datetime.UTC).isoformat(),
             "agent_id": event.get("agent_id") or None,
             "agent_type": event.get("agent_type") or None,
             "session_id": event.get("session_id"),

@@ -1,6 +1,8 @@
 """PreToolUse hook: only the orchestrator merges or pushes to a base branch.
 
 Workers (DEVLOOP_RUN set) and subagents (stdin `agent_id`) may push feature branches only.
+A loop worker's base push is refused by the ref policy in git's pre-push; the Bash text of
+a push is checked here for subagents only.
 The headless tick merges through devloop-merge and may push to base; interactive top-level
 sessions are not restricted.
 
@@ -129,6 +131,10 @@ class _Unparseable(Exception):
     pass
 
 
+class _NoCommand(_Unparseable):
+    """A prefix word (env, sudo, ...) with no command after it in its segment."""
+
+
 _HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*(['\"]?)([A-Za-z_]\w*)\2")
 
 
@@ -190,8 +196,9 @@ def _strip_heredocs(command: str):
     return "\n".join(out), scripts
 
 
-def _segments(command: str) -> list[str]:
-    """Split on shell command separators and `$(` that are outside quotes."""
+def _split(command: str) -> list[tuple[str, str]]:
+    """Split on shell command separators and `$(` that are outside quotes. Each segment
+    comes with the separator that ended it ("" for the last)."""
     out, cur, quote, i = [], [], None, 0
     while i < len(command):
         c = command[i]
@@ -212,13 +219,13 @@ def _segments(command: str) -> list[str]:
             end = command.find("\n", i)  # the newline itself still separates commands
             i = len(command) if end < 0 else end - 1
         elif command.startswith("$(", i):
-            out.append("".join(cur))
+            out.append(("".join(cur), "$("))
             cur = []
             i += 1
         else:
             sep = next((s for s in _SEPARATORS if command.startswith(s, i)), None)
             if sep:
-                out.append("".join(cur))
+                out.append(("".join(cur), sep))
                 cur = []
                 i += len(sep) - 1
             else:
@@ -226,8 +233,12 @@ def _segments(command: str) -> list[str]:
         i += 1
     if quote:
         raise _Unparseable("unbalanced quote")
-    out.append("".join(cur))
-    return [s for s in (x.strip() for x in out) if s]
+    out.append(("".join(cur), ""))
+    return [(s.strip(), sep) for s, sep in out if s.strip()]
+
+
+def _segments(command: str) -> list[str]:
+    return [seg for seg, _ in _split(command)]
 
 
 def _tokens(segment: str) -> list[str]:
@@ -274,7 +285,7 @@ def _command_start(tokens: list[str]) -> int:
         else:
             return i
     if after_prefix:
-        raise _Unparseable("a command prefix with no command")
+        raise _NoCommand("a command prefix with no command")
     return i
 
 
@@ -284,9 +295,16 @@ def _commands(command: str):
     command, scripts = _strip_heredocs(command)
     for script in scripts:
         yield from _commands(script)
-    for seg in _segments(command):
+    for seg, sep in _split(command):
         tokens = _tokens(seg)
-        i = _command_start(tokens)
+        try:
+            i = _command_start(tokens)
+        except _NoCommand:
+            # `env | grep x` reads the environment. A bare `env` or `ls; sudo` still has
+            # no command to judge, so it stays unparseable.
+            if sep == "|":
+                continue
+            raise
         if i >= len(tokens):
             continue
         exe, args = os.path.basename(tokens[i]).lower(), tokens[i + 1 :]
@@ -448,7 +466,7 @@ def main() -> int:
     try:
         event = json.load(sys.stdin)
         if not isinstance(event, dict):
-            raise ValueError("event is not an object")
+            raise TypeError("event is not an object")
     except Exception:  # noqa: BLE001 - only a worker fails closed on a bad event
         return _deny(WORKER_REASON) if in_run else 0
     worker = in_run or bool(event.get("agent_id"))
@@ -458,8 +476,14 @@ def main() -> int:
         return 0
     try:
         command = event.get("tool_input", {}).get("command", "")
+        # A loop worker's push is judged by git's pre-push, which sees the real refs.
+        # Only a subagent of an interactive session is invisible to git, so its Bash
+        # text is still checked here.
         deny = blocked(
-            command, event.get("cwd"), worker=worker, check_base_pushes=worker
+            command,
+            event.get("cwd"),
+            worker=worker,
+            check_base_pushes=bool(event.get("agent_id")) and not in_run,
         )
     except Exception:  # noqa: BLE001
         return _deny(WORKER_REASON) if worker else 0

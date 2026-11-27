@@ -11,21 +11,21 @@ TAIL_CHARS = 20000
 
 
 def utc_now():
-    return datetime.datetime.now(datetime.timezone.utc)
+    return datetime.datetime.now(datetime.UTC)
 
 
 def reset_time(value, text=""):
     """A reset moment from an epoch, an ISO string or free text; one hour on failure."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
+        return datetime.datetime.fromtimestamp(value, datetime.UTC)
     for candidate in (value, *(ISO.findall(text) if isinstance(text, str) else [])):
         if isinstance(candidate, str):
             try:
-                at = datetime.datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+                at = datetime.datetime.fromisoformat(candidate)
             except ValueError:
                 continue
             if at.tzinfo is None:
-                at = at.replace(tzinfo=datetime.timezone.utc)
+                at = at.replace(tzinfo=datetime.UTC)
             if at > utc_now():
                 return at
     return utc_now() + datetime.timedelta(hours=1)

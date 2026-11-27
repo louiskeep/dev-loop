@@ -7,6 +7,10 @@ defined exit condition. The main thread is the conductor. It commands and
 directs the work. Heavy work goes to an agent by role. A hook-enforced loop
 makes four common failure patterns hard to trigger in the session.
 
+For a project with many slices in flight, the `dev-loop` skill runs one live
+orchestrator session with slice runners as its subagents. See "Project loop: one
+orchestrator, slice runners" near the end.
+
 ## How to use this
 
 Use dev-loop inside a Git repository that you open with Claude Code. Start with
@@ -206,13 +210,13 @@ A finding from REVIEW returns through REMEDIATE, then SELF-CHECK and VERIFY
 again, then back to REVIEW. GATE reads the evidence for the exact commit. It
 does not repeat REVIEW.
 
-### FRAME — state the problem
+### FRAME: state the problem
 
 State the problem, the definition of done, the boundaries, the applicable
 rulebooks, and the risk level. Check for reuse before you build. Exit
 condition: an understood request and a recorded risk level, from R0 to R3.
 
-### PLAN — write the approach
+### PLAN: write the approach
 
 For R2 and R3 work, write the plan to a file. Get an independent plan
 review before you build. Define the observable behavior, the failure
@@ -221,7 +225,7 @@ another qualified contributor can write the tests. A later contributor
 must not weaken an agreed acceptance test. Exit condition: the plan on
 file, plus the required review evidence.
 
-### DEVELOP — build the approved plan
+### DEVELOP: build the approved plan
 
 Build the approved approach in small, recoverable slices. Keep the agreed
 acceptance criteria. Record any approved change to a criterion. Send
@@ -230,14 +234,14 @@ independent or parallel work out at the same time, through the
 thread. Exit condition: the intended behavior built, with the checks ready
 to run.
 
-### SELF-CHECK — the author's own pass
+### SELF-CHECK: the author's own pass
 
 Read your own diff and the surrounding context before you hand the work
 off. Run the checks that apply. Check the prose for truth and clarity, and
 write down any known limits. Exit condition: evidence that an independent
 reviewer can use.
 
-### VERIFY — run and measure the tests
+### VERIFY: run and measure the tests
 
 This is the testing step. Run the targeted tests and the project's
 required tests. Then measure test strength on the changed units, through
@@ -254,7 +258,7 @@ edit that loosens a protected test's assertion instead of fixing the code.
 Exit condition: coverage numbers, mutation results, and a list of
 failures, skips, and known limits.
 
-### REVIEW — an independent reviewer reads the exact commit
+### REVIEW: an independent reviewer reads the exact commit
 
 An independent reviewer reads the exact commit, not the author. The
 review checks the commit against the plan and the VERIFY evidence,
@@ -264,7 +268,7 @@ the merge. P1 needs a fix before merge. P2 is advisory. Each finding gets
 a root-cause direction, not a ready-made patch. Exit condition: a verdict,
 with its checked and unchecked scope stated.
 
-### REMEDIATE — fix findings at the root
+### REMEDIATE: fix findings at the root
 
 Fix each supported finding at its root cause, not at its symptom. Do not
 weaken an agreed acceptance test to clear a finding. Change a test only
@@ -273,7 +277,7 @@ SELF-CHECK, then VERIFY, then REVIEW again. The old gate is stale on the
 new commit. Exit condition: findings resolved, accepted through a
 recorded exception, or returned to the human for direction.
 
-### GATE — sign off on the exact commit
+### GATE: sign off on the exact commit
 
 For R2 and R3 work, add the Codex cross-model gate on the same commit
 that REVIEW read. Codex reviews it. If Codex is down, the highest
@@ -286,7 +290,7 @@ this at the push or merge: it blocks the push unless `.loop-state.json`
 shows a green gate on the exact landing commit. Exit condition: a clean
 gate on the exact commit that is about to land.
 
-### DOCUMENT — close the slice, update the roadmap
+### DOCUMENT: close the slice, update the roadmap
 
 Update the docs and the records that the slice affects, through the
 `documenting-the-slice` skill. Move the finished item off the roadmap.
@@ -341,16 +345,41 @@ does not match a clean gate. A skill, `conducting-the-loop`, carries the
 judgment steps that the hooks cannot decide. The dev-rules ship under
 `rules/`.
 
+Pushes and PR opens have their own two checks, for a project with a `project.json`
+(the `devloop` loop). `devloop-install` writes a `pre-push` shim into each configured
+repo. It runs `devloop/githooks.py`, which reads the refs git resolved and refuses a
+delete, a tag that moves, a worker's tag or base-branch push, and a force push over
+commits the clone never had. It covers only the project's GitHub remotes, so a push to a
+node mirror is not checked. `<override_env>=1` lets a person, never a loop worker,
+skip it. The `pr_gate` hook (PreToolUse on Bash, copied into the installed lib and
+registered by hand in `~/.claude/settings.json`) denies `gh pr create` unless
+`devloop-gate-pass` recorded the exact HEAD, and denies `--no-verify` in a configured
+repo. A refused push is a stop, not something to work around.
+The override variable and the receipt file name come from an optional `push_gate` block
+in `project.json`: `override_env` (default `DEVLOOP_PUSH_OVERRIDE`) and `receipt`
+(default `devloop-quality-gate`, a file in the git dir). A receipt name must end in
+`-quality-gate` (`acme-quality-gate` is valid), so it cannot name a git file such as
+`index`. The installer writes the variable name into the shim, so run `devloop-install`
+again after changing it. It refuses a repo whose effective `core.hooksPath` (local,
+global or system) is set, since git would skip the shim. In a configured repo, run
+`gh pr create` by itself. The gate denies any shell joiner or substitution
+(`;`, `&`, `|`, a newline, a backtick, `$(`, `<(`, or `>(`), even inside quoted text.
+It ignores stream redirects such as `2>&1`. For a multiline body, use `--body-file`.
+
 A sixth pattern is planning or coding from memory instead of the rules.
 The `rules_gate` hook (PreToolUse and PostToolUse on Edit, Write and
 MultiEdit) denies writing a plan (`docs/plans|specs/*.md`) or a source file in
 a git repository until the session, or the subagent doing the writing, has
-opened `rules/README.md` (the routing table), `00-universal.md` and
-`development-loop.md`, from `rules/` or the canonical dev-rules directory. It
-checks the transcript for those reads, then caches the result for the session.
-After a plan is written, a missing `Rules consulted:` line is fed back as a
-blocking reason. Set `rules_gate_mode` to `warn` or `off` in `config.json` or a
-repo's `.loop-config.json`; add copies of the rules elsewhere with `rules_dirs`.
+opened `rules/README.md` (the routing table), `00-universal.md`,
+`development-loop.md` and `profiles/local-operations.md`, from `rules/` or the
+canonical dev-rules directory. Creating a new source file also needs
+`architecture.md`, which says where files go. It checks the transcript for
+those reads, then caches the result for the session. After a plan is written, a
+missing `Rules consulted:` line is fed back as a blocking reason. Set
+`rules_gate_mode` to `warn` or `off` in `config.json` or a repo's
+`.loop-config.json`; point `dev_rules_dir` at the canonical dev-rules checkout
+(default `/home/cam/dev-rules`); add copies of the rules elsewhere with
+`rules_dirs`.
 
 A fifth failure pattern is test-weakening. Its own PreToolUse hook,
 `test_guard`, watches edits to Edit, Write, and MultiEdit. A builder can
@@ -495,6 +524,9 @@ Plugin defaults live in `config.json`. A repo can override them with a
 | `protected_branches` | Branches that need a gate before an update. Default: `["main", "master"]`. |
 | `roadmap_paths` / `shipped_log_paths` | Paths that the docs-current check requires the slice to touch. |
 | `codex_required_risks` | Risk levels that require the Codex gate. Default: `["R2", "R3"]`. |
+| `rules_gate_mode` | `block` (default), `warn` or `off` for the `rules_gate` hook. |
+| `dev_rules_dir` | The canonical dev-rules checkout whose reads count for `rules_gate`. Default: `/home/cam/dev-rules`. |
+| `rules_dirs` | Extra directories whose copies of the rulebooks count as read. |
 | `escape_hatch` | When true, a command with a leading `DEVLOOP_OVERRIDE=<reason>` runs once. The plugin logs it to `.loop-audit.log`. |
 | `board` | Program-board settings (see below). |
 
@@ -551,28 +583,102 @@ run `git push origin <branch>` on the next line. Do not combine them as
 uv run --python 3.11 --with pytest -- pytest -q
 ```
 
-## Headless dev loop
+## Project loop: one orchestrator, slice runners
 
-The `dev-loop` skill runs the same phases from cron, with no live session. A tick starts
-with fresh context, reads the state files, and decides the next step. Workers run
-detached. All state changes go through `devloop-state`, `devloop-dispatch` and
-`devloop-merge`, which refuse any move the rules do not allow.
+The `dev-loop` skill runs a project with many slices in flight. This is the standard
+procedure:
 
-Threat model: local, single user; guards prevent accidents, not attacks.
+- One live Claude Code session is the orchestrator. A `/loop` heartbeat fires about once an
+  hour. Slice-runner hand-backs, background shells and Monitors wake it in between.
+- A slice runner is a Sonnet subagent, started in the background, in its own worktree. It
+  owns one slice from build to merge-ready: build, T0 per edit, merge the base branch, Codex
+  self-review with the project's `codex-review` command (up to 3 rounds, fixed in the same
+  session), the near test selection, push. The SHA it hands back carries both the Codex GO
+  and the green near tests. A fix round after the
+  orchestrator's review goes back to a runner the same way.
+- The orchestrator reads each diff, runs Dennis on R2 code, dispatches the project's CI
+  gate, runs the full suite when a testing trigger applies, merges and posts to Slack.
+- Merge standard: review GO on the exact head (R2 also Dennis), CI green, the branch
+  contains the base branch, near tests green on the head. Then
+  `gh pr merge N --squash --match-head-commit HEAD_SHA`, run by itself. Run `gh pr ready N`
+  first on a draft PR.
 
-Install the commands from a checkout, then start a project:
+The full procedure is `skills/dev-loop/ORCHESTRATOR.md`. `skills/dev-loop/PLAYBOOK.md`
+holds the done state per phase, the scenarios and the testing shapes.
+
+Threat model: local, single user. The guards prevent accidents, not attacks.
+
+### Setup
 
 ```bash
 bin/devloop-install ~/bin
-# then ask Claude: "start the dev loop cron"
+# then ask Claude: "start the dev loop"
 ```
 
-The skill folder `skills/dev-loop/` holds the tick prompt (`TICK.md`), the playbook
-(`PLAYBOOK.md`), the brief template and an example `project.json`. Project settings live
-in `~/.local/state/devloop/PROJECT/project.json`. Nothing private is stored in the plugin.
+Project settings live in `~/.local/state/devloop/PROJECT/project.json`. Set
+`"mode": "live"` (the example config does). Nothing private is stored in the plugin.
+
+### State and dashboard
+
+`devloop-state` records every move: slice phases, heads, PRs, owner questions, problems,
+lessons. `devloop-dash PROJECT --detach` serves the dashboard from those files, and
+`devloop-tick PROJECT` refreshes `STATUS.md`. In live mode the tick starts no model
+session and posts nothing. A slice move skips the headless evidence checks, but owner holds
+still apply. The dashboard's merge counts come from the record `devloop-merge` writes, so a
+`gh pr merge` does not add to them.
+
+### Slice runners
+
+Every runner brief is the runner header plus the task. The header ships as
+`skills/dev-loop/runner-header.md`. Copy it to the project's config folder and replace each
+`<...>` value:
+
+| Value | Meaning | Decoy setting |
+|---|---|---|
+| `<RULES_DIR>` | the dev-rules folder | `/home/cam/dev-rules` |
+| `<RECURRING_DEFECTS>` | the recurring-defects catalog | `/home/cam/dev-rules/catalogs/recurring-defects.md` |
+| `<BUILDER_BRIEF>` | the project's builder brief | `/home/cam/obsidian-vault/10_Projects/decoy/handoffs/LOCAL-BUILDER-BRIEF.md` |
+| `<NODE_DIRECTORY>` | where the test nodes are listed | `/home/cam/obsidian-vault/10_Projects/decoy/NODE-DIRECTORY.md` |
+| `<TEST_RUNNER>` | how tests reach a node | `~/bin/vm-run <engine or cli> <worktree> '<command>'` |
+| `<NEAR_TESTS>` | the near test selection; takes the worktree, the head SHA and a label | `~/bin/decoy-test t1` |
+| `<CODEX_REVIEW>` | the Codex review command | `CODEX_PROFILE=review-low ~/bin/codex-review` |
+| `<RELEASE_BAR>` | what a finding must meet to block | `~/.codex/v1-bar-preamble.md` |
+| `<BASE>` | the base branch | `main` |
+| `<COMMIT_SIGNOFF>` | the final line of each commit | `cam` |
+
+Decoy keeps its filled copy at `~/.config/decoy/runner-header.md` and builds a brief with
+`HEADER=runner ~/bin/devloop-build-brief KEY TASKFILE`.
+
+### Hooks that touch this procedure
+
+- `headless_merge_guard` denies a subagent any `gh pr merge` and any base-branch push. It
+  does not restrict the top-level session unless `DEVLOOP_HEADLESS=1` is set.
+- `pr_gate` denies opening a PR until `devloop-gate-pass` recorded the exact HEAD. The
+  receipt says the review roster for the slice's risk passed on this head (R1 Codex, R2
+  Dennis then Codex) and the docs are synced. The orchestrator records
+  it only when both are true, and runners never record it. Run the PR command by itself,
+  with `--title` and `--body-file`.
+- The `pre-push` shim refuses a loop worker's base-branch push, a tag move and a force push
+  over unknown commits. A runner's feature-branch push passes.
+- `gate_guard` (registered by this plugin's `hooks/hooks.json`) denies every `gh pr merge`
+  in a git repo. If an installed guard denies the merge, the session stops and asks the
+  owner.
+
+### Headless mode (optional, off)
+
+The plugin also has a cron-driven loop. `devloop-tick` starts a fresh model session per
+tick with `skills/dev-loop/TICK.md` as its prompt. `devloop-dispatch` runs each step (build,
+test, review, each fix) as its own detached run, and `devloop-merge` merges only after its
+evidence checks: an applied builder run wrote the head, the approved plan is unchanged, and
+the branch is current with its base. `devloop-cron add PROJECT` installs the schedule. Set
+`"mode": "headless"` to use it. It is not the default: one run per step cut merges from 20
+to 40 a day to 8 or 9.
+
 Tests: `pytest tests/devloop`.
 
 ### Follow-ups
 
 - Group the 23 modules under `devloop/` into subpackages (run lifecycle, slice state),
   keeping the CLI and the public imports.
+- Record a `gh pr merge` in the merge ledger, so live-mode merges show in the dashboard
+  counts.

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from devloop import slices, store
+from devloop import evidence, slices, store
 
 STATE_BIN = str(Path(__file__).resolve().parents[2] / "bin" / "devloop-state")
 
@@ -542,17 +542,17 @@ def test_import_refused_headless_and_capped_at_review(
 ):
     plan = tmp_path / "plan.md"
     plan.write_text("Rules consulted: x\n")
-    kw = dict(
-        repo="main",
-        risk="R2",
-        rulebooks=["a.md"],
-        worktree=str(tmp_path / "wt"),
-        branch="feat/x",
-        pr=7,
-        head="a" * 40,
-        plan_path=str(plan),
-        purpose="p",
-    )
+    kw = {
+        "repo": "main",
+        "risk": "R2",
+        "rulebooks": ["a.md"],
+        "worktree": str(tmp_path / "wt"),
+        "branch": "feat/x",
+        "pr": 7,
+        "head": "a" * 40,
+        "plan_path": str(plan),
+        "purpose": "p",
+    }
     monkeypatch.setenv("DEVLOOP_HEADLESS", "1")
     with pytest.raises(store.HeadlessRefused):
         slices.import_slice(proj, "I1", "S1", phase="GATE", **kw)
@@ -688,6 +688,7 @@ def run_cli(home, *args, headless=False):
         text=True,
         env=env,
         cwd="/",
+        check=False,
     )
 
 
@@ -699,7 +700,10 @@ def test_cli_slice_lifecycle(proj, home, cfg_edit, tmp_path):
     subprocess.run([*git_ok, "init", "-q"], check=True)
     subprocess.run([*git_ok, "commit", "-q", "--allow-empty", "-m", "c"], check=True)
     sha = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
     ).stdout.strip()
     cfg_edit(lambda c: c["repos"][0].update(path=str(repo)))
     r = run_cli(home, "p", "slice", "new", "C1", "S1", "--repo", "main", "--risk", "R1")
@@ -1041,3 +1045,64 @@ def test_headless_mode_keeps_every_check(proj, mk_slice):
     k = mk_slice(proj, phase="GATE")
     with pytest.raises(slices.TransitionError, match="merge command"):
         slices.move(proj, k, "DOCUMENT", "x")
+
+
+def test_pushed_credits_only_the_builders_own_commit(proj, mk_slice, mk_run):
+    k = mk_slice(
+        proj, phase="VERIFY", branch="feat/x", head="a1b2c3d4e5", head_writer=None
+    )
+    assert evidence.head_writer(proj, slices.load(proj, k)) is None
+    mk_run(
+        proj, "b0", kind="builder", key=k, result_head="ffffffff00", status="BLOCKED"
+    )
+    mk_run(proj, "b1", kind="builder", key=k, result_head="a1b2c3d4e5", status="FAILED")
+    mk_run(proj, "b2", kind="builder", key=k, result_head="a1b2c3d4e5", applied=False)
+    mk_run(proj, "t1", kind="test", key=k, result_head="a1b2c3d4e5")
+    for run in ("b0", "b1", "b2", "t1"):
+        with pytest.raises(slices.SliceError):
+            slices.pushed(proj, k, run)
+    assert evidence.head_writer(proj, slices.load(proj, k)) is None
+    mk_run(
+        proj, "b3", kind="builder", key=k, result_head="a1b2c3d4e5", status="BLOCKED"
+    )
+    slices.pushed(proj, k, "b3")
+    assert evidence.head_writer(proj, slices.load(proj, k)) == "builder"
+    slices.set_fields(proj, k, head="c9c9c9c9c9")  # the Tech lead's own later commit
+    assert evidence.head_writer(proj, slices.load(proj, k)) is None
+
+
+def test_pushed_accepts_a_short_sha_of_the_head(proj, mk_slice, mk_run):
+    k = mk_slice(
+        proj, phase="VERIFY", branch="feat/x", head="abcdef0123", head_writer=None
+    )
+    mk_run(proj, "b0", kind="builder", key=k, result_head="abcde", status="BLOCKED")
+    with pytest.raises(slices.SliceError):
+        slices.pushed(proj, k, "b0")
+    mk_run(proj, "b1", kind="builder", key=k, result_head="abcdef0", status="BLOCKED")
+    slices.pushed(proj, k, "b1")
+    assert evidence.head_writer(proj, slices.load(proj, k)) == "builder"
+
+
+def test_pushed_refuses_a_run_that_wrote_no_commit(proj, mk_slice, mk_run):
+    k = mk_slice(proj, phase="VERIFY", branch="feat/x", head="a1", head_writer=None)
+    mk_run(
+        proj, "b0", kind="builder", key=k, head="a1", result_head="a1", status="BLOCKED"
+    )
+    with pytest.raises(slices.SliceError, match="no commit"):
+        slices.pushed(proj, k, "b0")
+
+
+def test_pushed_refuses_a_result_with_no_sha(proj, mk_slice, mk_run):
+    k = mk_slice(
+        proj, phase="VERIFY", branch="feat/x", head="a1b2c3d4e5", head_writer=None
+    )
+    mk_run(
+        proj,
+        "b0",
+        kind="builder",
+        key=k,
+        result_head="none (not pushed)",
+        status="BLOCKED",
+    )
+    with pytest.raises(slices.SliceError, match="no commit SHA"):
+        slices.pushed(proj, k, "b0")

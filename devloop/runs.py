@@ -197,6 +197,10 @@ def remove_tree(project, run_id, req=None) -> None:
     """
     rd = store.run_dir(project, run_id)
     tree = rd / "tree"
+    if (req or {}).get("batch_commit") and req.get("worktree"):
+        from . import batch
+
+        batch.drop(req["worktree"], run_id)
     if not tree.exists() and not tree.is_symlink():
         return
     if tree.is_symlink() or tree.resolve() != (rd.resolve() / "tree"):
@@ -272,15 +276,6 @@ def slot_usage(project) -> dict:
 RESERVE_WINDOW_S = 300
 
 
-def _project_names():
-    root = store.state_root()
-    return sorted(
-        d.name
-        for d in (root.iterdir() if root.is_dir() else [])
-        if d.is_dir() and store.NAME.fullmatch(d.name)
-    )
-
-
 def _frozen_requests(name):
     """(run dir, request) for each run of a project, read from the frozen request only.
 
@@ -301,7 +296,7 @@ def _frozen_requests(name):
 
 def _utc(moment):
     if moment.tzinfo is None:
-        return moment.replace(tzinfo=datetime.timezone.utc)
+        return moment.replace(tzinfo=datetime.UTC)
     return moment
 
 
@@ -314,10 +309,10 @@ def reserved_mb(now=None) -> int:
     frozen into the run at dispatch; a run from before that field uses its own project's
     estimate, never the caller's. Times without an offset are read as UTC.
     """
-    now = _utc(now or datetime.datetime.now(datetime.timezone.utc))
+    now = _utc(now or datetime.datetime.now(datetime.UTC))
     cutoff = now - datetime.timedelta(seconds=RESERVE_WINDOW_S)
     total = 0
-    for name in _project_names():
+    for name in projmod.project_names():
         owner_cfg = None
         for rd, req in _frozen_requests(name):
             try:

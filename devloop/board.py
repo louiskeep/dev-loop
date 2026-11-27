@@ -3,9 +3,8 @@
 import hashlib
 import subprocess
 
-from . import project as projmod
 from . import notes, slices, store
-
+from . import project as projmod
 
 # --- board mirror -------------------------------------------------------------
 

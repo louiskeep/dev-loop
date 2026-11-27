@@ -20,13 +20,16 @@ def repo(proj, tmp_path, cfg_edit):
         subprocess.run([*GIT, "-C", str(path), *args], check=True)
     cfg_edit(lambda c: c["repos"][0].update(path=str(path)))
     sha = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
     ).stdout.strip()
     return path, sha
 
 
 def test_set_fields_stores_the_full_sha(proj, mk_slice, repo):
-    path, sha = repo
+    _path, sha = repo
     k = mk_slice(proj, phase="DEVELOP", risk="R1")
     for name in (sha[:8], "main", "HEAD", sha):
         assert slices.set_fields(proj, k, head=name)["head"] == sha
@@ -48,14 +51,17 @@ def test_set_fields_resolves_in_the_slice_worktree(proj, mk_slice, repo, tmp_pat
         [*GIT, "-C", str(other), "commit", "-q", "--allow-empty", "-m", "o"], check=True
     )
     sha = subprocess.run(
-        ["git", "-C", str(other), "rev-parse", "HEAD"], capture_output=True, text=True
+        ["git", "-C", str(other), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
     ).stdout.strip()
     k = mk_slice(proj, phase="DEVELOP", risk="R1", worktree=str(other))
     assert slices.set_fields(proj, k, head=sha[:10])["head"] == sha
 
 
 def test_import_resolves_the_head(proj, repo, monkeypatch):
-    path, sha = repo
+    _path, sha = repo
     s = slices.import_slice(
         proj,
         "ROWX",
@@ -75,7 +81,7 @@ def test_import_resolves_the_head(proj, repo, monkeypatch):
 
 
 def test_selfcheck_and_docs_accept_a_short_head(proj, mk_slice, repo):
-    path, sha = repo
+    _path, sha = repo
     k = mk_slice(proj, phase="SELF_CHECK", risk="R1", head=sha)
     slices.selfcheck(proj, k, "GO", head=sha[:8])
     assert slices.load(proj, k)["evidence"][sha]["selfcheck"]["head"] == sha

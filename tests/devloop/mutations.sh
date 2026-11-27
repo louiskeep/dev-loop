@@ -381,7 +381,7 @@ mutate "guard denies any mention of a command" hooks/headless_merge_guard.py \
   '        elif exe == "devloop-merge" and worker:' '        elif "devloop-merge" in text and worker:' \
   $T/guard/test_guard_segments.py
 mutate "memory reservations stay per project" devloop/runs.py \
-  '    for name in _project_names():' '    for name in [n for n in _project_names() if n != "p"]:' \
+  '    for name in projmod.project_names():' '    for name in [n for n in projmod.project_names() if n != "p"]:' \
   $T/test_runs_limits.py::test_two_projects_share_the_memory_headroom
 mutate "the reservation amount is not frozen at dispatch" devloop/dispatch.py \
   '        req["memory_mb"] = projmod.memory_mb(cfg, kind)' '        pass' \
@@ -529,7 +529,7 @@ mutate "workers run without the guard hooks" devloop/wrap.py \
   '        env = githooks.protect_env(env, rd / "githooks")' '        pass' \
   $G/test_worker_push.py::test_worker_push_to_main_is_refused_and_a_feature_push_works
 mutate "the guard pre-push lets a base ref through" devloop/githooks.py \
-  '    if [ "$rref" = "refs/heads/$base" ]; then' '    if false; then' \
+  '    if name in bases and worker:' '    if False:' \
   $G/test_worker_push.py::test_worker_push_to_main_is_refused_and_a_feature_push_works
 mutate "the guard hooks drop the repo's own hooks" devloop/githooks.py \
   '  exec "$orig" "$@"' '  exit 0' \
@@ -636,6 +636,131 @@ mutate "a base side that touches a slice file still carries evidence" devloop/ca
 mutate "slices of one row are listed as overlapping" devloop/overlap.py \
   'if a["row"] == b["row"] or a["repo"] != b["repo"]:' 'if a["repo"] != b["repo"]:' \
   $T/test_overlap.py::test_same_row_is_not_listed
+
+# PUSH-GATE S1: the ref policy in git pre-push, the PR gate, and the merge guard split.
+R=$G/test_ref_policy.py
+P=tests/test_pr_gate.py
+GH=devloop/githooks.py
+mutate "P1 lets a delete through" $GH \
+  '    if _ZERO.fullmatch(loid):' '    if False:' $R
+mutate "P2a lets a worker create a tag" $GH \
+  'and _ZERO.fullmatch(roid) and not worker:' 'and _ZERO.fullmatch(roid):' $R
+mutate "P4 treats a missing remote object as an ancestor" $GH \
+  '    if _git(["cat-file", "-e", f"{roid}^{{commit}}"], cwd)[0] != 0:' '    if False:' $R
+mutate "P6 always finds the remote tip in the reflog" $GH \
+  '    if not _in_reflog(roid, lref, cwd):' '    if False:' $R
+mutate "P3 ignores DEVLOOP_RUN" $GH \
+  '    if name in bases and worker:' '    if False:' $R
+mutate "P0 anchors with match instead of fullmatch" $GH \
+  'isinstance(text, str) and _OID.fullmatch(text) is not None' 'isinstance(text, str) and _OID.match(text) is not None' $R
+mutate "the override is honored for a worker" $GH \
+  ' == "1" and not env.get("DEVLOOP_RUN"):' ' == "1":' $R
+mutate "the PR gate drops the retarget refusal" hooks/pr_gate.py \
+  '        if create and _RETARGET.search(command):' '        if False:' $P
+mutate "the PR gate allows on an exception" hooks/pr_gate.py \
+  '        return _deny("pr gate could not check this command; run devloop-install")' '        return 0' $P
+mutate "the skip-hooks check is gone" hooks/pr_gate.py \
+  '        if skip:
+            return _deny(SKIP_REASON)' '        if False:
+            return _deny(SKIP_REASON)' $P
+mutate "the installer writes to the worktree git dir" $GH \
+  '["rev-parse", "--path-format=absolute", "--git-common-dir"]' '["rev-parse", "--path-format=absolute", "--git-dir"]' $R
+mutate "the receipt compare is a prefix match" hooks/pr_gate.py \
+  'and receipt == head:' 'and receipt.startswith(head):' $P
+mutate "an unborn HEAD matches a missing receipt" hooks/pr_gate.py \
+  'githooks.is_object_id(head) and receipt == head' 'receipt == head' \
+  "$P::test_an_unborn_head_without_a_receipt_denies_create"
+mutate "every remote is protected" $GH \
+  '    if len(argv) > 1 and not is_protected_url(argv[1], cwd):' '    if False:' $R
+mutate "P2a allows a tag update" $GH \
+  'and _ZERO.fullmatch(roid) and not worker:' 'and not worker:' $R
+mutate "no remote is protected" $GH \
+  'def is_protected_url(url, cwd=None) -> bool:
+' 'def is_protected_url(url, cwd=None) -> bool:
+    return False
+' $R
+mutate "the merge guard checks a loop worker's push text again" hooks/headless_merge_guard.py \
+  '            check_base_pushes=bool(event.get("agent_id")) and not in_run,' '            check_base_pushes=worker,' \
+  $G/test_merge_guard.py
+mutate "the PR gate imports the package at the top" hooks/pr_gate.py \
+  'import json
+import os
+import re
+' 'import json
+import os
+import re
+from devloop import project  # noqa: F401
+' $P
+mutate "the policy file imports the package at the top" $GH \
+  'import os
+import re
+' 'import os
+from devloop import store  # noqa: F401
+import re
+' $R
+mutate "the settings command turns exit 2 into the install message" $P \
+  '2) exit 2;; esac; fi; "' 'esac; fi; "' $P
+mutate "the pre-push hook leaves its temp copy" $GH \
+  "trap 'rm -f \"\$tmp\"' EXIT" ':' $R
+mutate "a refusal prints the push URL" $GH \
+  '        print(message, file=sys.stderr)' '        print(message, argv[1:2], file=sys.stderr)' $R
+mutate "a bare env feeds no pipe check" hooks/headless_merge_guard.py \
+  '            if sep == "|":
+                continue
+            raise' '            raise' \
+  $G/test_merge_guard.py
+mutate "the PR gate allows a create when a config is unreadable" hooks/pr_gate.py \
+  '        if unreadable:' '        if create and False:' $P
+mutate "the PR gate allows a skip word when a config is unreadable" hooks/pr_gate.py \
+  '        if unreadable:' '        if create and unreadable:' $P
+mutate "the PR gate reads the receipt under a fixed name" hooks/pr_gate.py \
+  '(Path(git_dir) / receipt)' '(Path(git_dir) / "devloop-quality-gate")' $P
+mutate "the receipt writer ignores the project's receipt name" bin/devloop-gate-pass \
+  '        "receipt"
+    ]' '        "receipt"
+    ] and project.PUSH_GATE_RECEIPT' $P
+mutate "an unlisted repo gets no push gate defaults" devloop/project.py \
+  '    return push_gate({})
+
+' '    return {}
+
+' tests/devloop/test_push_gate_config.py
+mutate "the receipt name may be any plain file name" devloop/project.py \
+  'RECEIPT_NAME = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*-quality-gate")' \
+  'RECEIPT_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")' tests/devloop/test_push_gate_config.py
+mutate "the repo listing drops the project's gate names" devloop/project.py \
+  'Path(repo["path"]).resolve(), push_gate(cfg))' 'Path(repo["path"]).resolve(), push_gate({}))' \
+  tests/devloop/test_push_gate_config.py
+mutate "the PR gate allows a create joined to another command" hooks/pr_gate.py \
+  '        if create and _COMPOUND.search(_REDIRECT.sub("", command)):' '        if create and False:' $P
+scope_check=$(sed -n '/^        gate, unreadable = _configured(cwd)$/,/^            return 0$/p' "$WORK/hooks/pr_gate.py")
+standalone_check='        if create and _COMPOUND.search(_REDIRECT.sub("", command)):
+            return _deny(STANDALONE_REASON)'
+mutate "the PR gate checks for shell joiners before checking repo scope" hooks/pr_gate.py \
+  "$scope_check
+$standalone_check" "$standalone_check
+$scope_check" "$P::test_a_heredoc_body_is_allowed_outside_guarded_repos"
+mutate "the PR gate treats a newline as no separator" hooks/pr_gate.py \
+  '_COMPOUND = re.compile(r"[;&|\r\n`]|\$\(|[<>]\(")' '_COMPOUND = re.compile(r"[;&|`]|\$\(|[<>]\(")' $P
+mutate "the installer checks only the local hooks path" $GH \
+  '["config", "--get", "core.hooksPath"]' '["config", "--local", "--get", "core.hooksPath"]' \
+  tests/devloop/test_push_gate_config.py
+mutate "the object id check accepts a short id" $GH \
+  '    return isinstance(text, str) and _OID.fullmatch(text) is not None' \
+  '    return isinstance(text, str) and re.fullmatch(r"[0-9a-f]{7,64}", text) is not None' \
+  tests/devloop/test_push_gate_config.py $R
+mutate "the shim ignores the project's override name" $GH \
+  '{OVERRIDE_VAR}={override_env} exec' '{OVERRIDE_VAR}={DEFAULT_OVERRIDE_ENV} exec' tests/devloop/test_push_gate_config.py
+mutate "the override accepts a variable the shim did not name" $GH \
+  '    name = env.get(OVERRIDE_VAR)' '    name = env.get(OVERRIDE_VAR) or DEFAULT_OVERRIDE_ENV' tests/devloop/test_push_gate_config.py
+mutate "the push gate block accepts any receipt name" devloop/project.py \
+  'if not isinstance(value, str) or not pattern.fullmatch(value):' 'if not isinstance(value, str):' tests/devloop/test_push_gate_config.py
+mutate "configured_repos drops an unreadable config silently" devloop/project.py \
+  '            unreadable.append(name)' '            pass' \
+  tests/devloop/test_configured_repos.py $P
+mutate "the installer reads project configs by its own walk" devloop/install.py \
+  '    repos, unreadable = project.configured_repos()' \
+  '    repos, unreadable = [], []' tests/devloop/test_configured_repos.py
 
 echo
 echo "killed: $killed  survived: $survived  stale: $stale  red-base: $redbase"

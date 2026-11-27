@@ -3,7 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hooks import board_update, loop_board as lb
+from hooks import board_update
+from hooks import loop_board as lb
 
 REPO = Path(__file__).resolve().parent.parent
 BOARD = str(REPO / "hooks" / "loop_board.py")

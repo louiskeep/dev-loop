@@ -100,7 +100,7 @@ def test_planner_refuses_non_opus_model(proj, ready, brief, cfg_edit):
 
 
 def test_planner_creates_absent_plan(proj, ready, brief):
-    key, wt, _ = ready("PLAN", plan_path="new-plan.md")
+    key, _wt, _ = ready("PLAN", plan_path="new-plan.md")
     r = go(proj, brief, "planner", key)
     assert runs.read_request(proj, r)["plan_sha"] is None
     assert slices.load(proj, key)["plan_frozen"] is True
@@ -132,6 +132,7 @@ def test_dispatch_closes_capture_pipes(proj, ready, brief, home):
         capture_output=True,
         text=True,
         timeout=20,
+        check=False,
     )
     assert out.returncode == 0 and out.stdout.strip().startswith("builder.")
     assert time.time() - start < 20  # the wrapper sleeps 30 s with no pipe held
@@ -149,6 +150,7 @@ def test_dispatch_cli_prints_refusal(proj, ready, brief):
         ],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert out.returncode == 3 and "REFUSED: unknown kind" in out.stderr
 

@@ -344,6 +344,7 @@ def test_merge_refuses_inside_a_worker(proj, gate, tmp_path):
         capture_output=True,
         text=True,
         cwd=Path(__file__).resolve().parents[2],
+        check=False,
     )
     assert r.returncode == 3 and "only the orchestrator merges" in r.stdout
     assert not (tmp_path / "gh.log").exists()
@@ -794,12 +795,15 @@ def test_fake_gh_rejects_fields_the_real_cli_does_not_have(fakebin):
         ["run", "view", "1", "--json", "event,path"],
         ["pr", "view", "1", "--json", "state,nope"],
     ):
-        r = subprocess.run([str(fakebin / "gh"), *argv], capture_output=True, text=True)
+        r = subprocess.run(
+            [str(fakebin / "gh"), *argv], capture_output=True, text=True, check=False
+        )
         assert r.returncode == 1 and "Unknown JSON field" in r.stderr
     ok = subprocess.run(
         [str(fakebin / "gh"), "run", "view", "1", "--json", "event,workflowName,jobs"],
         capture_output=True,
         text=True,
+        check=False,
     )
     assert ok.returncode == 0
 

@@ -71,8 +71,8 @@ def cap_active(project: str, now=None) -> bool:
     except ValueError:
         return True
     if until.tzinfo is None:
-        until = until.replace(tzinfo=datetime.timezone.utc)
-    return until > (now or datetime.datetime.now(datetime.timezone.utc))
+        until = until.replace(tzinfo=datetime.UTC)
+    return until > (now or datetime.datetime.now(datetime.UTC))
 
 
 def run_dir(project: str, run_id: str) -> Path:
@@ -88,9 +88,7 @@ def canonical_digest(obj) -> str:
 
 
 def now_iso() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat(
-        timespec="microseconds"
-    )
+    return datetime.datetime.now(datetime.UTC).isoformat(timespec="microseconds")
 
 
 def is_headless() -> bool:

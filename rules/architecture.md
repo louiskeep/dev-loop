@@ -26,6 +26,24 @@ not a decision rule.
 
 DON'T adopt a named pattern without naming the problem it solves and its costs.
 
+## Layout: where things go
+
+Keep the source tree predictable, so anyone can find a module without searching.
+The repo's CODEMAP has a "Where things go" section with one line per kind of
+module: which package owns that concern, how its files are named, and where its
+tests and sentries live. Plans place each new file against that map (see the
+PLAN "Placement" rule in [development loop](development-loop.md)). Enforce the
+layout by construction, not by review alone:
+
+- Size. A hand-written source file stays under the repo's cap (about 800 lines
+  unless the repo sets a lower one), and a file already over it does not grow.
+- Fan-out. A package holds at most about 25 modules directly. A package over the
+  limit is frozen at its current count by a ratchet test and takes new modules
+  only in a named sub-package.
+- Layers. Import direction is declared as contracts and checked by an
+  established tool (for Python, `import-linter`): lower layers never import
+  higher ones, and consumers reach a library only through its public API.
+
 ## Design principles (apply when they earn their keep)
 
 These are lenses, not a checklist. Reach for one when it names a real problem in
@@ -41,7 +59,9 @@ far more than it uses. If no such problem exists, leave the code alone.
   entry, a registry, a per-variant descriptor) rather than editing shared
   `if/elif` chains. Prefer one descriptor per variant over several parallel
   tables that must be kept in sync by hand; if parallel tables exist, add a test
-  that fails when they disagree.
+  that fails when they disagree. A rule that every variant or call site must
+  follow needs one choke point and a guard test; see
+  [cross-cutting concerns](cross-cutting-concerns.md).
 - **Liskov substitution.** An implementation behind an interface must honor the
   whole contract, including errors and edge cases, or it is not substitutable.
   Parity oracles and fallbacks are the usual place this matters.
@@ -69,6 +89,8 @@ justifies it.
 - "It appears three times." Identify the shared invariant and likely divergence.
 - "Adding one variant means editing N files." An open/closed or single-
   responsibility problem; consider a registry or descriptor.
+- "Each site checks that itself." A scattered rule; name the choke point and
+  the guard test per [cross-cutting concerns](cross-cutting-concerns.md).
 - "Applying SOLID" with no named change pain. A principle is a means, not a goal.
 
 ## Done when

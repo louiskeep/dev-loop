@@ -1,13 +1,12 @@
 """Collect, parse and apply finished runs; reject the ones that cannot apply."""
 
 import json
-import shutil
 import os
+import shutil
 from pathlib import Path
 
-from . import project as projmod
 from . import notes, runs, slices, store
-
+from . import project as projmod
 
 # --- collect ------------------------------------------------------------------
 
@@ -178,6 +177,42 @@ def _install_repair(project, rd, req, s):
     return None, "conflict"
 
 
+def _is_batch(req):
+    batch = req.get("batch")
+    return req.get("kind") == "test" and isinstance(batch, dict) and len(batch) > 1
+
+
+def _apply_batch(project, key, run_id, req, res, ev_kind):
+    """A green batch credits every member at its frozen head. A red one proves nothing
+    about any single member, so no member gets a verdict or a failure count."""
+    seq = req.get("seq")
+    if res.verdict != "GO":
+        store.append_event(
+            project, "batch-red", run=run_id, keys=sorted(req["batch"]), key=key
+        )
+        return slices.apply_effects(project, key, run_id)
+    outcome = None
+    for mkey, mhead in req["batch"].items():
+        try:
+            got = slices.apply_effects(
+                project,
+                mkey,
+                run_id,
+                kind=ev_kind,
+                verdict="GO",
+                head=mhead,
+                want_head=mhead,
+                seq=seq,
+            )
+        except slices.SliceError:
+            got = "stale"
+        if got == "stale":
+            store.append_event(project, "apply-mismatch", run=run_id, key=mkey)
+        if mkey == key:
+            outcome = got
+    return outcome
+
+
 def _apply_evidence(project, key, run_id, req, res, s, ev_kind):
     """Record a verdict. Returns (outcome, failed)."""
     kind = req["kind"]
@@ -210,6 +245,8 @@ def _apply_evidence(project, key, run_id, req, res, s, ev_kind):
             ),
             False,
         )
+    if _is_batch(req):
+        return _apply_batch(project, key, run_id, req, res, ev_kind), False
     if ev_kind == "full" and req.get("covers"):
         outcome = slices.apply_effects(
             project,
@@ -348,6 +385,8 @@ def _apply(project, run_id) -> str:
     if reason in ("capped", "infra"):
         outcome = slices.apply_effects(project, key, run_id)
         store.append_event(project, f"run-{reason}", run=run_id, key=key)
+    elif res.status == "FAILED" and _is_batch(req):
+        outcome = _apply_batch(project, key, run_id, req, res, ev_kind)
     elif res.status == "FAILED":
         failed = True
         guard = {}
