@@ -8,6 +8,21 @@ from hooks import rules_gate as rg
 # The transcripts read this path; it need not exist, so name it as a rules dir.
 RULES = "/home/cam/dev-rules"
 CFG = {"rules_dirs": [RULES]}
+_REAL_DEFAULT = rg.DEFAULT_DEV_RULES_DIR
+
+
+@pytest.fixture(autouse=True)
+def isolated_dev_rules(tmp_path, monkeypatch):
+    """Point the canonical dev-rules dir at an empty tmp dir.
+
+    The hook adds the canonical dir only when it exists, so on the devbox the
+    tests would see /home/cam/dev-rules and on a clean runner they would not.
+    """
+    canonical = tmp_path / "dev-rules"
+    canonical.mkdir()
+    monkeypatch.setattr(rg, "DEFAULT_DEV_RULES_DIR", str(canonical))
+    monkeypatch.setitem(globals(), "RULES", str(canonical))
+    monkeypatch.setitem(CFG, "rules_dirs", [str(canonical)])
 
 
 @pytest.fixture
@@ -15,6 +30,9 @@ def repo(tmp_path, monkeypatch):
     root = tmp_path / "proj"
     (root / "docs" / "plans").mkdir(parents=True)
     (root / "src").mkdir()
+    # Existing source files: editing them needs only the core rules.
+    (root / "src" / "a.py").write_text("")
+    (root / "src" / "b.py").write_text("")
     subprocess.run(["git", "init", "-q", str(root)], check=True)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
     return root
@@ -357,3 +375,91 @@ def test_repo_config_cannot_choose_the_plan_lint_executable(
     monkeypatch.setattr("sys.stdin", __import__("io").StringIO(json.dumps(ev)))
     assert rg.main() == 0
     assert not marker.exists()
+
+
+def test_local_operations_profile_is_required(repo, tmp_path):
+    core = [
+        f"{RULES}/{n}" for n in ("README.md", "00-universal.md", "development-loop.md")
+    ]
+    out = rg.pre_tool_use(_event(repo / "src/a.py", _transcript(tmp_path, core)), {})
+    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "profiles/local-operations.md" in reason.split("Not yet read")[1]
+
+
+def test_new_source_file_requires_architecture(repo, tmp_path):
+    t = _transcript(tmp_path, _all_rules())
+    out = rg.pre_tool_use(_event(repo / "src/new_mod.py", t), {})
+    decision = out["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+    missing = (
+        decision["permissionDecisionReason"]
+        .split("Not yet read")[1]
+        .split("Read them")[0]
+    )
+    assert "architecture.md" in missing
+    assert "development-loop.md" not in missing
+
+
+def test_editing_existing_source_does_not_require_architecture(repo, tmp_path):
+    t = _transcript(tmp_path, _all_rules())
+    assert rg.pre_tool_use(_event(repo / "src/a.py", t), {}) is None
+
+
+def test_new_plan_does_not_require_architecture(repo, tmp_path):
+    t = _transcript(tmp_path, _all_rules())
+    assert rg.pre_tool_use(_event(repo / "docs/plans/new.md", t), {}) is None
+
+
+def test_new_source_allowed_after_architecture_read_and_cached(repo, tmp_path):
+    t = _transcript(tmp_path, _all_rules() + [f"{RULES}/architecture.md"])
+    assert rg.pre_tool_use(_event(repo / "src/new_mod.py", t), {}) is None
+    empty = _transcript(tmp_path, [], name="empty.jsonl")
+    assert rg.pre_tool_use(_event(repo / "src/other_new.py", empty), {}) is None
+
+
+def test_core_marker_does_not_cover_a_new_file(repo, tmp_path):
+    # A session that passed the core check earlier still needs architecture.md
+    # before it creates a file, and only architecture.md is asked for.
+    assert (
+        rg.pre_tool_use(
+            _event(repo / "src/a.py", _transcript(tmp_path, _all_rules())), {}
+        )
+        is None
+    )
+    empty = _transcript(tmp_path, [], name="empty.jsonl")
+    assert rg.pre_tool_use(_event(repo / "src/b.py", empty), {}) is None
+    out = rg.pre_tool_use(_event(repo / "src/new_mod.py", empty), {})
+    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+    missing = reason.split("Not yet read")[1].split("Read them")[0]
+    assert "architecture.md" in missing
+    assert "00-universal.md" not in missing
+
+
+def test_dev_rules_dir_comes_from_config(repo, tmp_path):
+    other = tmp_path / "rules-elsewhere"
+    other.mkdir()
+    config = {"dev_rules_dir": str(other)}
+    assert str(other) in rg.rules_dirs(config)
+    t = _transcript(tmp_path, [f"{other}/{n}" for n in rg.REQUIRED_RULES])
+    assert rg.pre_tool_use(_event(repo / "src/a.py", t), config) is None
+
+
+def test_dev_rules_dir_defaults_to_home_dev_rules():
+    assert _REAL_DEFAULT == "/home/cam/dev-rules"
+    dirs = rg.rules_dirs({})
+    assert dirs[0] == str(rg.ls._plugin_root() / "rules")
+    assert RULES in dirs
+
+
+def test_deny_reason_points_at_a_copy_that_has_the_file(repo, tmp_path):
+    # A canonical checkout older than the profile: point at the plugin snapshot.
+    old = tmp_path / "old-dev-rules"
+    old.mkdir()
+    for n in ("README.md", "00-universal.md", "development-loop.md"):
+        (old / n).write_text("")
+    config = {"dev_rules_dir": str(old)}
+    out = rg.pre_tool_use(_event(repo / "src/a.py", _transcript(tmp_path, [])), config)
+    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+    snapshot = rg.ls._plugin_root() / "rules"
+    assert f"{old}/00-universal.md" in reason
+    assert f"{snapshot}/profiles/local-operations.md" in reason

@@ -14,7 +14,9 @@ DO inventory trust boundaries, assets, actors, entry points, and plausible abuse
 before changing security-sensitive behavior.
 
 DO distinguish authentication from authorization and enforce authorization at
-the trusted decision point.
+the trusted decision point. Authorization is a cross-cutting rule: every route
+or command declares its policy in one place and a guard fails on an undeclared
+one; see [cross-cutting concerns](cross-cutting-concerns.md).
 
 DO validate untrusted input, encode output for its destination, and use secure
 defaults and least privilege.
