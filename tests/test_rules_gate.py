@@ -6,6 +6,20 @@ import pytest
 from hooks import rules_gate as rg
 
 RULES = "/home/cam/dev-rules"
+_REAL_DEFAULT = rg.DEFAULT_DEV_RULES_DIR
+
+
+@pytest.fixture(autouse=True)
+def isolated_dev_rules(tmp_path, monkeypatch):
+    """Point the canonical dev-rules dir at an empty tmp dir.
+
+    The hook adds the canonical dir only when it exists, so on the devbox the
+    tests would see /home/cam/dev-rules and on a clean runner they would not.
+    """
+    canonical = tmp_path / "dev-rules"
+    canonical.mkdir()
+    monkeypatch.setattr(rg, "DEFAULT_DEV_RULES_DIR", str(canonical))
+    monkeypatch.setitem(globals(), "RULES", str(canonical))
 
 
 @pytest.fixture
@@ -226,11 +240,10 @@ def test_dev_rules_dir_comes_from_config(repo, tmp_path):
 
 
 def test_dev_rules_dir_defaults_to_home_dev_rules():
-    assert rg.DEFAULT_DEV_RULES_DIR == "/home/cam/dev-rules"
+    assert _REAL_DEFAULT == "/home/cam/dev-rules"
     dirs = rg.rules_dirs({})
     assert dirs[0] == str(rg.ls._plugin_root() / "rules")
-    if __import__("pathlib").Path(RULES).is_dir():
-        assert RULES in dirs
+    assert RULES in dirs
 
 
 def test_deny_reason_points_at_a_copy_that_has_the_file(repo, tmp_path):
