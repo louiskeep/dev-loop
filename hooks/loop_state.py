@@ -259,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = p.parse_args(argv)
     root = _resolve_root(args.repo)
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
 
     if args.cmd == "init":
         state = {
