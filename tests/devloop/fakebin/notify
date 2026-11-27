@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Fake notify command: logs the message and the env var named by $FAKE_NOTIFY_ENV (if any).
+val=""
+[ -n "${FAKE_NOTIFY_ENV:-}" ] && val="${!FAKE_NOTIFY_ENV:-}"
+printf '%s\t%s\n' "$val" "$1" >> "${FAKE_NOTIFY_LOG:?}"
+exit "${FAKE_NOTIFY_EXIT:-0}"

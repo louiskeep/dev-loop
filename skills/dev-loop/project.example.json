@@ -1,0 +1,200 @@
+{
+  "name": "example",
+  "mode": "live",
+  "intent": "Describe what this project is building and why.",
+  "roadmap": {
+    "path": "/path/to/ROADMAP.md",
+    "section": "3",
+    "row_id": "ROW"
+  },
+  "repos": [
+    {
+      "name": "main",
+      "path": "/path/to/repo",
+      "slug": "OWNER/REPO",
+      "base": "main"
+    }
+  ],
+  "rules_dir": "/path/to/dev-rules",
+  "capacity": {
+    "builder": 4,
+    "tester": 2,
+    "reviewer": 2,
+    "planner": 2
+  },
+  "models": {
+    "tick": "claude-opus-5-5",
+    "planner": "claude-opus-5-5",
+    "builder": "claude-sonnet-5-5",
+    "reviewer": "claude-opus-5-5"
+  },
+  "reviews": {
+    "R0": {
+      "plan": [],
+      "code": []
+    },
+    "R1": {
+      "plan": [
+        "codex"
+      ],
+      "code": [
+        "codex"
+      ]
+    },
+    "R2": {
+      "plan": [
+        {
+          "name": "claude-reviewer",
+          "cap": 2
+        },
+        "codex"
+      ],
+      "code": [
+        "claude-reviewer",
+        "codex"
+      ]
+    }
+  },
+  "reviewers": {
+    "claude-reviewer": {
+      "kind": "dennis",
+      "kinds": [
+        "dennis"
+      ]
+    },
+    "codex": {
+      "kind": "codex-review",
+      "kinds": [
+        "codex-review",
+        "codex-fix",
+        "codex-builder"
+      ],
+      "argv": {
+        "codex-review": [
+          "codex-review",
+          "{worktree}",
+          "{brief}",
+          "{out}",
+          "{label}"
+        ],
+        "codex-fix": [
+          "codex-fix",
+          "{run_id}",
+          "{brief}",
+          "{plan}"
+        ],
+        "codex-builder": [
+          "codex-builder",
+          "{worktree}",
+          "{brief}",
+          "{out}",
+          "{label}"
+        ]
+      },
+      "repair_out": "/path/to/cache/{run_id}/{plan_name}"
+    }
+  },
+  "tests": {
+    "t1": {
+      "argv": [
+        "run-tests",
+        "{worktree}"
+      ],
+      "infra_codes": [
+        124,
+        255
+      ]
+    },
+    "full": {
+      "argv": [
+        "run-full-suite",
+        "{worktree}"
+      ],
+      "deadline_s": 7200,
+      "infra_codes": [
+        124,
+        255
+      ]
+    }
+  },
+  "merge": {
+    "allowed": false,
+    "require_up_to_date": true,
+    "repos": {
+      "main": {
+        "base": "main",
+        "required_checks": [
+          "ci"
+        ],
+        "changelog_glob": "CHANGELOG.md"
+      }
+    }
+  },
+  "notify": {
+    "cmd": [
+      "send-message"
+    ],
+    "env_file": "/path/to/notify.env"
+  },
+  "board": {
+    "cmd": [
+      "board-cli"
+    ],
+    "phase_map": {
+      "FRAME": "frame",
+      "PLAN": "plan",
+      "DEVELOP": "develop",
+      "SELF_CHECK": "self_check",
+      "VERIFY": "verify",
+      "REVIEW": "review",
+      "REMEDIATE": "remediate",
+      "GATE": "gate",
+      "DOCUMENT": "document",
+      "DONE": "done",
+      "PARKED": "parked",
+      "HELD": "held"
+    }
+  },
+  "nodes": {
+    "directory": "/path/to/nodes.md",
+    "hosts": []
+  },
+  "duties": {
+    "nightly": {
+      "argv": [
+        "run-nightly"
+      ],
+      "deadline_s": 3600
+    }
+  },
+  "snapshot_cmds": [
+    {
+      "name": "open PRs",
+      "argv": [
+        "gh",
+        "pr",
+        "list"
+      ],
+      "max_chars": 3000
+    }
+  ],
+  "tick_doc": "/path/to/tick-doc.md",
+  "playbook_doc": "/path/to/playbook-addendum.md",
+  "process_doc": "/path/to/process.md",
+  "status_copy": "/path/to/status.md",
+  "min_free_gb": 2.5,
+  "brief_extra": "Commit messages: short subject, no body. Run T0 per edit and T1 per commit.",
+  "max_dispatch_per_tick": 4,
+  "memory_mb": {
+    "builder": 600,
+    "codex-review": 300,
+    "test": 50
+  },
+  "roles": {
+    "builder": "Developer",
+    "dennis": "Senior reviewer"
+  },
+  "dash": {
+    "port": 8791
+  }
+}

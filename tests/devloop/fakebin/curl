@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "curl $*" >> "${FAKE_ARGV_LOG:-/dev/null}"
+exit "${FAKE_EXIT:-0}"

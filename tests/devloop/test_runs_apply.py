@@ -1,0 +1,441 @@
+import os
+import signal
+import subprocess
+from pathlib import Path
+
+import pytest
+from runs_support import (  # noqa: F401
+    brief,
+    config,
+    dead_run,
+    env,
+    finish,
+    git,
+    go,
+    make_repo,
+    ready,
+    repair,
+    res,
+    train,
+)
+
+from devloop import runs, slices, store
+
+# --- liveness and results -----------------------------------------------------
+
+
+def test_dead_run_without_exit_is_failed(proj, ready):
+    key, _, _ = ready()
+    rd = dead_run(proj, key)
+    assert runs.collect(proj) == ["builder.dead"]
+    assert store.read_json(rd / "exit")["reason"] == "lost"
+    assert runs.parse_result(rd, "builder").status == "FAILED"
+
+
+def test_reused_pid_reads_dead(proj):
+    me = os.getpid()
+    live = {"pid": me, "pid_start": runs.proc_start(me), "boot_id": runs.boot_id()}
+    assert runs.wrapper_alive(live) is True
+    assert runs.wrapper_alive({**live, "pid_start": "1"}) is False
+    assert runs.wrapper_alive({**live, "boot_id": "other"}) is False
+
+
+def test_lost_wrapper_kills_payload_group(proj, ready):
+    key, _, _ = ready()
+    rd = dead_run(proj, key)
+    p = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    runs.update_request(
+        proj, "builder.dead", payload_pgid=p.pid, payload_start=runs.proc_start(p.pid)
+    )
+    runs.collect(proj)
+    assert p.wait(timeout=10) == -signal.SIGKILL
+    assert (rd / "exit").is_file()
+
+
+def test_collect_does_not_overwrite_wrapper_exit(proj, ready):
+    key, _, _ = ready()
+    rd = dead_run(proj, key)
+    runs.create_exit(rd, code=0, reason="exit")
+    runs.collect(proj)
+    assert store.read_json(rd / "exit")["reason"] == "exit"
+
+
+def test_status_contradicts_exit_is_failed(proj, ready):
+    key, _, _ = ready()
+    rd = dead_run(proj, key)
+    store.out_dir(rd).mkdir(exist_ok=True)
+    (store.out_dir(rd) / "result.md").write_text(res("DONE"))
+    runs.create_exit(rd, code=1, reason="exit")
+    assert runs.parse_result(rd, "builder").status == "FAILED"
+
+
+def test_zero_exit_without_result_is_failed(proj, ready):
+    key, _, _ = ready()
+    rd = dead_run(proj, key)
+    runs.create_exit(rd, code=0, reason="exit")
+    assert runs.parse_result(rd, "builder").status == "FAILED"
+    store.out_dir(rd).mkdir(exist_ok=True)
+    (store.out_dir(rd) / "result.md").write_text(res("DONE", head="abc"))
+    r = runs.parse_result(rd, "builder")
+    assert (r.status, r.head) == ("DONE", "abc")
+
+
+def test_lost_test_holds_slot(proj, ready, brief):
+    runs_ = [go(proj, brief, "test", ready("VERIFY")[0], level="t1") for _ in range(4)]
+    finish(proj, runs_[0], code=-1, reason="lost")
+    with pytest.raises(runs.Refused, match="tester slot"):
+        go(proj, brief, "test", ready("VERIFY")[0], level="t1")
+    runs.release(proj, runs_[0])
+    go(proj, brief, "test", ready("VERIFY")[0], level="t1")
+    finish(proj, runs_[1], code=1, reason="exit")  # a real failing result frees it
+    go(proj, brief, "test", ready("VERIFY")[0], level="t1")
+
+
+# --- reviews: roster, predecessor, binding ------------------------------------
+
+
+def test_review_runs_on_the_private_checkout_of_a_dirty_worktree(proj, ready, brief):
+    key, wt, _head = ready("REVIEW", risk="R1")
+    (wt / "f.txt").write_text("edited\n")
+    (wt / "stray.txt").write_text("uncommitted\n")
+    r = go(proj, brief, "codex-review", key, reviewer="codex")
+    tree = Path(runs.read_request(proj, r)["tree"])
+    assert (tree / "f.txt").read_text() == "one\n" and not (tree / "stray.txt").exists()
+
+
+def test_review_refused_when_the_head_is_not_a_commit(proj, ready, brief):
+    key, _, _ = ready("REVIEW", risk="R1")
+    s = slices.load(proj, key)
+    s["head"] = "d" * 40
+    slices._save(proj, s)
+    with pytest.raises(runs.Refused, match="not a commit"):
+        go(proj, brief, "codex-review", key, reviewer="codex")
+
+
+def test_codex_code_review_refused_before_dennis_go(proj, ready, brief):
+    key, _, _ = ready("REVIEW", risk="R2")
+    with pytest.raises(runs.Refused, match="dennis"):
+        go(proj, brief, "codex-review", key, reviewer="codex")
+    r = go(proj, brief, "dennis", key, reviewer="dennis")
+    finish(proj, r, result=res("DONE", "GO"))
+    runs.apply_run(proj, r)
+    c = go(proj, brief, "codex-review", key, reviewer="codex")
+    assert runs.read_request(proj, c)["predecessor_run"] == r
+
+
+def test_reviewer_kind_binding_enforced(proj, ready, brief, cfg_edit):
+    key, _, _ = ready("REVIEW", risk="R2")
+    with pytest.raises(runs.Refused, match="may not run"):
+        go(proj, brief, "codex-review", key, reviewer="dennis")
+    r = go(proj, brief, "dennis", key, reviewer="dennis")
+    finish(proj, r, result=res("DONE", "GO"))
+    # The pairing is checked again at apply time, against the config as it is then.
+    cfg_edit(lambda c: c["reviewers"]["dennis"].update(kinds=["codex-review"]))
+    with pytest.raises(runs.RunError, match="do not match"):
+        runs.apply_run(proj, r)
+
+
+def test_apply_refuses_head_mismatch(proj, ready, brief):
+    key, wt, _ = ready("REVIEW", risk="R1")
+    r = go(proj, brief, "codex-review", key, reviewer="codex")
+    finish(proj, r, result=res("DONE", "GO"))
+    (wt / "f.txt").write_text("two\n")
+    git(wt, "commit", "-qam", "c2")
+    slices.set_fields(proj, key, head=git(wt, "rev-parse", "HEAD"))
+    assert runs.apply_run(proj, r) == "stale"
+    s = slices.load(proj, key)
+    assert s["evidence"] == {} and r in s["processed_run_ids"]
+
+
+def test_apply_records_review_evidence_for_the_frozen_head(proj, ready, brief):
+    key, _, head = ready("REVIEW", risk="R1")
+    r = go(proj, brief, "codex-review", key, reviewer="codex")
+    finish(proj, r, result=res("DONE", "GO-WITH-FIXES"))
+    runs.apply_run(proj, r)
+    e = slices.load(proj, key)["evidence"][head]["code:codex"]
+    assert (e["verdict"], e["run"]) == ("GO-WITH-FIXES", r)
+    assert slices.load(proj, key)["run"] is None
+
+
+def test_plan_review_stale_after_plan_edit(proj, ready, brief):
+    key, wt, _ = ready("PLAN", risk="R2")
+    r = go(proj, brief, "dennis", key, reviewer="dennis")
+    finish(proj, r, result=res("DONE", "GO"))
+    (wt / "plan.md").write_text("Rules consulted: y\n")
+    assert runs.apply_run(proj, r) == "stale"
+    assert slices.load(proj, key)["evidence"] == {}
+
+
+def test_late_plan_review_grants_no_code_go(proj, ready, brief):
+    key, _, head = ready("PLAN", risk="R2")
+    r = go(proj, brief, "dennis", key, reviewer="dennis")
+    finish(proj, r, result=res("DONE", "GO"))
+    # The slice has moved on by the time the plan review is applied.
+    s = slices.load(proj, key)
+    s["phase"] = "REVIEW"
+    slices._save(proj, s)
+    runs.apply_run(proj, r)
+    s = slices.load(proj, key)
+    kinds = {k for bucket in s["evidence"].values() for k in bucket}
+    assert kinds == {"plan:dennis"} and head not in s["evidence"]
+
+
+def test_simultaneous_plan_reviews_refused(proj, ready, brief):
+    key, _, _ = ready("PLAN", risk="R2")
+    go(proj, brief, "dennis", key, reviewer="dennis")
+    with pytest.raises(runs.Refused, match="plan review"):
+        go(proj, brief, "dennis", key, reviewer="dennis")
+
+
+def test_plan_rounds_reset_on_new_plan_path(proj, ready, brief, monkeypatch):
+    key, wt, _ = ready("PLAN", risk="R2")
+    for _ in range(2):
+        r = go(proj, brief, "dennis", key, reviewer="dennis")
+        finish(proj, r, result=res("DONE", "NO-GO"))
+        runs.apply_run(proj, r)
+    assert slices.load(proj, key)["plan_rounds"]["plan.md"]["dennis"] == 2
+    with pytest.raises(runs.Refused, match="round cap"):
+        go(proj, brief, "dennis", key, reviewer="dennis")
+    (wt / "plan2.md").write_text("Rules consulted: z\n")
+    s = slices.load(proj, key)  # an interactive reframe starts a new lineage
+    slices.move(proj, key, "FRAME", "new plan")
+    slices.set_fields(proj, key, plan_path="plan2.md")
+    s = slices.load(proj, key)
+    assert s["plan_rounds"] == {}
+    s["phase"] = "PLAN"
+    slices._save(proj, s)
+    go(proj, brief, "dennis", key, reviewer="dennis")
+
+
+def test_infra_exit_counts_no_failure(proj, ready, brief):
+    key, _, _ = ready("VERIFY")
+    r = go(proj, brief, "test", key, level="t1")
+    finish(proj, r, code=255, reason="infra", result=res("FAILED"))
+    runs.apply_run(proj, r)
+    s = slices.load(proj, key)
+    assert s["failures"] == {} and s["evidence"] == {}
+
+
+@pytest.mark.parametrize("code", [1, 2, 137])
+def test_red_test_rerun_replaces_an_earlier_go(proj, ready, brief, code):
+    key, _, head = ready("VERIFY")
+    green = go(proj, brief, "test", key, level="t1")
+    finish(proj, green, code=0, result=res("DONE", "GO", head))
+    runs.apply_run(proj, green)
+    assert slices.load(proj, key)["evidence"][head]["t1"]["verdict"] == "GO"
+    red = go(proj, brief, "test", key, level="t1")
+    finish(proj, red, code=code, result=res("DONE", "NO-GO", head))
+    runs.apply_run(proj, red)
+    s = slices.load(proj, key)
+    assert s["evidence"][head]["t1"]["verdict"] == "NO-GO"
+    assert s["failures"] == {}
+
+
+def test_red_full_run_is_no_go_for_every_covered_slice(proj, ready, brief):
+    key, h1, top, h2 = train(proj, ready, brief)
+    r = go(proj, brief, "test", top, level="full", covers=[key])
+    finish(proj, r, code=0, result=res("DONE", "GO", h2))
+    runs.apply_run(proj, r)
+    assert slices.load(proj, key)["evidence"][h1]["full"]["verdict"] == "GO"
+    r = go(proj, brief, "test", top, level="full", covers=[key])
+    finish(proj, r, code=1, result=res("DONE", "NO-GO", h2))
+    runs.apply_run(proj, r)
+    assert slices.load(proj, key)["evidence"][h1]["full"]["verdict"] == "NO-GO"
+    assert slices.load(proj, top)["evidence"][h2]["full"]["verdict"] == "NO-GO"
+
+
+def test_selection_is_refused_for_t2_and_full_but_not_t1(proj, ready, brief, cfg_edit):
+    cfg_edit(lambda c: c["tests"].update(t2={"argv": ["x"]}, full={"argv": ["x"]}))
+    for level in ("t2", "full"):
+        key, _, _ = ready("VERIFY")
+        with pytest.raises(runs.Refused, match="whole level"):
+            go(proj, brief, "test", key, level=level, select=["a::b"])
+    key, _, _ = ready("VERIFY")
+    r = go(proj, brief, "test", key, level="t1", select=["a::b"])
+    assert runs.read_request(proj, r)["select"] == ["a::b"]
+
+
+def test_failed_twice_parks(proj, ready, brief):
+    key, _, _ = ready()
+    for i in range(2):
+        r = go(proj, brief, "builder", key)
+        finish(proj, r, code=1, result=res("FAILED"))
+        runs.apply_run(proj, r)
+        if i == 0:
+            assert slices.load(proj, key)["phase"] == "DEVELOP"
+    s = slices.load(proj, key)
+    assert (s["phase"], s["park_reason"]) == ("PARKED", "failed-twice")
+
+
+def test_apply_replay_counts_once(proj, ready, brief):
+    key, _, _ = ready("PLAN", risk="R2")
+    r = go(proj, brief, "dennis", key, reviewer="dennis")
+    finish(proj, r, result=res("DONE", "GO"))
+    runs.apply_run(proj, r)
+    (store.run_dir(proj, r) / "applied").unlink()  # crash before the marker
+    runs.apply_run(proj, r)
+    s = slices.load(proj, key)
+    assert s["plan_rounds"]["plan.md"]["dennis"] == 1
+    assert s["processed_run_ids"].count(r) == 1
+
+
+# --- plan repair --------------------------------------------------------------
+
+
+def test_repair_installed_only_if_plan_unchanged(proj, ready, brief):
+    key, wt, r = repair(proj, ready, brief)
+    (wt / "plan.md").write_text("Rules consulted: edited meanwhile\n")
+    finish(proj, r, result=res("DONE", "GO"))
+    runs.apply_run(proj, r)
+    assert "edited meanwhile" in (wt / "plan.md").read_text()
+    kinds = {k for b in slices.load(proj, key)["evidence"].values() for k in b}
+    assert "plan:codex" not in kinds
+
+
+def test_repair_installs_and_credits_the_installed_bytes(proj, ready, brief):
+    key, wt, r = repair(proj, ready, brief)
+    finish(proj, r, result=res("DONE", "GO"))
+    runs.apply_run(proj, r)
+    assert (wt / "plan.md").read_text() == "Rules consulted: repaired\n"
+    sha = slices.plan_sha(slices.load(proj, key))
+    assert slices.load(proj, key)["evidence"][sha]["plan:codex"]["verdict"] == "GO"
+    # The repair's GO counts toward the plan exit because the credit names the file.
+    assert all(ok for _, ok in slices.exit_checklist(proj, key, "DEVELOP"))
+
+
+def test_repair_replay_after_install(proj, ready, brief):
+    key, _wt, r = repair(proj, ready, brief)
+    finish(proj, r, result=res("DONE", "GO"))
+    runs.apply_run(proj, r)
+    (store.run_dir(proj, r) / "applied").unlink()
+    s = slices.load(proj, key)
+    s["processed_run_ids"].remove(r)  # crash between install and credit
+    s["evidence"] = {}
+    slices._save(proj, s)
+    runs.apply_run(proj, r)
+    sha = slices.plan_sha(slices.load(proj, key))
+    assert "plan:codex" in slices.load(proj, key)["evidence"][sha]
+
+
+def test_repair_refused_outside_plan(proj, ready, brief):
+    key, _, _ = ready("REVIEW", risk="R2")
+    with pytest.raises(runs.Refused, match="does not run in REVIEW"):
+        go(proj, brief, "codex-fix", key, reviewer="codex")
+
+
+# --- tests, pinned checkouts, trains ------------------------------------------
+
+
+def test_pinned_run_ignores_uncommitted_files(proj, ready, brief):
+    key, wt, _ = ready("VERIFY")
+    (wt / "stray.txt").write_text("not committed")
+    r = go(proj, brief, "test", key, level="t1")
+    tree = Path(runs.read_request(proj, r)["tree"])
+    assert (tree / "f.txt").is_file() and not (tree / "stray.txt").exists()
+    assert runs.read_request(proj, r)["cwd"] == str(tree)
+
+
+def test_train_member_must_be_ancestor(proj, ready, brief):
+    key, h1, top, _h2 = train(proj, ready, brief)
+    r = go(proj, brief, "test", top, level="full", covers=[key])
+    assert runs.read_request(proj, r)["covers"] == {key: h1}
+    with pytest.raises(runs.Refused, match="ancestor"):
+        go(proj, brief, "test", key, level="full", covers=[top])
+
+
+def test_stacked_train_credits_members_and_crash_after_first(
+    proj, ready, brief, monkeypatch
+):
+    key, h1, top, h2 = train(proj, ready, brief)
+    r = go(proj, brief, "test", top, level="full", covers=[key])
+    finish(proj, r, result=res("DONE", "GO", head=h2))
+    real = slices.apply_effects
+    calls = []
+
+    def crash_on_second(*a, **kw):
+        calls.append(a[1])
+        if len(calls) == 2:
+            raise RuntimeError("boom")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(slices, "apply_effects", crash_on_second)
+    with pytest.raises(RuntimeError):
+        runs.apply_run(proj, r)
+    assert not (store.run_dir(proj, r) / "applied").exists()
+    monkeypatch.setattr(slices, "apply_effects", real)
+    runs.apply_run(proj, r)
+    for k, h in ((top, h2), (key, h1)):
+        s = slices.load(proj, k)
+        assert s["evidence"][h]["full"]["run"] == r
+        assert s["processed_run_ids"].count(r) == 1
+
+
+def run_state(home, *args):
+    bin_ = Path(__file__).resolve().parents[2] / "bin" / "devloop-state"
+    return subprocess.run(
+        [str(bin_), "p", *args],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "DEVLOOP_HOME": str(home)},
+        check=False,
+    )
+
+
+def test_state_cli_applied_release_and_list(proj, ready, brief, home):
+    key, _, _head = ready("REVIEW")
+    r = go(proj, brief, "codex-review", key, reviewer="codex")
+    live = run_state(home, "list", "--live")
+    assert r in live.stdout and live.returncode == 0
+    finish(proj, r, result=res("DONE", "GO"))
+    assert run_state(home, "applied", r).stdout.strip() == "applied"
+    assert run_state(home, "release", r).returncode == 3  # not a test run
+    t = go(proj, brief, "test", ready("VERIFY")[0], level="t1")
+    finish(proj, t, code=-1, reason="lost")
+    assert t in run_state(home, "list", "--live").stdout
+    assert run_state(home, "release", t).returncode == 0
+    assert t not in run_state(home, "list", "--live").stdout
+    assert run_state(home, "list", "--writers").returncode == 0
+
+
+def test_an_older_green_cannot_replace_a_newer_red(proj, ready, brief):
+    key, _, head = ready("VERIFY")
+    green = go(proj, brief, "test", key, level="t1")
+    finish(proj, green, code=0, result=res("DONE", "GO", head))
+    red = go(proj, brief, "test", key, level="t1")
+    finish(proj, red, code=1, result=res("DONE", "NO-GO", head))
+    assert runs.read_request(proj, red)["seq"] > runs.read_request(proj, green)["seq"]
+    runs.apply_run(proj, red)
+    runs.apply_run(proj, green)  # the older result arrives last
+    entry = slices.load(proj, key)["evidence"][head]["t1"]
+    assert entry["verdict"] == "NO-GO" and entry["run"] == red
+    assert any(p.startswith("t1 GO on head") for p in slices.validate_gate(proj, key))
+
+
+def test_an_older_full_run_cannot_replace_a_newer_one_for_covered_slices(
+    proj, ready, brief
+):
+    key, h1, top, h2 = train(proj, ready, brief)
+    first = go(proj, brief, "test", top, level="full", covers=[key])
+    finish(proj, first, code=0, result=res("DONE", "GO", h2))
+    second = go(proj, brief, "test", top, level="full", covers=[key])
+    finish(proj, second, code=1, result=res("DONE", "NO-GO", h2))
+    runs.apply_run(proj, second)
+    runs.apply_run(proj, first)
+    assert slices.load(proj, key)["evidence"][h1]["full"]["verdict"] == "NO-GO"
+    assert slices.load(proj, top)["evidence"][h2]["full"]["verdict"] == "NO-GO"
+
+
+def test_plan_exit_refuses_while_a_plan_review_is_unapplied(proj, ready, brief):
+    key, _, _ = ready("PLAN", risk="R1")
+    first = go(proj, brief, "codex-review", key, reviewer="codex")
+    finish(proj, first, result=res("DONE", "GO"))
+    runs.apply_run(proj, first)
+    rerun = go(proj, brief, "codex-review", key, reviewer="codex")
+    finish(proj, rerun, result=res("DONE", "NO-GO"))  # finished, not applied
+    with pytest.raises(slices.TransitionError, match="outstanding"):
+        slices.move(proj, key, "DEVELOP", "go")
+    assert slices.load(proj, key)["approved_plan_sha"] is None
+    runs.apply_run(proj, rerun)
+    with pytest.raises(slices.TransitionError):  # the NO-GO now stands
+        slices.move(proj, key, "DEVELOP", "go")
+    assert slices.load(proj, key)["approved_plan_sha"] is None

@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Fake claude -p. Logs argv and stdin; behaviour from FAKE_CLAUDE_*.
+MODE=result writes result.md into $DEVLOOP_RUN_DIR; MODE=sleep sleeps; FINAL is the
+final message text; STREAM_EXTRA is an earlier assistant line (to prove it is ignored)."""
+import json
+import os
+import sys
+import time
+
+argv = sys.argv[1:]
+stdin = sys.stdin.read()
+log = os.environ.get("FAKE_ARGV_LOG")
+if log:
+    with open(log, "a") as fh:
+        fh.write(json.dumps({"tool": "claude", "argv": argv, "cwd": os.getcwd(),
+                             "stdin": stdin,
+                             "env": {k: os.environ.get(k) for k in ("DEVLOOP_HEADLESS", "DEVLOOP_RUN_DIR", "DEVLOOP_BASE_BRANCHES", "DEVLOOP_TICK_ID")}}) + "\n")
+if argv[:1] == ["agents"]:
+    if os.environ.get("FAKE_AGENTS_EXIT"):
+        sys.exit(int(os.environ["FAKE_AGENTS_EXIT"]))
+    print(os.environ.get("FAKE_AGENTS", "dennis\nplanner"))
+    sys.exit(0)
+mode = os.environ.get("FAKE_CLAUDE_MODE", "result")
+if mode == "sleep":
+    time.sleep(float(os.environ.get("FAKE_SLEEP", "60")))
+if mode == "usage-cap":
+    print(json.dumps({"type": "rate_limit", "resets_at": "soon"}))
+    sys.exit(1)
+extra = os.environ.get("FAKE_CLAUDE_STREAM_EXTRA")
+if extra:
+    print(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": extra}]}}))
+if mode == "result":
+    rd = os.environ.get("DEVLOOP_RUN_DIR")
+    if rd and os.environ.get("FAKE_RESULT_STATUS") != "none":
+        body = "status: %s\nhead: %s\nverdict: %s\n---\nsummary\n" % (
+            os.environ.get("FAKE_RESULT_STATUS", "DONE"),
+            os.environ.get("FAKE_RESULT_HEAD", ""),
+            os.environ.get("FAKE_RESULT_VERDICT", ""),
+        )
+        open(os.path.join(rd, "result.md"), "w").write(body)
+final = os.environ.get("FAKE_CLAUDE_FINAL")
+if final is not None:
+    print(json.dumps({"type": "result", "result": final, "is_error": bool(os.environ.get("FAKE_CLAUDE_ERROR"))}))
+sys.exit(int(os.environ.get("FAKE_EXIT", "0")))

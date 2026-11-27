@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Fake gh. Every call is logged to $FAKE_GH_LOG. `pr view` reads $FAKE_GH_JSON when set
+(a JSON file of fields), else the FAKE_GH_* variables. A zero-exit `pr merge` applies the
+file's "on_merge" fields."""
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+log = os.environ.get("FAKE_GH_LOG")
+if log:
+    with open(log, "a") as fh:
+        fh.write(json.dumps(args) + "\n")
+path = os.environ.get("FAKE_GH_JSON")
+doc = json.load(open(path)) if path and os.path.exists(path) else {}
+
+if args[:2] == ["auth", "status"]:
+    sys.exit(int(os.environ.get("FAKE_GH_AUTH_EXIT", "0")))
+if args[:2] == ["pr", "merge"]:
+    code = int(os.environ.get("FAKE_GH_MERGE_EXIT", "0"))
+    if code:
+        print("merge failed: secret-token-123", file=sys.stderr)
+        sys.exit(code)
+    if path:
+        doc.update(doc.get("on_merge", {}))
+        json.dump(doc, open(path, "w"))
+    sys.exit(0)
+# Field lists as accepted by gh 2.93; anything else fails the way the real CLI does.
+RUN_VIEW_FIELDS = {
+    "attempt", "conclusion", "createdAt", "databaseId", "displayTitle", "event",
+    "headBranch", "headSha", "jobs", "name", "number", "startedAt", "status",
+    "updatedAt", "url", "workflowDatabaseId", "workflowName",
+}
+PR_VIEW_FIELDS = {
+    "additions", "assignees", "author", "autoMergeRequest", "baseRefName", "body",
+    "changedFiles", "closed", "closedAt", "closingIssuesReferences", "comments",
+    "commits", "createdAt", "deletions", "files", "fullDatabaseId", "headRefName",
+    "headRefOid", "headRepository", "headRepositoryOwner", "id", "isCrossRepository",
+    "isDraft", "labels", "latestReviews", "maintainerCanModify", "mergeCommit",
+    "mergeStateStatus", "mergeable", "mergedAt", "mergedBy", "milestone", "number",
+    "potentialMergeCommit", "projectCards", "projectItems", "reactions",
+    "reviewDecision", "reviewRequests", "reviews", "state", "statusCheckRollup",
+    "title", "updatedAt", "url",
+}
+
+
+def check_fields(allowed):
+    if "--json" not in args:
+        return
+    for f in args[args.index("--json") + 1].split(","):
+        if f not in allowed:
+            print('Unknown JSON field: "%s"' % f, file=sys.stderr)
+            sys.exit(1)
+
+
+if args[:2] == ["run", "view"]:
+    check_fields(RUN_VIEW_FIELDS)
+    print(json.dumps({k: v for k, v in doc.get("run", {}).items() if k != "path"}))
+    sys.exit(0)
+if args[:1] == ["api"]:
+    # `gh api repos/O/R/actions/runs/N --jq .path` prints the workflow file path.
+    print(doc.get("run", {}).get("path", ""))
+    sys.exit(0)
+if args[:2] == ["pr", "view"]:
+    check_fields(PR_VIEW_FIELDS)
+if doc.get("fail_view"):
+    sys.exit(1)
+if int(os.environ.get("FAKE_GH_VIEW_EXIT", "0")) and not doc.get("view_ok"):
+    sys.exit(int(os.environ["FAKE_GH_VIEW_EXIT"]))
+out = {
+    "state": os.environ.get("FAKE_GH_STATE", "OPEN"),
+    "baseRefName": os.environ.get("FAKE_GH_BASE", "main"),
+    "headRefOid": os.environ.get("FAKE_GH_HEAD", "a" * 40),
+    "statusCheckRollup": [],
+    "mergeStateStatus": "CLEAN",
+    "files": [],
+}
+out.update({k: v for k, v in doc.items() if k not in ("on_merge", "run", "view_ok", "fail_view")})
+print(json.dumps(out))

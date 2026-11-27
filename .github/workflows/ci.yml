@@ -17,7 +17,7 @@ jobs:
         run: python -m pip install --upgrade pip pytest ruff==0.17.6
       - name: Lint
         run: |
-          ruff check hooks/ tests/ conftest.py
-          ruff format --check hooks/ tests/ conftest.py
+          ruff check hooks/ devloop/ tests/ conftest.py
+          ruff format --check hooks/ devloop/ tests/ conftest.py
       - name: Test
         run: pytest -q
